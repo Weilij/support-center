@@ -1,0 +1,57 @@
+//! Router assembly reproducing the CRD §7.1 pipeline order (lines 5673-5684):
+//! CORS → metrics → public/priority routes → domain routes → error trap (per-handler) →
+//! security headers (post-handler) → root probe / unknown-route fallback.
+
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::{middleware as axum_mw, Json, Router};
+use serde_json::json;
+use std::sync::Arc;
+
+use crate::state::AppState;
+
+pub fn build_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/", get(root_probe))
+        .merge(crate::domain::auth::routes(state.clone()))
+        .fallback(unknown_route)
+        .layer(axum_mw::from_fn(
+            crate::middleware::security_headers::security_headers_layer,
+        ))
+        .layer(axum_mw::from_fn_with_state(
+            state.clone(),
+            crate::middleware::metrics::metrics_layer,
+        ))
+        .layer(axum_mw::from_fn_with_state(
+            state.clone(),
+            crate::middleware::cors::cors_layer,
+        ))
+        .with_state(state)
+}
+
+/// Service root probe per CRD 5632-5635.
+async fn root_probe() -> Response {
+    (
+        StatusCode::OK,
+        Json(json!({
+            "message": "Multi-Channel Customer Support System API",
+            "timestamp": crate::db::now_iso(),
+            "version": env!("CARGO_PKG_VERSION"),
+        })),
+    )
+        .into_response()
+}
+
+/// Unknown-route fallback per CRD 5637-5640 — note: no `success` flag, by spec.
+async fn unknown_route(req: axum::extract::Request) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "error": "Not Found",
+            "message": format!("The requested endpoint {} was not found", req.uri().path()),
+            "timestamp": crate::db::now_iso(),
+        })),
+    )
+        .into_response()
+}
