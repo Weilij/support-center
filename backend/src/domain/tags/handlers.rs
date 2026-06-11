@@ -841,15 +841,25 @@ pub async fn add_conversation_tags(
         .await?;
     }
 
-    // TODO(realtime): broadcast `conversation_tags_updated` (operation "add") with
-    // { operation, tagIds, updatedBy: { id, name }, timestamp } to this conversation's
-    // subscribers; emission failure must be non-fatal (CRD 1608, 1638).
+    // Realtime: `conversation_tags_updated` (operation "add") to this
+    // conversation's audience (CRD 1608, 1638, 3455); non-fatal by construction.
+    state.realtime.to_conversation(
+        &id,
+        "conversation_tags_updated",
+        json!({
+            "conversationId": id,
+            "operation": "add",
+            "tagIds": &ids,
+            "updatedBy": { "id": user.id, "name": user.display_name },
+            "timestamp": crate::db::now_iso(),
+        }),
+    );
     Ok(envelope::message_only("Tags added to conversation successfully"))
 }
 
 pub async fn remove_conversation_tags(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     body: JsonBody<TagIdsBody>,
 ) -> Result {
@@ -869,7 +879,18 @@ pub async fn remove_conversation_tags(
     }
     q.execute(&state.db).await?;
 
-    // TODO(realtime): broadcast `conversation_tags_updated` (operation "remove") to this
-    // conversation's subscribers; emission failure must be non-fatal (CRD 1617, 1638).
+    // Realtime: `conversation_tags_updated` (operation "remove") to this
+    // conversation's audience (CRD 1617, 1638, 3455); non-fatal by construction.
+    state.realtime.to_conversation(
+        &id,
+        "conversation_tags_updated",
+        json!({
+            "conversationId": id,
+            "operation": "remove",
+            "tagIds": &ids,
+            "updatedBy": { "id": user.id, "name": user.display_name },
+            "timestamp": crate::db::now_iso(),
+        }),
+    );
     Ok(envelope::message_only("Tags removed from conversation successfully"))
 }

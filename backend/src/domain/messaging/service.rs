@@ -230,8 +230,37 @@ pub async fn process_delayed(state: &AppState, delayed_id: &str) -> Value {
                         &now,
                     )
                     .await;
-                    // TODO(realtime): push the created webchat message to the
-                    // conversation's live subscribers; best-effort only.
+                    // Realtime: push the created webchat message to the
+                    // conversation's live audience (CRD 3450, 3452);
+                    // best-effort only.
+                    state.realtime.to_conversation_message(
+                        &row.conversation_id,
+                        "message_sent",
+                        json!({
+                            "messageId": message_id,
+                            "conversationId": row.conversation_id,
+                            "content": content,
+                            "messageType": row.content_type,
+                            "senderType": "agent",
+                            "senderId": row.agent_id,
+                            "deliveryStatus": "sent",
+                            "delayed": true,
+                            "timestamp": now,
+                        }),
+                    );
+                    // Delayed-message terminal events also reach the
+                    // originating agent's personal channel (CRD 3452).
+                    state.realtime.to_user(
+                        &row.agent_id,
+                        "delayed_message_sent",
+                        json!({
+                            "delayedMessageId": row.id,
+                            "messageId": message_id,
+                            "conversationId": row.conversation_id,
+                            "persistent": true,
+                            "timestamp": now,
+                        }),
+                    );
                     Ok(json!({
                         "success": true,
                         "delayedMessageId": row.id,
@@ -601,7 +630,9 @@ pub async fn purge_expired(db: &SqlitePool) -> Result<u64, sqlx::Error> {
         .rows_affected())
 }
 
-// TODO(realtime): real-time fan-out batching (CRD 1040) — group outbound
-// events per target, flush on size threshold / short delay / urgent priority,
-// and collapse duplicate transient events (typing, join/leave) before fan-out.
-// Pure delivery-efficiency behavior; deferred with the realtime layer (Phase 4).
+// TODO(scale-out): real-time fan-out batching (CRD 1040, 3465) — group
+// outbound events per target in the hub, flush on size threshold / short
+// delay, let urgent priority bypass, and collapse duplicate transient events
+// (typing, join/leave) before fan-out. The hub currently delivers every event
+// immediately, which the spec permits ("non-urgent events MAY be coalesced");
+// batching is a pure delivery-efficiency optimization.

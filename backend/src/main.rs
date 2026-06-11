@@ -21,6 +21,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let port = config.port;
     let state = AppState::new(pool, config);
 
+    // Restore the persisted realtime gateway configuration (CRD 3289-3292).
+    mcss_backend::realtime::endpoints::hydrate_config(&state).await;
+
     // Delayed-message dispatcher: fires scheduled sends when they become due
     // (CRD 991) and periodically retires stale failed items (CRD 1028).
     {

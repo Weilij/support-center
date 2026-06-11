@@ -153,6 +153,9 @@ pub struct AppState {
     pub last_active: LastActiveDebounce,
     pub batch_undo: BatchUndoStore,
     pub recallable_messages: RecallableMarkers,
+    /// Central realtime hub (CRD §5.1): connection registry, rooms, channels
+    /// and the broadcast API used by the domain modules.
+    pub realtime: Arc<crate::realtime::RealtimeHub>,
 }
 
 impl AppState {
@@ -165,6 +168,7 @@ impl AppState {
             last_active: LastActiveDebounce::default(),
             batch_undo: BatchUndoStore::default(),
             recallable_messages: RecallableMarkers::default(),
+            realtime: Arc::new(crate::realtime::RealtimeHub::new()),
         })
     }
 }

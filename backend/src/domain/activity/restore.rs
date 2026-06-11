@@ -829,10 +829,18 @@ pub async fn restore_activity(
         state.team_cache.invalidate(agent_id);
     }
 
-    // 9. TODO(realtime): broadcast `resource.restored` with { resourceType: rtype,
-    //    resourceId: resource_id, restoredBy: caller.id, restoreActivityId: new_id }
-    //    through the routed delivery path; best-effort only — a broadcast failure must
-    //    never fail the already-committed restore (CRD 2604-2608).
+    // 9. Realtime: broadcast `resource.restored` through the routed delivery
+    //    path; best-effort only — the hub broadcast never fails the
+    //    already-committed restore (CRD 2604-2608).
+    state.realtime.global(
+        "resource.restored",
+        json!({
+            "resourceType": rtype,
+            "resourceId": resource_id,
+            "restoredBy": caller.id,
+            "restoreActivityId": new_id,
+        }),
+    );
 
     Ok(crate::envelope::ok_msg(
         json!({ "restoredActivityId": id, "restoreActivityId": new_id }),

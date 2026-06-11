@@ -5,4 +5,5 @@ pub mod domain;
 pub mod envelope;
 pub mod error;
 pub mod middleware;
+pub mod realtime;
 pub mod state;

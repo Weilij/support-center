@@ -53,6 +53,8 @@ impl ChannelGateway for StubGateway {
 /// delivery status (sent / partial / failed), and platform message id.
 pub async fn deliver_pending(
     db: SqlitePool,
+    hub: std::sync::Arc<crate::realtime::RealtimeHub>,
+    conversation_id: String,
     message_id: String,
     platform: String,
     recipient: String,
@@ -106,10 +108,21 @@ pub async fn deliver_pending(
         tracing::error!(error = %e, message = %message_id, "failed to persist delivery outcome");
     }
 
-    // TODO(realtime): emit `message_updated` carrying the final delivery status
-    // { messageId: message_id, deliveryStatus: status, isSent: is_sent,
-    //   platformMessageId: platform_message_id, error: last_error, timestamp: now }
-    // so clients can transition the message out of the pending state; best-effort
-    // only — a broadcast failure never alters the persisted outcome (CRD 827-828).
-    let _ = last_error;
+    // Realtime: `message_updated` carrying the final delivery status so
+    // clients can transition the message out of the pending state (CRD 827-828,
+    // 3450); best-effort only — a broadcast failure never alters the persisted
+    // outcome.
+    hub.to_conversation(
+        &conversation_id,
+        "message_updated",
+        serde_json::json!({
+            "messageId": message_id,
+            "conversationId": conversation_id,
+            "deliveryStatus": status,
+            "isSent": is_sent,
+            "platformMessageId": platform_message_id,
+            "error": last_error,
+            "timestamp": now,
+        }),
+    );
 }

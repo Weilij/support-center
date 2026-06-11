@@ -875,8 +875,26 @@ pub async fn update_status(
     let new_status =
         store::set_status(&state.db, &agent_id, status, available_until.as_deref(), note.as_deref())
             .await?;
-    // TODO(realtime): emit presence-changed domain event so assignment eligibility
-    // consumers see the transition (CRD 2319).
+    // Realtime: presence change broadcast to the operator's team(s) and to
+    // administrators (CRD 2319, 3446) so assignment-eligibility consumers see
+    // the transition; best-effort by construction.
+    {
+        let team_ids: Vec<i64> =
+            sqlx::query_scalar("SELECT team_id FROM team_members WHERE agent_id = ?")
+                .bind(&agent_id)
+                .fetch_all(&state.db)
+                .await
+                .unwrap_or_default();
+        let display_name: String =
+            sqlx::query_scalar("SELECT display_name FROM agents WHERE id = ?")
+                .bind(&agent_id)
+                .fetch_optional(&state.db)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+        state.realtime.presence(&agent_id, &display_name, status, &team_ids);
+    }
     Ok(envelope::ok_msg(store::status_view(&new_status), "Status updated successfully"))
 }
 

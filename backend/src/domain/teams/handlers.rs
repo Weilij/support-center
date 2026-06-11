@@ -37,6 +37,32 @@ fn parse_json<T>(body: JsonBody<T>) -> Result<T> {
     body.map(|Json(b)| b).map_err(|_| AppError::BadRequest("Invalid JSON".into()))
 }
 
+/// Refreshed member count for realtime member-change events (CRD 2149).
+async fn live_member_count(state: &AppState, team_id: i64) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM team_members WHERE team_id = ?")
+        .bind(team_id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0)
+}
+
+/// Realtime `member_added` event to administrators and the affected team
+/// (CRD 2149, 3460); best-effort by construction.
+async fn emit_member_added(state: &AppState, team_id: i64, agent_id: &str, actor: &AuthUser) {
+    let count = live_member_count(state, team_id).await;
+    state.realtime.to_teams_and_admins(
+        &[team_id],
+        "member_added",
+        json!({
+            "teamId": team_id,
+            "agentId": agent_id,
+            "memberCount": count,
+            "addedBy": { "id": actor.id, "name": actor.display_name },
+            "timestamp": now_iso(),
+        }),
+    );
+}
+
 /// Path id must be a positive integer (CRD 1831, 1835: non-integer id -> 400).
 fn parse_team_id(raw: &str) -> Result<i64> {
     raw.parse::<i64>()
@@ -390,11 +416,21 @@ pub async fn update_team(
     )
     .await;
 
-    // TODO(realtime): broadcast team-information-update (name/description/active/member
-    // count + initiating user) to management views (CRD 2152).
     let updated = store::team_with_counts(&state.db, id)
         .await?
         .ok_or_else(|| AppError::Internal("Failed to reload team after update".into()))?;
+    // Realtime: team-information update to administrators and the affected
+    // team (CRD 2152, 3460); best-effort by construction.
+    state.realtime.to_teams_and_admins(
+        &[id],
+        "team_updated",
+        json!({
+            "teamId": id,
+            "team": store::team_view(&updated),
+            "updatedBy": { "id": user.id, "name": user.display_name },
+            "timestamp": now_iso(),
+        }),
+    );
     Ok(envelope::ok_msg(store::team_view(&updated), "Team updated successfully"))
 }
 
@@ -802,8 +838,9 @@ pub async fn batch_add_members(
         .await?;
         state.team_cache.invalidate(agent_id);
         added.push(agent_id.clone());
-        // TODO(realtime): emit "member added" event with refreshed member count per
-        // newly added membership, asynchronously (CRD 1908, 2149).
+        // Realtime: "member added" with refreshed member count per newly added
+        // membership (CRD 1908, 2149).
+        emit_member_added(&state, id, agent_id, &user).await;
     }
 
     // Audit logging runs asynchronously / non-blocking (CRD 1905).
@@ -1915,8 +1952,9 @@ pub async fn join_team(
         None, None,
     )
     .await;
-    // TODO(realtime): broadcast "member added" with team id/name, agent id/name,
-    // refreshed member count and the acting user (CRD 2045, 2149).
+    // Realtime: "member added" with refreshed member count and the acting user
+    // (CRD 2045, 2149).
+    emit_member_added(&state, team_id, &agent_id, &user).await;
 
     Ok(envelope::with_status(
         StatusCode::CREATED,
@@ -1991,8 +2029,9 @@ pub async fn join_multiple(
         .execute(&state.db)
         .await?;
         added.push(team_id);
-        // TODO(realtime): broadcast "member added" with this team's refreshed member
-        // count, asynchronously (CRD 2052, 2149).
+        // Realtime: "member added" with this team's refreshed member count
+        // (CRD 2052, 2149).
+        emit_member_added(&state, team_id, &agent_id, &user).await;
     }
     state.team_cache.invalidate(&agent_id);
 
@@ -2067,8 +2106,40 @@ pub async fn leave_team(
     .bind(&now)
     .execute(&state.db)
     .await?;
-    // TODO(realtime): push the personal notification to the removed agent and broadcast
-    // a team-wide "member removed" event with refreshed member count (CRD 2059, 2150-2151).
+    // Realtime: push the personal notification to the removed agent's channel
+    // (urgent notifications carry elevated priority, CRD 3459) and broadcast a
+    // team-wide "member removed" event with refreshed member count
+    // (CRD 2059, 2150-2151, 3460).
+    state.realtime.to_user(
+        &agent_id,
+        "notification",
+        json!({
+            "type": "team_removal",
+            "title": format!("Removed from team {team_name}"),
+            "content": format!(
+                "You were removed from team {team_name} by {}",
+                user.display_name
+            ),
+            "teamId": team_id,
+            "teamName": team_name,
+            "removedBy": { "id": user.id, "name": user.display_name },
+            "priority": "high",
+            "timestamp": now,
+        }),
+    );
+    let remaining = live_member_count(&state, team_id).await;
+    state.realtime.to_teams_and_admins(
+        &[team_id],
+        "member_removed",
+        json!({
+            "teamId": team_id,
+            "teamName": team_name,
+            "agentId": agent_id,
+            "memberCount": remaining,
+            "removedBy": { "id": user.id, "name": user.display_name },
+            "timestamp": now,
+        }),
+    );
 
     log_activity(
         &state.db, &user.id, &user.display_name, &user.role,

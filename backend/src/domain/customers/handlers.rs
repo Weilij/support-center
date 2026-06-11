@@ -389,10 +389,19 @@ pub async fn add_customer_tags(
         }
         tx.commit().await?;
 
-        // TODO(realtime): broadcast `customer_tags_updated` (operation "add") with
-        // { customerId, operation, tagIds, changedBy } to connected staff; emission
-        // failure must be non-fatal (CRD 1573, 1637). Customer: {customer.id}.
-        let _ = &customer;
+        // Realtime: `customer_tags_updated` (operation "add") delivered to
+        // administrators and agents (CRD 1573, 1637, 3461); emission is
+        // non-fatal by construction.
+        state.realtime.global(
+            "customer_tags_updated",
+            json!({
+                "customerId": customer.id,
+                "operation": "add",
+                "tagIds": &to_add,
+                "changedBy": { "id": user.id, "name": user.display_name },
+                "timestamp": crate::db::now_iso(),
+            }),
+        );
     }
 
     let added = to_add.len();
@@ -468,8 +477,18 @@ pub async fn remove_customer_tags(
     }
     tx.commit().await?;
 
-    // TODO(realtime): broadcast `customer_tags_updated` (operation "remove") to connected
-    // staff; emission failure must be non-fatal (CRD 1582, 1637).
+    // Realtime: `customer_tags_updated` (operation "remove") to administrators
+    // and agents (CRD 1582, 1637, 3461); non-fatal by construction.
+    state.realtime.global(
+        "customer_tags_updated",
+        json!({
+            "customerId": id,
+            "operation": "remove",
+            "tagIds": &ids,
+            "changedBy": { "id": user.id, "name": user.display_name },
+            "timestamp": crate::db::now_iso(),
+        }),
+    );
 
     // Reported count equals the size of the requested list (CRD 1581).
     Ok(envelope::with_status(
@@ -544,8 +563,18 @@ pub async fn replace_customer_tags(
     )
     .await;
 
-    // TODO(realtime): broadcast `customer_tags_updated` (operation "set") to connected
-    // staff; emission failure must be non-fatal (CRD 1591, 1637).
+    // Realtime: `customer_tags_updated` (operation "set") to administrators
+    // and agents (CRD 1591, 1637, 3461); non-fatal by construction.
+    state.realtime.global(
+        "customer_tags_updated",
+        json!({
+            "customerId": id,
+            "operation": "set",
+            "tagIds": &ids,
+            "changedBy": { "id": user.id, "name": user.display_name },
+            "timestamp": crate::db::now_iso(),
+        }),
+    );
 
     Ok(envelope::ok_msg(
         json!({ "totalTags": ids.len() }),

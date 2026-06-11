@@ -486,14 +486,58 @@ pub async fn send_reply(
         }
     }
 
-    // TODO(realtime): push a `new_message` event to all live subscribers of
-    // this conversation (payload: conversationId, nested data object, the full
-    // message object carrying attachments and the correlationId for client
-    // de-duplication, timestamp) — every connection of every user, including
-    // multiple tabs (CRD 1088, 1164).
-    // TODO(realtime): emit the best-effort global conversation-list
-    // new-message notification so list views update their preview/ordering;
-    // failure is non-fatal (CRD 1089, 1169).
+    // Realtime: `new_message` to all live subscribers of this conversation —
+    // every connection of every user, including multiple tabs (CRD 1088, 1164,
+    // 3968): conversationId, nested data object, the full message object
+    // carrying attachments and the correlationId for client de-duplication.
+    // The §5.4 customer-ws channel surface is wired separately (Phase 4).
+    {
+        let platform = body.platform.clone().unwrap_or_else(|| "line".to_string());
+        let data = json!({
+            "conversationId": conversation_id,
+            "content": content,
+            "messageType": message_type,
+            "senderType": "agent",
+            "senderId": session.user_id,
+            "platform": platform,
+            "timestamp": now,
+        });
+        let message = json!({
+            "id": message_id,
+            "conversationId": conversation_id,
+            "content": content,
+            "messageType": message_type,
+            "senderType": "agent",
+            "senderId": session.user_id,
+            "senderName": sender_name,
+            "attachments": attachments,
+            "correlationId": body.correlation_id,
+            "createdAt": now,
+        });
+        state.realtime.to_conversation_message(
+            &conversation_id,
+            "new_message",
+            json!({
+                "conversationId": conversation_id,
+                "data": data,
+                "message": message,
+                "timestamp": now,
+            }),
+        );
+        // Best-effort global conversation-list notification so list views
+        // refresh their last-message preview (CRD 1089, 1169, 3970).
+        state.realtime.global(
+            "new_message",
+            json!({
+                "eventId": uuid::Uuid::new_v4().to_string(),
+                "source": "api",
+                "conversationId": conversation_id,
+                "data": data,
+                "priority": "normal",
+                "timestamp": now,
+            }),
+        );
+    }
 
     (
         StatusCode::OK,

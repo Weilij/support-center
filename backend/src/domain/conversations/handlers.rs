@@ -169,9 +169,21 @@ pub async fn assign(
     )
     .await?;
 
-    // TODO(realtime): broadcast `conversation_assigned` to the relevant team
-    // audiences with { conversationId: id, assignedBy: { id, name }, teamId,
-    // teamName, reason, timestamp }; failure is non-fatal (CRD 705, 820).
+    // Realtime: `conversation_assigned` to the conversation audience and to
+    // the receiving team plus administrators (CRD 705, 3455); the cached
+    // agent-access set is invalidated on assignment change (CRD 3258, 646).
+    // Failure is non-fatal: the hub broadcast never returns an error.
+    state.realtime.invalidate_access(&id);
+    let assigned = json!({
+        "conversationId": id,
+        "assignedBy": { "id": user.id, "name": user.display_name },
+        "teamId": team_id,
+        "teamName": team_name,
+        "reason": body.reason,
+        "timestamp": crate::db::now_iso(),
+    });
+    state.realtime.to_conversation(&id, "conversation_assigned", assigned.clone());
+    state.realtime.to_teams_and_admins(&[team_id], "conversation_assigned", assigned);
     let view = reload_view(&state, &id).await?;
     Ok(envelope::ok_msg(view, "Conversation assigned successfully"))
 }
@@ -216,9 +228,21 @@ pub async fn unassign(
     )
     .await?;
 
-    // TODO(realtime): broadcast `conversation_unassigned` (high priority) with
-    // { conversationId: id, previousTeamId: current_team, previousTeamName,
-    //   unassignedBy: { id, name }, reason, timestamp }; non-fatal (CRD 714, 821).
+    // Realtime: `conversation_unassigned` (high priority) to the conversation
+    // audience and to the previous team plus administrators (CRD 714, 3455).
+    state.realtime.invalidate_access(&id);
+    let previous_team_name = store::team_name(&state.db, current_team).await?;
+    let unassigned = json!({
+        "conversationId": id,
+        "previousTeamId": current_team,
+        "previousTeamName": previous_team_name,
+        "unassignedBy": { "id": user.id, "name": user.display_name },
+        "reason": body.reason,
+        "priority": "high",
+        "timestamp": crate::db::now_iso(),
+    });
+    state.realtime.to_conversation(&id, "conversation_unassigned", unassigned.clone());
+    state.realtime.to_teams_and_admins(&[current_team], "conversation_unassigned", unassigned);
     let view = reload_view(&state, &id).await?;
     Ok(envelope::ok_msg(view, "Conversation unassigned successfully"))
 }
@@ -282,11 +306,78 @@ pub async fn transfer(
     )
     .await?;
 
-    // TODO(realtime): broadcast the dual-team transfer notification so both the
-    // losing and gaining teams are informed: conversation summary (id, customer id
-    // and name, platform user id, avatar, platform, status, last-message time,
-    // target team), fromTeamId/fromTeamName, toTeamId/toTeamName, transferredBy,
-    // reason; failure is non-fatal (CRD 722, 822).
+    // Realtime: three-part transfer notification (CRD 722, 3456) — the
+    // previous team is notified of removal (transient), the receiving team
+    // (plus administrators) of assignment with the conversation card, and the
+    // room of the team change. Each fan-out reports independently; failures
+    // are non-fatal.
+    state.realtime.invalidate_access(&id);
+    {
+        let card = match store::find_full(&state.db, &id).await? {
+            Some(c) => json!({
+                "id": c.id,
+                "customerId": c.cust_id,
+                "customerName": c.cust_name,
+                "platformUserId": c.cust_platform_user_id,
+                "avatar": c.cust_avatar,
+                "platform": c.cust_platform,
+                "status": c.status,
+                "lastMessageAt": c.last_message_at,
+                "unreadCount": c.unread_count,
+                "teamId": to_team_id,
+                "teamName": to_team_name,
+            }),
+            None => json!({ "id": id, "teamId": to_team_id, "teamName": to_team_name }),
+        };
+        let transferred_by = json!({ "id": user.id, "name": user.display_name });
+        let from_team = body.from_team_id.or(prior_team);
+        if let Some(from) = from_team {
+            // Removal notices are transient (CRD 3456).
+            state.realtime.to_team(
+                from,
+                "conversation_removed",
+                json!({
+                    "conversationId": id,
+                    "fromTeamId": from,
+                    "fromTeamName": from_team_name,
+                    "toTeamId": to_team_id,
+                    "transferredBy": transferred_by,
+                    "transient": true,
+                    "timestamp": crate::db::now_iso(),
+                }),
+            );
+        }
+        // Assignment notices are persistent (CRD 3456).
+        state.realtime.to_teams_and_admins(
+            &[to_team_id],
+            "conversation_assigned",
+            json!({
+                "conversation": card,
+                "fromTeamId": from_team,
+                "fromTeamName": from_team_name,
+                "toTeamId": to_team_id,
+                "toTeamName": to_team_name,
+                "transferredBy": transferred_by,
+                "reason": body.reason,
+                "persistent": true,
+                "timestamp": crate::db::now_iso(),
+            }),
+        );
+        state.realtime.to_conversation(
+            &id,
+            "conversation_transferred",
+            json!({
+                "conversationId": id,
+                "fromTeamId": from_team,
+                "fromTeamName": from_team_name,
+                "toTeamId": to_team_id,
+                "toTeamName": to_team_name,
+                "transferredBy": transferred_by,
+                "reason": body.reason,
+                "timestamp": crate::db::now_iso(),
+            }),
+        );
+    }
 
     // The full conversation object is not returned by this endpoint (CRD 723).
     Ok(envelope::message_only("Conversation transferred successfully"))
@@ -597,10 +688,36 @@ pub async fn send_message(
         .await?;
     tx.commit().await?;
 
-    // TODO(realtime): broadcast `message_sent` (pending) and the unified
-    // new-message event for list/detail previews, scoped to the conversation's
-    // assigned team to prevent cross-team leakage; failures are non-fatal
-    // (CRD 769, 825-826, 828).
+    // Realtime fan-out (CRD 769, 3449-3450): `message_sent` (pending) to the
+    // conversation's detail audience, and the unified `new_message` event for
+    // list previews scoped to the assigned team plus administrators; when the
+    // conversation is unassigned the global fallback is used (flagged as the
+    // less-secure path, CRD 3449). Failures are non-fatal.
+    {
+        let event_payload = json!({
+            "messageId": &message_id,
+            "conversationId": &id,
+            "content": &content,
+            "messageType": &message_type,
+            "senderType": "agent",
+            "senderId": &sender_id,
+            "senderName": &sender_name,
+            "platform": &conv.cust_platform,
+            "deliveryStatus": "pending",
+            "metadata": &body.metadata,
+            "attachmentIds": &attachment_ids,
+            "timestamp": &now,
+        });
+        state.realtime.to_conversation_message(&id, "message_sent", event_payload.clone());
+        match conv.team_id {
+            Some(team) => {
+                state.realtime.to_teams_and_admins(&[team], "new_message", event_payload);
+            }
+            None => {
+                state.realtime.global("new_message", event_payload);
+            }
+        }
+    }
 
     // Background delivery: returns before delivery is confirmed (CRD 769, 773).
     let mut items: Vec<OutboundItem> = Vec::new();
@@ -624,6 +741,8 @@ pub async fn send_message(
     let recipient = conv.cust_platform_user_id.clone().unwrap_or_default();
     tokio::spawn(channels::deliver_pending(
         state.db.clone(),
+        state.realtime.clone(),
+        id.clone(),
         message_id.clone(),
         platform.clone(),
         recipient,
@@ -846,6 +965,10 @@ pub async fn bulk(
                 }
                 q.execute(&state.db).await?;
             }
+            // Assignment changes invalidate the realtime access cache (CRD 3258).
+            for cid in &ids {
+                state.realtime.invalidate_access(cid);
+            }
         }
         "set_priority" => {
             let priority = data
@@ -903,10 +1026,24 @@ pub async fn bulk(
                     q.execute(&state.db).await?;
                 }
             }
-            // TODO(realtime): emit one `conversation_status_changed` event per
-            // affected conversation (change type "tags_updated") carrying the
-            // label operation, affected tag ids, the updating actor, and a
-            // timestamp; failures are non-fatal (CRD 794, 796, 824).
+            // Realtime: one `conversation_status_changed` event per affected
+            // conversation (change type "tags_updated") carrying the label
+            // operation, affected tag ids, the updating actor and a timestamp
+            // (CRD 794, 796, 3455); failures are non-fatal.
+            for cid in &ids {
+                state.realtime.to_conversation(
+                    cid,
+                    "conversation_status_changed",
+                    json!({
+                        "conversationId": cid,
+                        "changeType": "tags_updated",
+                        "operation": op,
+                        "tagIds": &tag_ids,
+                        "updatedBy": { "id": user.id, "name": user.display_name },
+                        "timestamp": crate::db::now_iso(),
+                    }),
+                );
+            }
         }
         "close" | "reopen" => {
             // Explicitly rejected as no-longer-supported (CRD 792, 816).
