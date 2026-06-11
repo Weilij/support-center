@@ -247,6 +247,45 @@ impl TestApp {
         .unwrap();
     }
 
+    /// Insert an audit-trail entry directly and return its numeric id. Actor name and
+    /// role are derived from the agents table when present.
+    pub async fn seed_activity(
+        &self,
+        agent_id: &str,
+        action: &str,
+        resource_type: &str,
+        resource_id: Option<&str>,
+        details: Option<Value>,
+        created_at: Option<&str>,
+    ) -> i64 {
+        let actor: Option<(String, String)> =
+            sqlx::query_as("SELECT display_name, role FROM agents WHERE id = ?")
+                .bind(agent_id)
+                .fetch_optional(&self.state.db)
+                .await
+                .unwrap();
+        let (name, role) =
+            actor.unwrap_or_else(|| ("seed user".to_string(), "agent".to_string()));
+        sqlx::query(
+            "INSERT INTO activity_logs (agent_id, agent_name, agent_role, action, resource_type, resource_id, details, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(agent_id)
+        .bind(name)
+        .bind(role)
+        .bind(action)
+        .bind(resource_type)
+        .bind(resource_id)
+        .bind(details.map(|d| d.to_string()))
+        .bind(created_at.map(str::to_string).unwrap_or_else(|| {
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        }))
+        .execute(&self.state.db)
+        .await
+        .unwrap()
+        .last_insert_rowid()
+    }
+
     /// Login and return (accessToken, refreshToken, sessionId).
     pub async fn login(&self, email: &str, password: &str) -> (String, String, String) {
         let (status, body, _) = self
