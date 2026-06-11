@@ -17,6 +17,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .merge(crate::domain::auth::routes(state.clone()))
         .merge(crate::domain::tags::routes(state.clone()))
         .merge(crate::domain::customers::routes(state.clone()))
+        .merge(crate::domain::teams::routes(state.clone()))
+        .merge(crate::domain::agents::routes(state.clone()))
         .fallback(unknown_route)
         .layer(axum_mw::from_fn(
             crate::middleware::security_headers::security_headers_layer,

@@ -60,12 +60,63 @@ impl LastActiveDebounce {
     }
 }
 
+/// Transient prior-state capture for a member batch edit (CRD 2000-2009).
+/// Tokens are advertised for ~10 seconds and retained server-side ~60 seconds.
+pub struct BatchUndoEntry {
+    pub user_id: String,
+    pub created: Instant,
+    pub snapshot: serde_json::Value,
+}
+
+pub const BATCH_UNDO_RETENTION: std::time::Duration = std::time::Duration::from_secs(60);
+
+#[derive(Default)]
+pub struct BatchUndoStore {
+    entries: Mutex<HashMap<String, BatchUndoEntry>>,
+}
+
+impl BatchUndoStore {
+    pub fn put(&self, token: &str, user_id: &str, snapshot: serde_json::Value) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.retain(|_, e| e.created.elapsed() < BATCH_UNDO_RETENTION);
+            entries.insert(
+                token.to_string(),
+                BatchUndoEntry { user_id: user_id.to_string(), created: Instant::now(), snapshot },
+            );
+        }
+    }
+
+    /// Removes and returns the entry when it exists and is unexpired.
+    pub fn take(&self, token: &str) -> Option<(String, serde_json::Value)> {
+        let mut entries = self.entries.lock().ok()?;
+        let entry = entries.get(token)?;
+        if entry.created.elapsed() >= BATCH_UNDO_RETENTION {
+            entries.remove(token);
+            return None;
+        }
+        // Ownership is checked by the caller; only remove on consumption.
+        let e = entries.remove(token)?;
+        Some((e.user_id, e.snapshot))
+    }
+
+    /// Re-insert an entry (used when an undo attempt is rejected for ownership).
+    pub fn restore(&self, token: &str, user_id: String, snapshot: serde_json::Value) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.insert(
+                token.to_string(),
+                BatchUndoEntry { user_id, created: Instant::now(), snapshot },
+            );
+        }
+    }
+}
+
 pub struct AppState {
     pub db: SqlitePool,
     pub config: Config,
     pub rate_limiter: Arc<RateLimiter>,
     pub team_cache: TeamCache,
     pub last_active: LastActiveDebounce,
+    pub batch_undo: BatchUndoStore,
 }
 
 impl AppState {
@@ -76,6 +127,7 @@ impl AppState {
             rate_limiter: Arc::new(RateLimiter::default()),
             team_cache: TeamCache::default(),
             last_active: LastActiveDebounce::default(),
+            batch_undo: BatchUndoStore::default(),
         })
     }
 }

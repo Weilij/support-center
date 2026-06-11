@@ -88,6 +88,34 @@ impl TestApp {
         (status, json, headers)
     }
 
+    /// Send a request whose body is a raw (possibly malformed) string with a JSON
+    /// content type.
+    pub async fn request_raw(
+        &self,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        raw_body: &str,
+    ) -> (StatusCode, Value) {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("Content-Type", "application/json");
+        if let Some(t) = token {
+            builder = builder.header("Authorization", format!("Bearer {t}"));
+        }
+        let request = builder.body(Body::from(raw_body.to_string())).unwrap();
+        let resp = self.router.clone().oneshot(request).await.unwrap();
+        let status = resp.status();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: Value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        };
+        (status, json)
+    }
+
     /// Insert an agent directly and return its id.
     pub async fn seed_agent(&self, email: &str, password: &str, role: &str) -> String {
         let id = uuid::Uuid::new_v4().to_string();

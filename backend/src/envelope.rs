@@ -49,6 +49,35 @@ pub fn with_status(status: StatusCode, data: Option<Value>, message: Option<&str
     (status, Json(body)).into_response()
 }
 
+/// Success envelope whose `pagination` block sits beside `data` (teams/agents listings,
+/// CRD 1828, 2168).
+pub fn ok_with_pagination(items: Vec<Value>, page: i64, limit: i64, total: i64) -> Response {
+    let total_pages = if total == 0 { 0 } else { (total + limit - 1) / limit };
+    let body = json!({
+        "success": true,
+        "data": items,
+        "pagination": { "page": page, "limit": limit, "total": total, "totalPages": total_pages },
+        "timestamp": now_iso(),
+        "requestId": request_id(),
+    });
+    (StatusCode::OK, Json(body)).into_response()
+}
+
+/// 200 envelope whose top-level `success` flag is caller-controlled (used by operations
+/// whose overall success mirrors per-item outcomes, CRD 1886, 1922, 2185).
+pub fn flagged(success: bool, data: Value, message: Option<&str>) -> Response {
+    let mut body = json!({
+        "success": success,
+        "data": data,
+        "timestamp": now_iso(),
+        "requestId": request_id(),
+    });
+    if let Some(m) = message {
+        body["message"] = json!(m);
+    }
+    (StatusCode::OK, Json(body)).into_response()
+}
+
 /// Pagination clamping per CRD line 5663: out-of-range values are clamped, not rejected.
 /// Defaults: page 1, size 20; size 1..=100; page 1..=1000.
 pub fn clamp_page(page: Option<i64>, page_size: Option<i64>) -> (i64, i64) {
