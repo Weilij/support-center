@@ -110,6 +110,41 @@ impl BatchUndoStore {
     }
 }
 
+/// Fast-lookup recallability markers for pending delayed messages (CRD 987,
+/// 1014): present while an item is still cancellable, expiring shortly after
+/// its scheduled send time.
+#[derive(Default)]
+pub struct RecallableMarkers {
+    entries: Mutex<HashMap<String, Instant>>, // value = expiry instant
+}
+
+impl RecallableMarkers {
+    pub fn mark(&self, id: &str, ttl: std::time::Duration) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.retain(|_, expiry| *expiry > Instant::now());
+            entries.insert(id.to_string(), Instant::now() + ttl);
+        }
+    }
+
+    pub fn is_recallable(&self, id: &str) -> bool {
+        let Ok(mut entries) = self.entries.lock() else { return false };
+        match entries.get(id) {
+            Some(expiry) if *expiry > Instant::now() => true,
+            Some(_) => {
+                entries.remove(id);
+                false
+            }
+            None => false,
+        }
+    }
+
+    pub fn clear(&self, id: &str) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.remove(id);
+        }
+    }
+}
+
 pub struct AppState {
     pub db: SqlitePool,
     pub config: Config,
@@ -117,6 +152,7 @@ pub struct AppState {
     pub team_cache: TeamCache,
     pub last_active: LastActiveDebounce,
     pub batch_undo: BatchUndoStore,
+    pub recallable_messages: RecallableMarkers,
 }
 
 impl AppState {
@@ -128,6 +164,7 @@ impl AppState {
             team_cache: TeamCache::default(),
             last_active: LastActiveDebounce::default(),
             batch_undo: BatchUndoStore::default(),
+            recallable_messages: RecallableMarkers::default(),
         })
     }
 }
