@@ -25,6 +25,8 @@ argon2 = "0.5"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 aes-gcm = "0.10"
+hmac = "0.12"
+sha2 = "0.10"
 rand = "0.8"
 thiserror = "2"
 tracing = "0.1"

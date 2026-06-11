@@ -63,8 +63,13 @@ pub async fn disconnect(
     };
     let is_admin = outcome.identity.role == "admin";
     // Best-effort, mutually exclusive cleanup (CRD 3274, 3278): the hub lock
-    // serializes concurrent attempts; an unknown id is a no-op.
-    state.realtime.remove_connection(connection_id, &outcome.identity.user_id, is_admin);
+    // serializes concurrent attempts; an unknown id is a no-op. The final
+    // user-state snapshot is re-persisted when this was the last session.
+    if let Some(snapshot) =
+        state.realtime.remove_connection(connection_id, &outcome.identity.user_id, is_admin)
+    {
+        super::user_sessions::persist_snapshot(&state.db, &snapshot).await;
+    }
     envelope::ok(json!({
         "connectionId": connection_id,
         "disconnectedAt": crate::db::now_iso(),

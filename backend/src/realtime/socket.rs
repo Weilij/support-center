@@ -60,6 +60,11 @@ pub async fn connect(
         }
     };
 
+    // Restore the persisted per-user realtime state (subscriptions,
+    // preferences, statistics) before registering so the welcome event
+    // reflects it across reconnects (CRD 3812-3815).
+    super::user_sessions::hydrate(&state, &outcome.identity.user_id).await;
+
     // Connection ceilings are enforced before accepting (CRD 3241, 3256).
     let conversation_id = q.conversation_id.filter(|c| !c.is_empty());
     let registration = match state.realtime.register(
@@ -104,7 +109,9 @@ pub async fn connect(
 
 /// Drive one accepted socket: forward hub broadcasts out, dispatch inbound
 /// frames, force-close at credential expiry (CRD 3242, 3431), reap on idle.
-async fn run_socket(
+/// Shared by the gateway connect, the conversation-room endpoint (§5.2) and
+/// the user-session endpoint (§5.3).
+pub(crate) async fn run_socket(
     state: Arc<AppState>,
     socket: WebSocket,
     registration: super::hub::Registration,
@@ -216,7 +223,11 @@ async fn run_socket(
         }
     }
 
-    state.realtime.unregister(&connection_id);
+    // On the user's last connection the final state snapshot (offline,
+    // last-seen refreshed) is re-persisted (CRD 3824, 3828).
+    if let Some(snapshot) = state.realtime.unregister(&connection_id) {
+        super::user_sessions::persist_snapshot(&state.db, &snapshot).await;
+    }
 }
 
 /// Send an error frame to one connection (CRD 3411, 3690).
@@ -262,24 +273,28 @@ async fn handle_frame(
             send_event(state, connection_id, "pong", json!({ "echo": echo }));
         }
 
-        // Subscribe / unsubscribe (CRD 3413). In rooms these are accepted
-        // no-ops (membership is implicit); on the personal channel subscribe
-        // is permission-checked and capped.
+        // Subscribe / unsubscribe (CRD 3413, 3548). In full-mode rooms these
+        // are accepted no-ops (membership is implicit); in simplified rooms
+        // they are ignored entirely (CRD 3548); on the personal channel
+        // subscribe is permission-checked and capped.
         "subscribe" => {
+            if let Some(cid) = room {
+                if state.realtime.room_mode(cid) != "simplified" {
+                    send_event(
+                        state,
+                        connection_id,
+                        "subscription_added",
+                        json!({ "conversationId": field_str(&v, "conversationId") }),
+                    );
+                }
+                return;
+            }
             let Some(cid) = field_str(&v, "conversationId").map(str::to_string) else {
                 send_error(state, connection_id, "Conversation ID is required");
                 return;
             };
-            if room.is_some() {
-                send_event(
-                    state,
-                    connection_id,
-                    "subscription_added",
-                    json!({ "conversationId": cid }),
-                );
-                return;
-            }
-            if !can_view_conversation(state, identity, &cid).await {
+            let team_ids = identity.team_ids.clone();
+            if !can_view(state, &identity.user_id, &identity.role, &team_ids, &cid).await {
                 send_error(
                     state,
                     connection_id,
@@ -288,41 +303,58 @@ async fn handle_frame(
                 return;
             }
             match state.realtime.subscribe(&identity.user_id, &cid) {
-                Some(count) => send_event(
-                    state,
-                    connection_id,
-                    "subscription_added",
-                    json!({ "conversationId": cid, "subscriptionCount": count }),
-                ),
+                Some(count) => {
+                    // The followed set is persisted so it survives reconnects
+                    // (CRD 3802, 3812).
+                    super::user_sessions::persist_user(state, &identity.user_id).await;
+                    send_event(
+                        state,
+                        connection_id,
+                        "subscription_added",
+                        json!({ "conversationId": cid, "subscriptionCount": count }),
+                    )
+                }
                 None => send_error(state, connection_id, "Maximum subscriptions reached"),
             }
         }
         "unsubscribe" => {
+            if let Some(cid) = room {
+                if state.realtime.room_mode(cid) != "simplified" {
+                    send_event(
+                        state,
+                        connection_id,
+                        "subscription_removed",
+                        json!({ "conversationId": field_str(&v, "conversationId") }),
+                    );
+                }
+                return;
+            }
             let Some(cid) = field_str(&v, "conversationId").map(str::to_string) else {
                 send_error(state, connection_id, "Conversation ID is required");
                 return;
             };
-            if room.is_none() {
-                let count = state.realtime.unsubscribe(&identity.user_id, &cid);
-                send_event(
-                    state,
-                    connection_id,
-                    "subscription_removed",
-                    json!({ "conversationId": cid, "subscriptionCount": count }),
-                );
-            } else {
-                send_event(
-                    state,
-                    connection_id,
-                    "subscription_removed",
-                    json!({ "conversationId": cid }),
-                );
-            }
+            let count = state.realtime.unsubscribe(&identity.user_id, &cid);
+            super::user_sessions::persist_user(state, &identity.user_id).await;
+            send_event(
+                state,
+                connection_id,
+                "subscription_removed",
+                json!({ "conversationId": cid, "subscriptionCount": count }),
+            );
         }
 
         // Chat message (CRD 3414, 3555-3567).
         "message" => match room {
             Some(cid) => {
+                // Full mode requires a recognized staff role; simplified mode
+                // performs no permission check (CRD 3557).
+                if state.realtime.room_mode(cid) != "simplified"
+                    && identity.role != "admin"
+                    && identity.role != "agent"
+                {
+                    send_error(state, connection_id, "Permission denied to send messages");
+                    return;
+                }
                 let message_type =
                     field_str(&v, "messageType").unwrap_or("text").to_string();
                 // Typing indicators are relayed to other participants only,
@@ -387,8 +419,14 @@ async fn handle_frame(
         },
 
         // Event frames: typing start/stop relayed; others acknowledged
-        // (CRD 3415, 3550, 3805).
+        // (CRD 3415, 3550, 3805). Generic events are full-mode only in
+        // conversation rooms (CRD 3550).
         "event" => {
+            if let Some(cid) = room {
+                if state.realtime.room_mode(cid) == "simplified" {
+                    return;
+                }
+            }
             let subtype = field_str(&v, "event")
                 .or_else(|| field_str(&v, "eventType"))
                 .or_else(|| v.get("payload").and_then(|p| p.get("type")).and_then(Value::as_str))
@@ -418,9 +456,13 @@ async fn handle_frame(
             }
         }
 
-        // Reconnection sync (conversation room only, CRD 3416).
+        // Reconnection sync (full-mode conversation rooms only, CRD 3416,
+        // 3551, 3569-3572). Ignored in simplified rooms.
         "sync" => match room {
             Some(cid) => {
+                if state.realtime.room_mode(cid) == "simplified" {
+                    return;
+                }
                 let since = field_str(&v, "since").map(str::to_string);
                 let (missed, last_message_at) =
                     state.realtime.sync_since(cid, since.as_deref());
@@ -447,18 +489,24 @@ async fn handle_frame(
     }
 }
 
-/// Personal-channel subscribe permission (CRD 3413): admins always; agents for
-/// conversations assigned to one of their teams or in the unassigned shared
-/// pool — the same accessible set the connection gate uses (CRD 3240).
-async fn can_view_conversation(
+/// Subscribe "view" permission (CRD 3724, 3802, 3816): administrators may view
+/// any conversation; a conversation assigned to an owning team is viewable
+/// only by that team's members; an unassigned conversation grants "read" but
+/// NOT "view", so subscribing to it is denied; a missing conversation or any
+/// evaluation error denies (fail-closed). Decisions are cached briefly under a
+/// view-specific key so they never mix with the gate's broader "read" cache.
+pub(crate) async fn can_view(
     state: &Arc<AppState>,
-    identity: &ConnIdentity,
+    user_id: &str,
+    role: &str,
+    team_ids: &[i64],
     conversation_id: &str,
 ) -> bool {
-    if identity.role == "admin" {
+    if role == "admin" {
         return true;
     }
-    if let Some(allowed) = state.realtime.cached_access(&identity.user_id, conversation_id) {
+    let cache_key = format!("view:{user_id}");
+    if let Some(allowed) = state.realtime.cached_access(&cache_key, conversation_id) {
         return allowed;
     }
     let team: Option<Option<i64>> =
@@ -468,10 +516,11 @@ async fn can_view_conversation(
             .await
             .unwrap_or(None);
     let allowed = match team {
-        Some(None) => true,
-        Some(Some(team_id)) => identity.team_ids.contains(&team_id),
+        // Unassigned: read-style access only, view denied (CRD 3816).
+        Some(None) => false,
+        Some(Some(team_id)) => team_ids.contains(&team_id),
         None => false,
     };
-    state.realtime.cache_access(&identity.user_id, conversation_id, allowed);
+    state.realtime.cache_access(&cache_key, conversation_id, allowed);
     allowed
 }

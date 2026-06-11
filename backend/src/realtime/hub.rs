@@ -55,22 +55,72 @@ struct ConnEntry {
     tx: mpsc::UnboundedSender<String>,
 }
 
-#[derive(Default)]
+/// Authentication challenge lifetime (CRD 3515: 30 seconds).
+pub const CHALLENGE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Single-use room authentication challenge (CRD 3511-3518, 3666).
+#[derive(Clone)]
+pub struct Challenge {
+    pub user_id: String,
+    pub role: String,
+    pub display_name: String,
+    /// The originating credential the signature is keyed against (CRD 3666).
+    pub token: String,
+    pub token_exp: i64,
+    expires: Instant,
+}
+
 struct RoomState {
+    /// "full" | "simplified" — set at room creation (CRD 3479).
+    mode: String,
     /// Monotonically increasing in-room message order counter (CRD 3559).
     seq: u64,
     /// Bounded recent-message history used for reconnection sync (CRD 3562).
     history: VecDeque<Value>,
     last_message_at: Option<String>,
+    last_activity: String,
+    created: Instant,
+    /// Outstanding single-use authentication challenges (full mode, CRD 3665).
+    challenges: HashMap<String, Challenge>,
+}
+
+impl Default for RoomState {
+    fn default() -> Self {
+        Self {
+            mode: "full".into(),
+            seq: 0,
+            history: VecDeque::new(),
+            last_message_at: None,
+            last_activity: crate::db::now_iso(),
+            created: Instant::now(),
+            challenges: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Default)]
 struct UserState {
     subscriptions: HashSet<String>,
+    /// Presence flag (CRD 3820): live sessions imply online; a heartbeat also
+    /// marks the user online explicitly (CRD 3825).
+    online: bool,
+    last_seen: Option<String>,
     total_sessions: u64,
     messages_sent: u64,
+    messages_received: u64,
     conversations_joined: u64,
     preferences: Option<Value>,
+}
+
+impl UserState {
+    fn stats_json(&self) -> Value {
+        json!({
+            "totalSessions": self.total_sessions,
+            "messagesSent": self.messages_sent,
+            "messagesReceived": self.messages_received,
+            "conversationsJoined": self.conversations_joined,
+        })
+    }
 }
 
 fn default_preferences() -> Value {
@@ -146,6 +196,9 @@ pub enum RegisterError {
 pub struct RealtimeHub {
     inner: Mutex<HubInner>,
     config: Mutex<GatewayConfig>,
+    /// Routed-delivery queues, reachability registry & distribution statistics
+    /// (CRD §5.2 lines 3581-3660).
+    pub queue: super::broadcaster::BroadcastQueue,
     started: Instant,
 }
 
@@ -165,6 +218,7 @@ impl RealtimeHub {
         Self {
             inner: Mutex::new(HubInner::default()),
             config: Mutex::new(GatewayConfig::default()),
+            queue: super::broadcaster::BroadcastQueue::default(),
             started: Instant::now(),
         }
     }
@@ -239,6 +293,8 @@ impl RealtimeHub {
 
         let user = inner.users.entry(identity.user_id.clone()).or_default();
         user.total_sessions += 1;
+        user.online = true;
+        user.last_seen = Some(crate::db::now_iso());
         if user.preferences.is_none() {
             user.preferences = Some(default_preferences());
         }
@@ -256,8 +312,20 @@ impl RealtimeHub {
                         .map(|c| c.identity.user_id.clone())
                         .collect()
                 };
-                let last_message_at =
-                    inner.rooms.get(cid).and_then(|r| r.last_message_at.clone());
+                // The welcome's last-message timestamp reflects stored history
+                // in full mode and is null in simplified mode (CRD 3498).
+                let (mode, last_message_at) = inner
+                    .rooms
+                    .get(cid)
+                    .map(|r| {
+                        let last = if r.mode == "simplified" {
+                            None
+                        } else {
+                            r.last_message_at.clone()
+                        };
+                        (r.mode.clone(), last)
+                    })
+                    .unwrap_or(("full".into(), None));
                 // Welcome event to the new socket only (CRD 3441, 3683).
                 let welcome = frame(
                     "connection_established",
@@ -265,7 +333,7 @@ impl RealtimeHub {
                         "conversationId": cid,
                         "connectionId": connection_id,
                         "participants": participants,
-                        "roomMode": "full",
+                        "roomMode": mode,
                         "lastMessageAt": last_message_at,
                     }),
                 );
@@ -295,11 +363,7 @@ impl RealtimeHub {
                     (
                         u.subscriptions.iter().cloned().collect::<Vec<_>>(),
                         u.preferences.clone().unwrap_or_else(default_preferences),
-                        json!({
-                            "totalSessions": u.total_sessions,
-                            "messagesSent": u.messages_sent,
-                            "conversationsJoined": u.conversations_joined,
-                        }),
+                        u.stats_json(),
                     )
                 };
                 // Personal-channel welcome (CRD 3442, 3833).
@@ -329,9 +393,12 @@ impl RealtimeHub {
     }
 
     /// Remove a connection (socket close, error, forced disconnect, reap).
-    pub fn unregister(&self, connection_id: &str) {
+    /// When this was the user's last live connection the user's final state
+    /// snapshot (offline, last-seen refreshed) is returned so the caller can
+    /// re-persist it (CRD 3828).
+    pub fn unregister(&self, connection_id: &str) -> Option<Value> {
         let mut inner = self.inner.lock().expect("hub lock");
-        let Some(entry) = inner.conns.remove(connection_id) else { return };
+        let entry = inner.conns.remove(connection_id)?;
         let identity = entry.identity.clone();
 
         // user_left fires once per user departure from the room (CRD 3577).
@@ -366,37 +433,60 @@ impl RealtimeHub {
             }
         }
 
-        // Last connection overall => offline + state removed (CRD 3428, 3431).
+        // Last connection overall => offline + state evicted from memory after
+        // taking a final snapshot for persistence (CRD 3428, 3431, 3824, 3828).
         let user_still_connected =
             inner.conns.values().any(|c| c.identity.user_id == identity.user_id);
         if !user_still_connected {
-            inner.users.remove(&identity.user_id);
+            let snapshot = inner.users.remove(&identity.user_id).map(|mut u| {
+                u.online = false;
+                u.last_seen = Some(crate::db::now_iso());
+                Self::user_snapshot_json(&identity.user_id, &u, 0)
+            });
             Self::presence_locked(&inner, &identity, "offline");
+            return snapshot;
         }
+        None
     }
 
-    /// Forced removal by the disconnect endpoint (CRD 3270-3278). Only the
-    /// owning account (or an administrator) may remove a connection.
-    pub fn remove_connection(&self, connection_id: &str, caller: &str, caller_is_admin: bool) -> bool {
+    /// Forced removal by the disconnect endpoints (CRD 3270-3278, 3524-3528).
+    /// Only the owning account (or an administrator) may remove a connection;
+    /// anything else is a no-op. Returns the final user-state snapshot when
+    /// the user's last connection was removed (for persistence).
+    pub fn remove_connection(
+        &self,
+        connection_id: &str,
+        caller: &str,
+        caller_is_admin: bool,
+    ) -> Option<Value> {
         let owned = {
             let inner = self.inner.lock().expect("hub lock");
             match inner.conns.get(connection_id) {
                 Some(c) => caller_is_admin || c.identity.user_id == caller,
-                None => return false,
+                None => return None,
             }
         };
         if !owned {
-            return false;
+            return None;
         }
-        self.unregister(connection_id);
-        true
+        self.unregister(connection_id)
     }
 
-    /// Refresh a connection's last-activity timestamp (CRD 3545).
+    /// Refresh a connection's (and its room's) last-activity timestamp
+    /// (CRD 3545).
     pub fn touch(&self, connection_id: &str) {
         if let Ok(mut inner) = self.inner.lock() {
-            if let Some(c) = inner.conns.get_mut(connection_id) {
-                c.last_activity = Instant::now();
+            let room = match inner.conns.get_mut(connection_id) {
+                Some(c) => {
+                    c.last_activity = Instant::now();
+                    c.conversation_id.clone()
+                }
+                None => None,
+            };
+            if let Some(cid) = room {
+                if let Some(r) = inner.rooms.get_mut(&cid) {
+                    r.last_activity = crate::db::now_iso();
+                }
             }
         }
     }
@@ -527,11 +617,18 @@ impl RealtimeHub {
             let mut inner = self.inner.lock().expect("hub lock");
             let room = inner.rooms.entry(conversation_id.to_string()).or_default();
             room.last_message_at = Some(crate::db::now_iso());
-            room.history.push_back(payload.clone());
-            while room.history.len() > ROOM_HISTORY_CAP {
-                room.history.pop_front();
+            room.last_activity = crate::db::now_iso();
+            // Simplified rooms keep no recent-message history (CRD 3562, 3571).
+            if room.mode != "simplified" {
+                room.history.push_back(payload.clone());
+                while room.history.len() > ROOM_HISTORY_CAP {
+                    room.history.pop_front();
+                }
             }
         }
+        // TODO(scale-out): cross-instance propagation of the message to other
+        // instances serving this conversation (CRD 3542, 3564) — single-process
+        // delivery below already reaches every local participant exactly once.
         self.to_conversation(conversation_id, event, payload)
     }
 
@@ -631,6 +728,135 @@ impl RealtimeHub {
         (missed, room.last_message_at.clone())
     }
 
+    // ------------------------------------------------ conversation rooms (§5.2)
+
+    /// Create the room if absent, fixing its mode at creation time
+    /// (CRD 3479: full vs simplified, set once). Returns the effective mode.
+    pub fn ensure_room(&self, conversation_id: &str, mode: Option<&str>) -> String {
+        let mut inner = self.inner.lock().expect("hub lock");
+        let room = inner.rooms.entry(conversation_id.to_string()).or_insert_with(|| {
+            let mut r = RoomState::default();
+            if mode == Some("simplified") {
+                r.mode = "simplified".into();
+            }
+            r
+        });
+        room.mode.clone()
+    }
+
+    /// The room's mode; rooms default to full-featured (CRD 3479).
+    pub fn room_mode(&self, conversation_id: &str) -> String {
+        let inner = self.inner.lock().expect("hub lock");
+        inner
+            .rooms
+            .get(conversation_id)
+            .map(|r| r.mode.clone())
+            .unwrap_or_else(|| "full".into())
+    }
+
+    fn room_participants_locked(inner: &HubInner, conversation_id: &str) -> (Vec<String>, usize) {
+        let mut seen = HashSet::new();
+        let mut conns = 0usize;
+        let mut participants = Vec::new();
+        for c in inner.conns.values() {
+            if c.conversation_id.as_deref() == Some(conversation_id) {
+                conns += 1;
+                if seen.insert(c.identity.user_id.clone()) {
+                    participants.push(c.identity.user_id.clone());
+                }
+            }
+        }
+        (participants, conns)
+    }
+
+    /// Participant listing for the room HTTP surface (CRD 3536-3537).
+    pub fn room_info(&self, conversation_id: &str) -> Value {
+        let inner = self.inner.lock().expect("hub lock");
+        let (participants, conns) = Self::room_participants_locked(&inner, conversation_id);
+        json!({
+            "participants": participants,
+            "activeConnections": conns,
+            "lastActivity": inner.rooms.get(conversation_id).map(|r| r.last_activity.clone()),
+        })
+    }
+
+    /// Room metrics (CRD 3539-3540): full mode additionally reports history
+    /// length and an uptime estimate.
+    pub fn room_metrics_snapshot(&self, conversation_id: &str) -> Value {
+        let inner = self.inner.lock().expect("hub lock");
+        let (participants, conns) = Self::room_participants_locked(&inner, conversation_id);
+        let room = inner.rooms.get(conversation_id);
+        let mode = room.map(|r| r.mode.clone()).unwrap_or_else(|| "full".into());
+        let mut out = json!({
+            "conversationId": conversation_id,
+            "mode": mode,
+            "activeConnections": conns,
+            "participantCount": participants.len(),
+            "messageSequence": room.map(|r| r.seq).unwrap_or(0),
+            "lastActivity": room.map(|r| r.last_activity.clone()),
+            "active": conns > 0,
+        });
+        if mode != "simplified" {
+            out["historyLength"] = json!(room.map(|r| r.history.len()).unwrap_or(0));
+            out["uptimeSeconds"] =
+                json!(room.map(|r| r.created.elapsed().as_secs()).unwrap_or(0));
+        }
+        out
+    }
+
+    /// Deliver a fully-formed injected event to every active connection in
+    /// the room as an event frame (CRD 3530-3534).
+    pub fn room_broadcast_raw(&self, conversation_id: &str, event: Value) -> usize {
+        let event_type =
+            event.get("type").and_then(Value::as_str).unwrap_or("event").to_string();
+        self.fan_out(
+            |c| c.conversation_id.as_deref() == Some(conversation_id),
+            &event_type,
+            event,
+        )
+    }
+
+    /// Issue a single-use authentication challenge bound to the resolved
+    /// identity and originating credential (CRD 3511-3518). Expired challenges
+    /// are purged opportunistically.
+    pub fn create_challenge(
+        &self,
+        conversation_id: &str,
+        user_id: &str,
+        role: &str,
+        display_name: &str,
+        token: &str,
+        token_exp: i64,
+    ) -> (String, String) {
+        let mut inner = self.inner.lock().expect("hub lock");
+        let room = inner.rooms.entry(conversation_id.to_string()).or_default();
+        room.challenges.retain(|_, c| c.expires > Instant::now());
+        let id = uuid::Uuid::new_v4().to_string();
+        room.challenges.insert(
+            id.clone(),
+            Challenge {
+                user_id: user_id.to_string(),
+                role: role.to_string(),
+                display_name: display_name.to_string(),
+                token: token.to_string(),
+                token_exp,
+                expires: Instant::now() + CHALLENGE_TTL,
+            },
+        );
+        let expires_at = (chrono::Utc::now() + chrono::Duration::from_std(CHALLENGE_TTL).unwrap())
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        (id, expires_at)
+    }
+
+    /// Consume a challenge: single-use, expired challenges are deleted on
+    /// access and verify as absent (CRD 3518, 3676).
+    pub fn consume_challenge(&self, conversation_id: &str, challenge_id: &str) -> Option<Challenge> {
+        let mut inner = self.inner.lock().expect("hub lock");
+        let room = inner.rooms.get_mut(conversation_id)?;
+        let challenge = room.challenges.remove(challenge_id)?;
+        (challenge.expires > Instant::now()).then_some(challenge)
+    }
+
     // ------------------------------------------------------- subscriptions
 
     /// Subscribe a user's personal channel to a conversation (CRD 3413).
@@ -671,6 +897,117 @@ impl RealtimeHub {
         }
     }
 
+    pub fn note_messages_received(&self, user_id: &str, count: u64) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.users.entry(user_id.to_string()).or_default().messages_received += count;
+        }
+    }
+
+    // -------------------------------------------- per-user state (§5.3)
+
+    /// Whether the user's realtime state is currently held in memory.
+    pub fn has_user_state(&self, user_id: &str) -> bool {
+        self.inner.lock().map(|i| i.users.contains_key(user_id)).unwrap_or(false)
+    }
+
+    /// Restore a persisted user-state snapshot (CRD 3812-3815). A no-op when
+    /// in-memory state already exists (live sessions are authoritative).
+    pub fn hydrate_user(
+        &self,
+        user_id: &str,
+        last_seen: Option<String>,
+        subscriptions: Vec<String>,
+        preferences: Option<Value>,
+        stats: Option<&Value>,
+    ) {
+        let Ok(mut inner) = self.inner.lock() else { return };
+        if inner.users.contains_key(user_id) {
+            return;
+        }
+        let stat = |key: &str| {
+            stats.and_then(|s| s.get(key)).and_then(Value::as_u64).unwrap_or(0)
+        };
+        inner.users.insert(
+            user_id.to_string(),
+            UserState {
+                subscriptions: subscriptions.into_iter().collect(),
+                online: false,
+                last_seen,
+                total_sessions: stat("totalSessions"),
+                messages_sent: stat("messagesSent"),
+                messages_received: stat("messagesReceived"),
+                conversations_joined: stat("conversationsJoined"),
+                preferences,
+            },
+        );
+    }
+
+    fn user_snapshot_json(user_id: &str, user: &UserState, session_count: usize) -> Value {
+        json!({
+            "userId": user_id,
+            "online": user.online,
+            "lastSeen": user.last_seen,
+            "sessionCount": session_count,
+            "subscriptions": user.subscriptions.iter().cloned().collect::<Vec<_>>(),
+            "preferences": user.preferences.clone().unwrap_or_else(default_preferences),
+            "stats": user.stats_json(),
+        })
+    }
+
+    /// Consolidated per-user state snapshot (CRD 3765, 3815): identity, online
+    /// flag, last-seen, live-session count, followed conversations, preferences
+    /// and activity statistics.
+    pub fn user_state_snapshot(&self, user_id: &str) -> Value {
+        let inner = self.inner.lock().expect("hub lock");
+        let sessions =
+            inner.conns.values().filter(|c| c.identity.user_id == user_id).count();
+        match inner.users.get(user_id) {
+            Some(u) => Self::user_snapshot_json(user_id, u, sessions),
+            None => Self::user_snapshot_json(user_id, &UserState::default(), sessions),
+        }
+    }
+
+    /// Presence heartbeat (CRD 3743-3748): marks the user online and refreshes
+    /// last-seen. Returns (online, lastSeen).
+    pub fn heartbeat(&self, user_id: &str) -> (bool, String) {
+        let mut inner = self.inner.lock().expect("hub lock");
+        let user = inner.users.entry(user_id.to_string()).or_default();
+        user.online = true;
+        let now = crate::db::now_iso();
+        user.last_seen = Some(now.clone());
+        (true, now)
+    }
+
+    /// Current notification preferences (defaults when never set, CRD 3813).
+    pub fn preferences(&self, user_id: &str) -> Value {
+        let inner = self.inner.lock().expect("hub lock");
+        inner
+            .users
+            .get(user_id)
+            .and_then(|u| u.preferences.clone())
+            .unwrap_or_else(default_preferences)
+    }
+
+    /// Shallow-merge supplied preference fields over the current preferences
+    /// (CRD 3755-3759); returns the merged result.
+    pub fn merge_preferences(&self, user_id: &str, patch: &Value) -> Value {
+        let mut inner = self.inner.lock().expect("hub lock");
+        let user = inner.users.entry(user_id.to_string()).or_default();
+        let mut current = user.preferences.clone().unwrap_or_else(default_preferences);
+        if let (Some(cur), Some(new)) = (current.as_object_mut(), patch.as_object()) {
+            for (k, v) in new {
+                cur.insert(k.clone(), v.clone());
+            }
+        }
+        user.preferences = Some(current.clone());
+        current
+    }
+
+    pub fn subscription_count(&self, user_id: &str) -> usize {
+        let inner = self.inner.lock().expect("hub lock");
+        inner.users.get(user_id).map(|u| u.subscriptions.len()).unwrap_or(0)
+    }
+
     // --------------------------------------------------- authorization cache
 
     /// Cached agent->conversation access decision (~5 minutes, CRD 3258).
@@ -704,6 +1041,32 @@ impl RealtimeHub {
 
     pub fn connection_count(&self) -> usize {
         self.inner.lock().map(|i| i.conns.len()).unwrap_or(0)
+    }
+
+    /// Number of live sessions held by one user.
+    pub fn user_session_count(&self, user_id: &str) -> usize {
+        let inner = self.inner.lock().expect("hub lock");
+        inner.conns.values().filter(|c| c.identity.user_id == user_id).count()
+    }
+
+    /// Live reachability derived from current connections: (user ids with a
+    /// personal channel, conversation ids with a live room connection). Used
+    /// by the routed-delivery debug snapshot (CRD 3656-3657, 3669).
+    pub fn reachability_snapshot(&self) -> (Vec<String>, Vec<String>) {
+        let inner = self.inner.lock().expect("hub lock");
+        let mut users = HashSet::new();
+        let mut conversations = HashSet::new();
+        for c in inner.conns.values() {
+            match &c.conversation_id {
+                Some(cid) => {
+                    conversations.insert(cid.clone());
+                }
+                None => {
+                    users.insert(c.identity.user_id.clone());
+                }
+            }
+        }
+        (users.into_iter().collect(), conversations.into_iter().collect())
     }
 
     /// (total, conversation-bound, personal) connection counts.

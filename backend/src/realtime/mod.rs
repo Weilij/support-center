@@ -6,10 +6,13 @@
 //! `token` query parameter and is verified during the handshake (CRD 597).
 //! Per-route authentication for the HTTP surface happens in-handler.
 
+pub mod broadcaster;
 pub mod endpoints;
 pub mod gate;
 pub mod hub;
+pub mod rooms;
 pub mod socket;
+pub mod user_sessions;
 
 pub use hub::RealtimeHub;
 
@@ -63,5 +66,78 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/websocket/analytics/export/trends", get(endpoints::analytics_export_trends))
         .route("/api/websocket/test-connection", get(endpoints::test_connection));
 
-    gateway.merge(ops)
+    // Conversation room surface (CRD §5.2 lines 3469-3577), mounted per room.
+    let rooms = Router::new()
+        .route("/api/realtime/rooms/{conversation_id}/websocket", get(rooms::room_connect))
+        .route("/api/realtime/rooms/{conversation_id}/challenge", post(rooms::challenge))
+        .route("/api/realtime/rooms/{conversation_id}/connect", post(rooms::connect_status))
+        .route("/api/realtime/rooms/{conversation_id}/disconnect", post(rooms::force_disconnect))
+        .route("/api/realtime/rooms/{conversation_id}/broadcast", post(rooms::broadcast))
+        .route("/api/realtime/rooms/{conversation_id}/participants", post(rooms::participants))
+        .route("/api/realtime/rooms/{conversation_id}/metrics", post(rooms::room_metrics));
+
+    // Routed event delivery (CRD §5.2 lines 3581-3660).
+    let delivery = Router::new()
+        .route("/api/realtime/broadcaster/broadcast", post(broadcaster::queue_event))
+        .route("/api/realtime/broadcaster/queue-event", post(broadcaster::queue_event))
+        .route(
+            "/api/realtime/broadcaster/broadcast-to-conversations",
+            post(broadcaster::to_conversations),
+        )
+        .route("/api/realtime/broadcaster/broadcast-to-users", post(broadcaster::to_users))
+        .route("/api/realtime/broadcaster/broadcast-to-teams", post(broadcaster::to_teams))
+        .route(
+            "/api/realtime/broadcaster/broadcast-to-teams-and-admins",
+            post(broadcaster::to_teams_and_admins),
+        )
+        .route("/api/realtime/broadcaster/broadcast-global", post(broadcaster::global))
+        .route("/api/realtime/broadcaster/batch-broadcast", post(broadcaster::batch))
+        .route(
+            "/api/realtime/broadcaster/register-connection",
+            post(broadcaster::register_connection),
+        )
+        .route(
+            "/api/realtime/broadcaster/unregister-connection",
+            post(broadcaster::unregister_connection),
+        )
+        .route("/api/realtime/broadcaster/update-filters", post(broadcaster::update_filters))
+        .route("/api/realtime/broadcaster/flush-queue", post(broadcaster::flush_queue))
+        .route(
+            "/api/realtime/broadcaster/system-broadcast",
+            post(broadcaster::system_broadcast),
+        )
+        .route("/api/realtime/broadcaster/metrics", post(broadcaster::metrics))
+        .route("/api/realtime/broadcaster/status", post(broadcaster::status))
+        .route("/api/realtime/broadcaster/health", post(broadcaster::status))
+        .route(
+            "/api/realtime/broadcaster/debug-connections",
+            post(broadcaster::debug_connections),
+        );
+
+    // User real-time sessions (CRD §5.3 lines 3694-3845), scoped to the
+    // authenticated user.
+    let sessions = Router::new()
+        .route("/api/realtime/session/websocket", get(user_sessions::session_connect))
+        .route("/api/realtime/session/connect", post(user_sessions::subscribe))
+        .route("/api/realtime/session/subscribe", post(user_sessions::subscribe))
+        .route("/api/realtime/session/disconnect", post(user_sessions::unsubscribe))
+        .route("/api/realtime/session/unsubscribe", post(user_sessions::unsubscribe))
+        .route("/api/realtime/session/presence", post(user_sessions::presence))
+        .route(
+            "/api/realtime/session/preferences",
+            get(user_sessions::get_preferences)
+                .put(user_sessions::put_preferences)
+                // Any other method on this path -> 405 (CRD 3760).
+                .fallback(user_sessions::method_not_allowed),
+        )
+        .route("/api/realtime/session/status", get(user_sessions::status))
+        .route("/api/realtime/session/metrics", get(user_sessions::metrics))
+        .route("/api/realtime/session/broadcast", post(user_sessions::broadcast))
+        .route("/api/realtime/session/batch-events", post(user_sessions::batch_events));
+
+    // Background queue-processing loops (CRD 3692): fast loop for high/urgent
+    // events, slower loop for normal/low events.
+    broadcaster::spawn_loops(state.clone());
+
+    gateway.merge(ops).merge(rooms).merge(delivery).merge(sessions)
 }

@@ -22,3 +22,10 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   Realtime broadcasts are TODO(realtime) markers pending Phase 4.
 - 2026-06-11 (cont. 2): Phase 3 via subagents: conversations+sessions (2041334),
   messaging+customer-facing (d34bf26). 316 tests. Delayed-message dispatcher loop in main.rs.
+- 2026-06-11 (cont. 3): Phase 4 underway: WS gateway + hub (191ea2c); conversation rooms,
+  routed broadcast delivery & user realtime sessions (CRD §5.2, §5.3) — room WS auth modes
+  (token / challenge+signature / simplified), reconnection sync, broadcaster queue endpoints
+  under /api/realtime/broadcaster, user session surface under /api/realtime/session with
+  persisted user state (migration 0007). 369 tests. Remaining: §5.4 customer-side channels
+  (/api/realtime/typing, /broadcast, /conversation/:id/status, /online-status, config/stats/
+  monitoring endpoints at CRD 3847-4080).
