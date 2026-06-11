@@ -7,20 +7,25 @@
 //! Per-route authentication for the HTTP surface happens in-handler.
 
 pub mod broadcaster;
+pub mod collaboration;
+pub mod customer;
 pub mod endpoints;
 pub mod gate;
 pub mod hub;
+pub mod latest;
+pub mod module;
 pub mod rooms;
 pub mod socket;
 pub mod user_sessions;
 
 pub use hub::RealtimeHub;
 
-use axum::middleware::from_fn;
+use axum::middleware::{from_fn, from_fn_with_state};
 use axum::routing::{get, post};
 use axum::Router;
 use std::sync::Arc;
 
+use crate::middleware::auth::require_auth;
 use crate::middleware::rate_limit::{self, RatePolicy};
 use crate::state::AppState;
 
@@ -135,9 +140,90 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/realtime/session/broadcast", post(user_sessions::broadcast))
         .route("/api/realtime/session/batch-events", post(user_sessions::batch_events));
 
+    // Customer-side per-conversation channels (CRD §5.4 lines 3847-3974).
+    // No bearer middleware: the WS path authenticates in-handshake and the
+    // message API authenticates via its own headers; any unknown path under
+    // the surface answers 404 plain text (CRD 3944).
+    let customer = Router::new().nest(
+        "/api/customer-channel",
+        Router::new()
+            .route("/ws", get(customer::channel_ws))
+            .route("/notify-message", post(customer::notify_message))
+            .route("/notify-message-updated", post(customer::notify_message_updated))
+            .route(
+                "/messages",
+                get(customer::list_messages).post(customer::create_message),
+            )
+            .route(
+                "/upload",
+                post(customer::upload)
+                    .layer(axum::extract::DefaultBodyLimit::max(50 * 1024 * 1024)),
+            )
+            .fallback(customer::not_found_plain),
+    );
+
+    // Realtime module management/monitoring surface (CRD §5.5 lines
+    // 3974-4197): every route requires a valid bearer token (CRD 3981);
+    // finer role checks happen per handler.
+    let module_routes = Router::new()
+        .route("/api/realtime/typing", post(module::typing))
+        .route("/api/realtime/broadcast", post(module::broadcast))
+        .route(
+            "/api/realtime/conversation/{id}/status",
+            get(module::conversation_status),
+        )
+        .route("/api/realtime/online-status", post(module::online_status))
+        .route("/api/realtime/config", get(module::get_config).put(module::put_config))
+        .route("/api/realtime/stats", get(module::stats))
+        .route("/api/realtime/health", get(module::health))
+        .route("/api/realtime/monitoring/dashboard", get(module::monitoring_dashboard))
+        .route("/api/realtime/monitoring/metrics", get(module::monitoring_metrics))
+        .route(
+            "/api/realtime/monitoring/alerts",
+            get(module::monitoring_alerts).post(module::resolve_alert),
+        )
+        .route("/api/realtime/monitoring/health", get(module::monitoring_health))
+        .route(
+            "/api/realtime/monitoring/config",
+            get(module::monitoring_config).post(module::monitoring_config),
+        )
+        .layer(from_fn_with_state(state.clone(), require_auth));
+
+    // Collaboration surface (CRD §3.4 lines 2321-2446), authenticated.
+    let collab = Router::new()
+        .route(
+            "/api/collaboration/conversations/{conversation_id}/state",
+            get(collaboration::conversation_state),
+        )
+        .route(
+            "/api/collaboration/conversations/{conversation_id}/viewers",
+            get(collaboration::viewers),
+        )
+        .route(
+            "/api/collaboration/conversations/{conversation_id}/join",
+            post(collaboration::join),
+        )
+        .route(
+            "/api/collaboration/conversations/{conversation_id}/leave",
+            post(collaboration::leave),
+        )
+        .route("/api/collaboration/typing", post(collaboration::typing))
+        .route("/api/collaboration/presence", post(collaboration::presence))
+        .route("/api/collaboration/stats", get(collaboration::stats))
+        .route("/api/collaboration/cleanup", post(collaboration::cleanup))
+        .route("/api/collaboration/health", get(collaboration::health))
+        .layer(from_fn_with_state(state.clone(), require_auth));
+
     // Background queue-processing loops (CRD 3692): fast loop for high/urgent
     // events, slower loop for normal/low events.
     broadcaster::spawn_loops(state.clone());
 
-    gateway.merge(ops).merge(rooms).merge(delivery).merge(sessions)
+    gateway
+        .merge(ops)
+        .merge(rooms)
+        .merge(delivery)
+        .merge(sessions)
+        .merge(customer)
+        .merge(module_routes)
+        .merge(collab)
 }

@@ -199,6 +199,15 @@ pub struct RealtimeHub {
     /// Routed-delivery queues, reachability registry & distribution statistics
     /// (CRD §5.2 lines 3581-3660).
     pub queue: super::broadcaster::BroadcastQueue,
+    /// Per-conversation customer-side channels (CRD §5.4 lines 3847-3974).
+    pub customers: super::customer::CustomerChannels,
+    /// Realtime-module runtime config, event statistics, alerts & metrics
+    /// history (CRD §5.5 lines 3974-4197).
+    pub module: super::module::ModuleState,
+    /// Latest-message cache (CRD §5.5 lines 4129-4166).
+    pub latest: super::latest::LatestMessageCache,
+    /// Collaboration presence/typing/viewer state (CRD §3.4 lines 2321-2446).
+    pub collab: super::collaboration::CollabState,
     started: Instant,
 }
 
@@ -219,6 +228,10 @@ impl RealtimeHub {
             inner: Mutex::new(HubInner::default()),
             config: Mutex::new(GatewayConfig::default()),
             queue: super::broadcaster::BroadcastQueue::default(),
+            customers: super::customer::CustomerChannels::default(),
+            module: super::module::ModuleState::default(),
+            latest: super::latest::LatestMessageCache::default(),
+            collab: super::collaboration::CollabState::default(),
             started: Instant::now(),
         }
     }
@@ -599,6 +612,66 @@ impl RealtimeHub {
             |c| {
                 c.conversation_id.as_deref() == Some(conversation_id)
                     || (c.conversation_id.is_none() && subscribed.contains(&c.identity.user_id))
+            },
+            event,
+            payload,
+        )
+    }
+
+    /// Conversation audience, raw frame: delivers an already-serialized JSON
+    /// frame verbatim (no `{type,payload,timestamp}` wrapper) to the room's
+    /// connections and to personal channels subscribed to the conversation.
+    /// Used where the CRD pins the exact top-level frame shape (e.g. the
+    /// latest-message refresh notification, CRD 4180-4182).
+    pub fn to_conversation_raw(&self, conversation_id: &str, raw: &str) -> usize {
+        if !self.broadcasts_enabled() {
+            return 0;
+        }
+        let inner = self.inner.lock().expect("hub lock");
+        let subscribed: HashSet<&String> = inner
+            .users
+            .iter()
+            .filter(|(_, u)| u.subscriptions.contains(conversation_id))
+            .map(|(id, _)| id)
+            .collect();
+        let mut delivered = 0usize;
+        for c in inner.conns.values() {
+            let matches = c.conversation_id.as_deref() == Some(conversation_id)
+                || (c.conversation_id.is_none() && subscribed.contains(&c.identity.user_id));
+            if matches && c.tx.send(raw.to_string()).is_ok() {
+                delivered += 1;
+            }
+        }
+        delivered
+    }
+
+    /// Conversation audience minus one excluded user — typing indicators and
+    /// collaboration events never echo to their originator (CRD 4093, 2439).
+    pub fn to_conversation_except_user(
+        &self,
+        conversation_id: &str,
+        exclude_user: &str,
+        event: &str,
+        payload: Value,
+    ) -> usize {
+        if !self.broadcasts_enabled() {
+            return 0;
+        }
+        let subscribed: HashSet<String> = {
+            let inner = self.inner.lock().expect("hub lock");
+            inner
+                .users
+                .iter()
+                .filter(|(_, u)| u.subscriptions.contains(conversation_id))
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        self.fan_out(
+            |c| {
+                c.identity.user_id != exclude_user
+                    && (c.conversation_id.as_deref() == Some(conversation_id)
+                        || (c.conversation_id.is_none()
+                            && subscribed.contains(&c.identity.user_id)))
             },
             event,
             payload,

@@ -524,6 +524,21 @@ pub async fn send_reply(
                 "timestamp": now,
             }),
         );
+        // The conversation's isolated customer channel (the /api/customer-ws
+        // subscribers) receives the same event as a raw frame (CRD 1164).
+        state.realtime.customers.broadcast(
+            &conversation_id,
+            &json!({
+                "type": "new_message",
+                "conversationId": conversation_id,
+                "data": data,
+                "message": message,
+                "timestamp": now,
+            }),
+        );
+        // Coalesced latest-message cache refresh (CRD 4149-4153 eventual
+        // freshness): the conversation gained a new most-recent message.
+        crate::realtime::latest::schedule_refresh(state.clone(), conversation_id.clone());
         // Best-effort global conversation-list notification so list views
         // refresh their last-message preview (CRD 1089, 1169, 3970).
         state.realtime.global(
@@ -715,16 +730,29 @@ pub async fn subscribe_ws(
 
     match ws {
         Err(_) => fail(StatusCode::BAD_REQUEST, "Expected a WebSocket upgrade request"),
-        Ok(ws) => ws.on_upgrade(move |_socket| async move {
-            // TODO(realtime): register this connection (tracked per connection,
-            // not per user) against the conversation's isolated channel using
-            // the validated identity (user id, role, display name); broadcast a
-            // USER_CONNECTED presence event to the other subscribers; deliver
-            // server-pushed events (new_message / message_updated / presence);
-            // ignore inbound client frames (reserved); on close, deregister and
-            // broadcast USER_DISCONNECTED only when the user's last connection
-            // ends; prune dead connections during broadcast (CRD 1136-1146,
-            // 1162-1169). Full realtime lands in Phase 4.
-        }),
+        Ok(ws) => {
+            // Register against the conversation's isolated channel using the
+            // validated identity: connections are tracked individually (one
+            // user may hold several tabs); a USER_CONNECTED presence event
+            // goes to the other subscribers on accept; inbound client frames
+            // are ignored (reserved); on close the connection deregisters and
+            // USER_DISCONNECTED fires only when the user's last connection
+            // ends; dead connections are pruned during broadcast
+            // (CRD 1136-1146, 1162-1169).
+            let conversation_id = conversation_id.to_string();
+            let user_id = session.user_id.clone();
+            ws.on_upgrade(move |socket| async move {
+                let (connection_id, rx) =
+                    state.realtime.customers.connect(&conversation_id, &user_id);
+                crate::realtime::customer::run_customer_socket(
+                    state,
+                    socket,
+                    conversation_id,
+                    connection_id,
+                    rx,
+                )
+                .await;
+            })
+        }
     }
 }
