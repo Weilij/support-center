@@ -37,6 +37,7 @@ pub async fn spawn_app_with_env(environment: &str) -> TestApp {
         public_storage_url: None,
         extra_origins: vec![],
         port: 0,
+        upload_dir: dir.path().join("uploads").display().to_string(),
     };
     let state = AppState::new(pool, config);
     TestApp { router: app::build_router(state.clone()), state, _dir: dir }
@@ -100,7 +101,8 @@ impl TestApp {
         let mut builder = Request::builder()
             .method(method)
             .uri(path)
-            .header("Content-Type", "application/json");
+            .header("Content-Type", "application/json")
+            .header("Content-Length", raw_body.len().to_string());
         if let Some(t) = token {
             builder = builder.header("Authorization", format!("Bearer {t}"));
         }
@@ -227,6 +229,95 @@ impl TestApp {
         .bind(team_id)
         .bind(status)
         .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&self.state.db)
+        .await
+        .unwrap();
+        id
+    }
+
+    /// Insert a message directly and return its id. `sender_type` is
+    /// customer|agent|system; `created_at` defaults to now.
+    pub async fn seed_message(
+        &self,
+        conversation_id: &str,
+        sender_type: &str,
+        content: &str,
+        created_at: Option<&str>,
+    ) -> String {
+        self.seed_message_full(conversation_id, sender_type, content, created_at, None, None).await
+    }
+
+    /// Insert a message with explicit session linkage.
+    pub async fn seed_message_full(
+        &self,
+        conversation_id: &str,
+        sender_type: &str,
+        content: &str,
+        created_at: Option<&str>,
+        session_id: Option<&str>,
+        session_seq: Option<i64>,
+    ) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        let customer_id: Option<i64> = if sender_type == "customer" {
+            sqlx::query_scalar("SELECT customer_id FROM conversations WHERE id = ?")
+                .bind(conversation_id)
+                .fetch_optional(&self.state.db)
+                .await
+                .unwrap()
+        } else {
+            None
+        };
+        sqlx::query(
+            "INSERT INTO messages (id, conversation_id, sender_type, customer_id, content,
+                                   content_type, session_id, session_seq, created_at)
+             VALUES (?, ?, ?, ?, ?, 'text', ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(conversation_id)
+        .bind(sender_type)
+        .bind(customer_id)
+        .bind(content)
+        .bind(session_id)
+        .bind(session_seq)
+        .bind(
+            created_at
+                .map(str::to_string)
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+        )
+        .execute(&self.state.db)
+        .await
+        .unwrap();
+        id
+    }
+
+    /// Insert a conversation session directly and return its id.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn seed_session(
+        &self,
+        conversation_id: &str,
+        is_active: bool,
+        topic: Option<&str>,
+        started_at: Option<&str>,
+        last_activity_at: Option<&str>,
+        message_count: i64,
+    ) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        sqlx::query(
+            "INSERT INTO conversation_sessions
+                 (id, conversation_id, session_type, topic, started_at, ended_at,
+                  last_activity_at, message_count, is_active, created_at)
+             VALUES (?, ?, 'continuous', ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(conversation_id)
+        .bind(topic)
+        .bind(started_at.map(str::to_string).unwrap_or_else(|| now.clone()))
+        .bind(if is_active { None } else { Some(now.clone()) })
+        .bind(last_activity_at.map(str::to_string).unwrap_or_else(|| now.clone()))
+        .bind(message_count)
+        .bind(is_active as i64)
+        .bind(&now)
         .execute(&self.state.db)
         .await
         .unwrap();

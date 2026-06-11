@@ -9,6 +9,8 @@ pub struct Config {
     pub public_storage_url: Option<String>,
     pub extra_origins: Vec<String>,
     pub port: u16,
+    /// Local directory for message-attachment uploads (created at runtime).
+    pub upload_dir: String,
 }
 
 impl Config {
@@ -37,6 +39,10 @@ impl Config {
                 .ok()
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(3000),
+            upload_dir: std::env::var("UPLOAD_DIR")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "data/uploads".into()),
         }
     }
 
@@ -80,5 +86,6 @@ pub fn test_config() -> Config {
         public_storage_url: None,
         extra_origins: vec![],
         port: 0,
+        upload_dir: "data/uploads".into(),
     }
 }
