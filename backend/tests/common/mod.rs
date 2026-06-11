@@ -132,6 +132,93 @@ impl TestApp {
         .unwrap();
     }
 
+    /// Insert a customer directly and return its numeric id.
+    pub async fn seed_customer(
+        &self,
+        platform: &str,
+        platform_user_id: &str,
+        display_name: &str,
+        team_id: Option<i64>,
+    ) -> i64 {
+        sqlx::query(
+            "INSERT INTO customers (platform, platform_user_id, display_name, source_team_id, created_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(platform)
+        .bind(platform_user_id)
+        .bind(display_name)
+        .bind(team_id)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&self.state.db)
+        .await
+        .unwrap()
+        .last_insert_rowid()
+    }
+
+    /// Insert an active, global tag directly and return its id.
+    pub async fn seed_tag(&self, name: &str, created_by: &str) -> i64 {
+        self.seed_tag_full(name, created_by, None, true).await
+    }
+
+    /// Insert a tag with explicit team scope and active flag.
+    pub async fn seed_tag_full(
+        &self,
+        name: &str,
+        created_by: &str,
+        team_id: Option<i64>,
+        is_active: bool,
+    ) -> i64 {
+        sqlx::query(
+            "INSERT INTO tags (name, color, description, team_id, is_active, created_by, created_at)
+             VALUES (?, '#3B82F6', NULL, ?, ?, ?, ?)",
+        )
+        .bind(name)
+        .bind(team_id)
+        .bind(is_active as i64)
+        .bind(created_by)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&self.state.db)
+        .await
+        .unwrap()
+        .last_insert_rowid()
+    }
+
+    /// Insert a conversation directly and return its id.
+    pub async fn seed_conversation(
+        &self,
+        customer_id: i64,
+        team_id: Option<i64>,
+        status: &str,
+    ) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO conversations (id, customer_id, team_id, status, created_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(customer_id)
+        .bind(team_id)
+        .bind(status)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&self.state.db)
+        .await
+        .unwrap();
+        id
+    }
+
+    /// Attach a tag to a customer directly.
+    pub async fn add_customer_tag(&self, customer_id: i64, tag_id: i64, assigned_by: &str) {
+        sqlx::query(
+            "INSERT INTO customer_tags (customer_id, tag_id, assigned_by, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(customer_id)
+        .bind(tag_id)
+        .bind(assigned_by)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&self.state.db)
+        .await
+        .unwrap();
+    }
+
     /// Login and return (accessToken, refreshToken, sessionId).
     pub async fn login(&self, email: &str, password: &str) -> (String, String, String) {
         let (status, body, _) = self
