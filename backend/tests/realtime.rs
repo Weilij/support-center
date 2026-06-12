@@ -692,7 +692,7 @@ async fn analytics_records_validation_and_persistence() {
             "/api/websocket/analytics/errors",
             None,
             Some(json!({
-                "timestamp": "2026-06-11T00:00:00.000Z",
+                "timestamp": chrono::Utc::now().to_rfc3339(),
                 "errorCode": 4401,
                 "errorType": "NO_TOKEN",
             })),
@@ -707,7 +707,7 @@ async fn analytics_records_validation_and_persistence() {
             "/api/websocket/analytics/quality",
             None,
             Some(json!({
-                "timestamp": "2026-06-11T00:00:00.000Z",
+                "timestamp": chrono::Utc::now().to_rfc3339(),
                 "userId": s.agent_id,
                 "connectionId": "c-1",
             })),

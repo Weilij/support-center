@@ -1,6 +1,7 @@
 pub mod activity;
 pub mod agents;
 pub mod auth;
+pub mod channels;
 pub mod conversations;
 pub mod customer_conversations;
 pub mod customers;
@@ -8,3 +9,4 @@ pub mod messaging;
 pub mod sessions;
 pub mod tags;
 pub mod teams;
+pub mod webhooks;

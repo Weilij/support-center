@@ -25,22 +25,35 @@ pub async fn spawn_app() -> TestApp {
 }
 
 pub async fn spawn_app_with_env(environment: &str) -> TestApp {
+    let env = environment.to_string();
+    spawn_app_custom(move |c| c.environment = env).await
+}
+
+/// Spawn an app after applying a configuration customization (e.g. setting an
+/// encryption key or clearing a webhook secret).
+pub async fn spawn_app_custom(customize: impl FnOnce(&mut Config)) -> TestApp {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("test.db");
     let url = format!("sqlite://{}?mode=rwc", db_path.display());
     let pool = db::init_pool(&url).await.expect("db init");
-    let config = Config {
+    let mut config = Config {
         database_url: url,
         jwt_secret: "test-secret".into(),
         encryption_key: None,
-        environment: environment.into(),
+        environment: "development".into(),
         frontend_url: None,
         backend_url: None,
         public_storage_url: None,
         extra_origins: vec![],
         port: 0,
         upload_dir: dir.path().join("uploads").display().to_string(),
+        // Webhook signature secrets default to known test values so suites can
+        // sign payloads; individual tests override via spawn_app_custom.
+        line_channel_secret: Some("test-line-secret".into()),
+        facebook_app_secret: Some("test-fb-secret".into()),
+        facebook_verify_token: Some("test-verify-token".into()),
     };
+    customize(&mut config);
     let state = AppState::new(pool, config);
     TestApp { router: app::build_router(state.clone()), state, _dir: dir }
 }

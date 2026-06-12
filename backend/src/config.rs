@@ -11,6 +11,14 @@ pub struct Config {
     pub port: u16,
     /// Local directory for message-attachment uploads (created at runtime).
     pub upload_dir: String,
+    /// LINE webhook signature secret (CRD 2735: a configured platform channel
+    /// secret must be present in the environment).
+    pub line_channel_secret: Option<String>,
+    /// Facebook/Instagram webhook app secret (CRD 2788: two environment names
+    /// accepted, in priority order: FACEBOOK_APP_SECRET then FB_APP_SECRET).
+    pub facebook_app_secret: Option<String>,
+    /// Facebook subscription-handshake verification token (CRD 2787).
+    pub facebook_verify_token: Option<String>,
 }
 
 impl Config {
@@ -43,6 +51,16 @@ impl Config {
                 .ok()
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "data/uploads".into()),
+            line_channel_secret: std::env::var("LINE_CHANNEL_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            facebook_app_secret: std::env::var("FACEBOOK_APP_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| std::env::var("FB_APP_SECRET").ok().filter(|s| !s.is_empty())),
+            facebook_verify_token: std::env::var("FACEBOOK_VERIFY_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
 
@@ -87,5 +105,8 @@ pub fn test_config() -> Config {
         extra_origins: vec![],
         port: 0,
         upload_dir: "data/uploads".into(),
+        line_channel_secret: None,
+        facebook_app_secret: None,
+        facebook_verify_token: None,
     }
 }

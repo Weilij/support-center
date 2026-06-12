@@ -18,6 +18,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // WS upgrade paths authenticate via query-param token during the
         // handshake and must not sit behind the bearer-auth catch-alls.
         .merge(crate::realtime::routes(state.clone()))
+        // Public inbound webhook ingress (CRD §4.2): signature-verified, no
+        // JWT; mounted with the public/priority routes so the endpoints can
+        // never sit behind (or be shadowed by) authenticated patterns.
+        .merge(crate::domain::webhooks::routes(state.clone()))
         .merge(crate::domain::auth::routes(state.clone()))
         .merge(crate::domain::tags::routes(state.clone()))
         .merge(crate::domain::customers::routes(state.clone()))
@@ -28,6 +32,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .merge(crate::domain::sessions::routes(state.clone()))
         .merge(crate::domain::messaging::routes(state.clone()))
         .merge(crate::domain::customer_conversations::routes(state.clone()))
+        .merge(crate::domain::channels::routes(state.clone()))
         .fallback(unknown_route)
         .layer(axum_mw::from_fn(
             crate::middleware::security_headers::security_headers_layer,

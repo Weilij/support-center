@@ -1,0 +1,646 @@
+//! Inbound ingestion pipeline (CRD §4.2): deduplicate by platform message id,
+//! find-or-create customer and open conversation, persist the message, record
+//! the auto-reply idempotency ledger, and defer the non-critical follow-up
+//! work (real-time broadcast, latest-message refresh, activity log).
+
+use serde_json::{json, Map, Value};
+use sqlx::SqlitePool;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
+use crate::db::now_iso;
+use crate::domain::auth::store::log_activity;
+use crate::state::AppState;
+
+use super::parse::Normalized;
+
+/// Sentinel actor for webhook-originated audit entries (soft-deleted so it
+/// never appears in member listings; mirrors the `deleted-user` precedent).
+pub const SYSTEM_AGENT_ID: &str = "system";
+
+/// Default localized welcome message stored when no welcome rule matches a
+/// follow event, so the conversation is not empty (CRD 2824).
+pub const DEFAULT_WELCOME: &str =
+    "สวัสดีค่ะ ขอบคุณที่เพิ่มเราเป็นเพื่อน หากมีคำถามสามารถพิมพ์สอบถามได้เลยค่ะ";
+
+async fn ensure_system_agent(db: &SqlitePool) {
+    let now = now_iso();
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO agents
+            (id, email, password_hash, display_name, role, is_active, password_policy,
+             deleted_at, created_at)
+         VALUES (?, 'system@system.local', '', 'System', 'agent', 0, 'unchangeable', ?, ?)",
+    )
+    .bind(SYSTEM_AGENT_ID)
+    .bind(&now)
+    .bind(&now)
+    .execute(db)
+    .await;
+}
+
+/// Per-customer conversation-creation serialization (CRD 2790): concurrent
+/// inbound deliveries for the same customer never produce duplicate open
+/// conversations.
+fn customer_lock(key: &str) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+    let map = LOCKS.get_or_init(Default::default);
+    let mut guard = map.lock().expect("customer lock map");
+    guard.entry(key.to_string()).or_default().clone()
+}
+
+/// Outcome of one inbound message ingestion.
+#[derive(Debug)]
+pub enum IngestOutcome {
+    /// Redelivery of an already-seen platform message id: no side effects
+    /// (CRD 2766, 2789).
+    Duplicate,
+    /// Event carried no resolvable end-user; ignored.
+    Skipped,
+    Created {
+        customer_id: i64,
+        conversation_id: String,
+        message_id: String,
+        team_id: Option<i64>,
+    },
+}
+
+pub struct InboundMessage<'a> {
+    pub platform: &'a str,
+    pub platform_user_id: &'a str,
+    /// Used only when the customer record does not exist yet.
+    pub default_display_name: &'a str,
+    pub platform_message_id: Option<&'a str>,
+    pub normalized: Normalized,
+}
+
+#[derive(sqlx::FromRow)]
+struct CustomerRow {
+    id: i64,
+    display_name: Option<String>,
+    source_team_id: Option<i64>,
+}
+
+async fn find_customer(
+    db: &SqlitePool,
+    platform: &str,
+    user_id: &str,
+) -> Result<Option<CustomerRow>, String> {
+    sqlx::query_as(
+        "SELECT id, display_name, source_team_id FROM customers
+         WHERE platform = ? AND platform_user_id = ? AND deleted_at IS NULL",
+    )
+    .bind(platform)
+    .bind(user_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+async fn find_or_create_customer(
+    db: &SqlitePool,
+    platform: &str,
+    user_id: &str,
+    display_name: &str,
+) -> Result<CustomerRow, String> {
+    if let Some(c) = find_customer(db, platform, user_id).await? {
+        return Ok(c);
+    }
+    let id = sqlx::query(
+        "INSERT INTO customers (platform, platform_user_id, display_name, created_at)
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind(platform)
+    .bind(user_id)
+    .bind(display_name)
+    .bind(now_iso())
+    .execute(db)
+    .await
+    .map_err(|e| e.to_string())?
+    .last_insert_rowid();
+    Ok(CustomerRow { id, display_name: Some(display_name.into()), source_team_id: None })
+}
+
+/// Most recent customer-to-team routing assignment wins (CRD 2845-2846).
+async fn routed_team(
+    db: &SqlitePool,
+    platform: &str,
+    user_id: &str,
+) -> Result<Option<i64>, String> {
+    let _ = platform; // assignments are keyed by platform user id alone (CRD 5747)
+    sqlx::query_scalar(
+        "SELECT team_id FROM customer_team_assignments
+         WHERE platform_user_id = ?
+         ORDER BY assigned_at DESC, id DESC LIMIT 1",
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Find the customer's open (non-closed) conversation or create a new active
+/// one; backfills a missing team assignment but never removes one (CRD 2849).
+async fn find_or_create_open_conversation(
+    db: &SqlitePool,
+    customer_id: i64,
+    team_id: Option<i64>,
+) -> Result<(String, Option<i64>), String> {
+    let existing: Option<(String, Option<i64>)> = sqlx::query_as(
+        "SELECT id, team_id FROM conversations
+         WHERE customer_id = ? AND status != 'closed' AND deleted_at IS NULL
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(customer_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Some((id, existing_team)) = existing {
+        if existing_team.is_none() {
+            if let Some(t) = team_id {
+                sqlx::query("UPDATE conversations SET team_id = ?, updated_at = ? WHERE id = ?")
+                    .bind(t)
+                    .bind(now_iso())
+                    .bind(&id)
+                    .execute(db)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                return Ok((id, Some(t)));
+            }
+        }
+        return Ok((id, existing_team));
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO conversations (id, customer_id, team_id, status, priority, created_at)
+         VALUES (?, ?, ?, 'active', 'normal', ?)",
+    )
+    .bind(&id)
+    .bind(customer_id)
+    .bind(team_id)
+    .bind(now_iso())
+    .execute(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok((id, team_id))
+}
+
+/// Successful inbound messages increment the matching enabled connection's
+/// received counter and last-message timestamp (CRD 2722).
+async fn bump_received(db: &SqlitePool, team_id: i64, platform: &str, now: &str) {
+    let row: Option<(i64, Option<String>)> = sqlx::query_as(
+        "SELECT id, stats FROM channel_integrations
+         WHERE team_id = ? AND platform = ? AND is_active = 1 LIMIT 1",
+    )
+    .bind(team_id)
+    .bind(platform)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    let Some((id, stats)) = row else { return };
+    let mut parsed: Value = stats
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_else(|| json!({}));
+    let received = parsed.get("messagesReceived").and_then(Value::as_i64).unwrap_or(0);
+    parsed["messagesReceived"] = json!(received + 1);
+    parsed["lastMessageAt"] = json!(now);
+    let _ = sqlx::query("UPDATE channel_integrations SET stats = ?, updated_at = ? WHERE id = ?")
+        .bind(parsed.to_string())
+        .bind(now)
+        .bind(id)
+        .execute(db)
+        .await;
+}
+
+/// Ingest one normalized inbound message end-to-end (CRD 2761-2791).
+pub async fn ingest_message(
+    state: &Arc<AppState>,
+    inbound: InboundMessage<'_>,
+) -> Result<IngestOutcome, String> {
+    if inbound.platform_user_id.is_empty() {
+        return Ok(IngestOutcome::Skipped);
+    }
+
+    // Per-platform-message-id idempotency: already-seen identifiers are
+    // skipped entirely, with no customer/conversation side effects (CRD 2766).
+    if let Some(mid) = inbound.platform_message_id {
+        let seen: Option<String> =
+            sqlx::query_scalar("SELECT id FROM messages WHERE platform_message_id = ?")
+                .bind(mid)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(|e| e.to_string())?;
+        if seen.is_some() {
+            return Ok(IngestOutcome::Duplicate);
+        }
+    }
+
+    let lock = customer_lock(&format!("{}:{}", inbound.platform, inbound.platform_user_id));
+    let _guard = lock.lock().await;
+
+    let customer = find_or_create_customer(
+        &state.db,
+        inbound.platform,
+        inbound.platform_user_id,
+        inbound.default_display_name,
+    )
+    .await?;
+    let team_id = match routed_team(&state.db, inbound.platform, inbound.platform_user_id).await? {
+        Some(t) => Some(t),
+        None => customer.source_team_id,
+    };
+    let (conversation_id, team_id) =
+        find_or_create_open_conversation(&state.db, customer.id, team_id).await?;
+
+    let now = now_iso();
+    let message_id = crate::domain::messaging::store::new_message_id();
+    let mut metadata = Map::new();
+    metadata.insert("platform".into(), json!(inbound.platform));
+    metadata.insert("source".into(), json!("webhook"));
+    if let Some(media) = &inbound.normalized.media {
+        metadata.insert("media".into(), media.clone());
+    }
+    for (k, v) in &inbound.normalized.metadata {
+        metadata.insert(k.clone(), v.clone());
+    }
+    let metadata_json = Value::Object(metadata).to_string();
+
+    // Inbound messages are recorded as delivered (CRD 2851).
+    let insert = sqlx::query(
+        "INSERT INTO messages
+            (id, conversation_id, sender_type, customer_id, content, content_type,
+             platform_message_id, is_sent, sent_at, delivery_status, metadata, sender_name,
+             created_at)
+         VALUES (?, ?, 'customer', ?, ?, ?, ?, 1, ?, 'delivered', ?, ?, ?)",
+    )
+    .bind(&message_id)
+    .bind(&conversation_id)
+    .bind(customer.id)
+    .bind(&inbound.normalized.content)
+    .bind(&inbound.normalized.kind)
+    .bind(inbound.platform_message_id)
+    .bind(&now)
+    .bind(&metadata_json)
+    .bind(customer.display_name.as_deref().unwrap_or(inbound.default_display_name))
+    .bind(&now)
+    .execute(&state.db)
+    .await;
+
+    if let Err(e) = insert {
+        // A unique-constraint race on insert resolves to the existing record
+        // rather than erroring (CRD 2789); the activity marker does not
+        // advance on a pure redelivery (CRD 2791).
+        if let Some(mid) = inbound.platform_message_id {
+            let existing: Option<String> =
+                sqlx::query_scalar("SELECT id FROM messages WHERE platform_message_id = ?")
+                    .bind(mid)
+                    .fetch_optional(&state.db)
+                    .await
+                    .map_err(|e2| e2.to_string())?;
+            if existing.is_some() {
+                return Ok(IngestOutcome::Duplicate);
+            }
+        }
+        return Err(e.to_string());
+    }
+
+    // The most-recent-activity marker advances only when a row was actually
+    // inserted (CRD 2791).
+    let _ = sqlx::query(
+        "UPDATE conversations SET last_message_at = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(&now)
+    .bind(&now)
+    .bind(&conversation_id)
+    .execute(&state.db)
+    .await;
+
+    if let Some(t) = team_id {
+        bump_received(&state.db, t, inbound.platform, &now).await;
+    }
+
+    // Auto-reply idempotency ledger: at most one auto-reply attempt per
+    // inbound platform message (auto_reply_deliveries UNIQUE(platform, mid)).
+    if let Some(mid) = inbound.platform_message_id {
+        let _ = sqlx::query(
+            "INSERT OR IGNORE INTO auto_reply_deliveries
+                (platform, platform_message_id, conversation_id, customer_id, status, created_at)
+             VALUES (?, ?, ?, ?, 'pending', ?)",
+        )
+        .bind(inbound.platform)
+        .bind(mid)
+        .bind(&conversation_id)
+        .bind(customer.id)
+        .bind(&now)
+        .execute(&state.db)
+        .await;
+        // TODO(auto-reply): evaluate auto-reply rules synchronously here (the
+        // platform reply credential is short-lived, CRD 2768) and resolve the
+        // pending ledger row to success/failed. The auto-reply engine is the
+        // next sub-phase.
+    }
+
+    // Non-critical follow-up work is deferred to run after the HTTP response
+    // (CRD 2768): real-time broadcast, latest-message refresh, activity log.
+    spawn_followups(
+        state.clone(),
+        FollowupContext {
+            platform: inbound.platform.to_string(),
+            conversation_id: conversation_id.clone(),
+            message_id: message_id.clone(),
+            customer_id: customer.id,
+            team_id,
+            content: inbound.normalized.content.clone(),
+            kind: inbound.normalized.kind.clone(),
+            media: inbound.normalized.media.clone(),
+            now,
+        },
+    );
+
+    Ok(IngestOutcome::Created {
+        customer_id: customer.id,
+        conversation_id,
+        message_id,
+        team_id,
+    })
+}
+
+struct FollowupContext {
+    platform: String,
+    conversation_id: String,
+    message_id: String,
+    customer_id: i64,
+    team_id: Option<i64>,
+    content: String,
+    kind: String,
+    media: Option<Value>,
+    now: String,
+}
+
+fn spawn_followups(state: Arc<AppState>, ctx: FollowupContext) {
+    tokio::spawn(async move {
+        // New-message event for every successfully persisted inbound message
+        // (CRD 2855): conversation audience plus team audience, source marked
+        // as the webhook.
+        let payload = json!({
+            "conversationId": ctx.conversation_id,
+            "message": {
+                "id": ctx.message_id,
+                "content": ctx.content,
+                "type": ctx.kind,
+                "senderType": "customer",
+                "senderId": ctx.customer_id,
+                "platform": ctx.platform,
+                "timestamp": ctx.now,
+                "deliveryStatus": "delivered",
+                "metadata": ctx.media.as_ref().map(|m| m.to_string()),
+            },
+            "source": "webhook",
+        });
+        state.realtime.to_conversation(&ctx.conversation_id, "new_message", payload.clone());
+        if let Some(t) = ctx.team_id {
+            state.realtime.to_team(t, "new_message", payload);
+        }
+
+        // Latest-message cache refresh (CRD 2769).
+        crate::realtime::latest::schedule_refresh(state.clone(), ctx.conversation_id.clone());
+
+        // TODO(media): enqueue media retrieval for downloadable media and emit
+        // the follow-up message-updated broadcast once processed (CRD 2856).
+        // TODO(notifications): new-conversation notification trigger (CRD 2860).
+
+        ensure_system_agent(&state.db).await;
+        log_activity(
+            &state.db,
+            SYSTEM_AGENT_ID,
+            "System",
+            "system",
+            "webhook message received",
+            "webhook",
+            Some(&ctx.message_id),
+            Some(json!({
+                "platform": ctx.platform,
+                "conversationId": ctx.conversation_id,
+                "customerId": ctx.customer_id,
+            })),
+            None,
+            None,
+        )
+        .await;
+    });
+}
+
+// ------------------------------------------------------------ follow / unfollow (LINE)
+
+/// Follow / opt-in lifecycle handling (CRD 2814-2826).
+pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<(), String> {
+    let Some(user_id) = event["source"]["userId"].as_str().filter(|s| !s.is_empty()) else {
+        return Ok(()); // absent end-user identifier: silently ignored (CRD 2826)
+    };
+    let now = now_iso();
+
+    // TODO(live-platform): fetch the end-user's profile (display name, avatar)
+    // from the platform; failure is tolerated and a default or previously
+    // captured name is used (CRD 2818).
+    let existing = find_customer(&state.db, "line", user_id).await?;
+    let display_name = existing
+        .as_ref()
+        .and_then(|c| c.display_name.clone())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "LINE User".into());
+
+    // Tracking parameters that may carry a team-routing token (CRD 2817).
+    let tracking_token = event["follow"]["trackingId"]
+        .as_str()
+        .or_else(|| event["follow"]["token"].as_str())
+        .or_else(|| event["trackingToken"].as_str())
+        .filter(|s| !s.is_empty());
+
+    // Team resolution priority: stored routing assignment, then tracking-token
+    // lookup (CRD 2819).
+    let mut routed_via_tracking = false;
+    let team_id = match routed_team(&state.db, "line", user_id).await? {
+        Some(t) => Some(t),
+        None => match tracking_token {
+            Some(token) => {
+                let resolved: Option<i64> = sqlx::query_scalar(
+                    "SELECT team_id FROM qr_codes WHERE token = ? AND is_active = 1 LIMIT 1",
+                )
+                .bind(token)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(|e| e.to_string())?;
+                routed_via_tracking = resolved.is_some();
+                resolved
+            }
+            None => None,
+        },
+    };
+
+    // Create-if-absent, then update profile + follow metadata (CRD 2820).
+    let customer = find_or_create_customer(&state.db, "line", user_id, &display_name).await?;
+    let mut meta = json!({ "lastFollowedAt": now });
+    if routed_via_tracking {
+        meta["assignedViaTracking"] = json!(true);
+    }
+    let _ = sqlx::query(
+        "UPDATE customers SET display_name = ?, metadata = json_patch(COALESCE(metadata, '{}'), ?),
+                updated_at = ?
+         WHERE id = ?",
+    )
+    .bind(&display_name)
+    .bind(meta.to_string())
+    .bind(&now)
+    .bind(customer.id)
+    .execute(&state.db)
+    .await;
+
+    if routed_via_tracking {
+        if let Some(t) = team_id {
+            let _ = sqlx::query(
+                "INSERT OR REPLACE INTO customer_team_assignments
+                    (id, platform_user_id, team_id, source, assigned_at)
+                 VALUES (?, ?, ?, 'inbound', ?)",
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(user_id)
+            .bind(t)
+            .bind(&now)
+            .execute(&state.db)
+            .await;
+        }
+    }
+
+    // With a resolved team: reuse a non-closed conversation (team-backfilled)
+    // or create a new active, normal-priority one (CRD 2821).
+    let mut conversation_id: Option<String> = None;
+    if team_id.is_some() {
+        let lock = customer_lock(&format!("line:{user_id}"));
+        let _guard = lock.lock().await;
+        let (cid, _) = find_or_create_open_conversation(&state.db, customer.id, team_id).await?;
+        conversation_id = Some(cid);
+    }
+
+    // Real-time assignment/transfer event with reconciliation markers
+    // (CRD 2822, 2857).
+    if let (Some(t), Some(cid)) = (team_id, conversation_id.as_ref()) {
+        let team_name: Option<String> =
+            sqlx::query_scalar("SELECT name FROM teams WHERE id = ?")
+                .bind(t)
+                .fetch_optional(&state.db)
+                .await
+                .unwrap_or(None);
+        state.realtime.to_teams_and_admins(
+            &[t],
+            "conversation_transferred",
+            json!({
+                "fromTeamId": null,
+                "toTeamId": t,
+                "teamName": team_name,
+                "conversation": {
+                    "id": cid,
+                    "customerId": customer.id,
+                    "status": "active",
+                    "priority": "normal",
+                },
+                "platformUserId": user_id,
+                "webhookConfirmed": true,
+                "timestamp": now,
+            }),
+        );
+    }
+
+    // Welcome auto-reply, attempted before notifications because the reply
+    // credential is short-lived (CRD 2823).
+    // TODO(auto-reply): evaluate welcome auto-reply rules here; only when no
+    // rule matches should the default welcome below be used.
+    if let Some(cid) = conversation_id.as_ref() {
+        let welcome_id = crate::domain::messaging::store::new_message_id();
+        let inserted = sqlx::query(
+            "INSERT INTO messages
+                (id, conversation_id, sender_type, content, content_type, is_sent, sent_at,
+                 delivery_status, sender_name, created_at)
+             VALUES (?, ?, 'system', ?, 'text', 1, ?, 'delivered', 'System', ?)",
+        )
+        .bind(&welcome_id)
+        .bind(cid)
+        .bind(DEFAULT_WELCOME)
+        .bind(&now)
+        .bind(&now)
+        .execute(&state.db)
+        .await;
+        if inserted.is_ok() {
+            let _ = sqlx::query(
+                "UPDATE conversations SET last_message_at = ?, updated_at = ? WHERE id = ?",
+            )
+            .bind(&now)
+            .bind(&now)
+            .bind(cid)
+            .execute(&state.db)
+            .await;
+        }
+        // TODO(live-platform): push the welcome text to the end user via the
+        // platform reply credential (failure tolerated, CRD 2826).
+    }
+
+    ensure_system_agent(&state.db).await;
+    log_activity(
+        &state.db,
+        SYSTEM_AGENT_ID,
+        "System",
+        "system",
+        "customer follow",
+        "customer",
+        Some(&customer.id.to_string()),
+        Some(json!({
+            "platform": "line",
+            "platformUserId": user_id,
+            "teamId": team_id,
+            "assignedViaTracking": routed_via_tracking,
+        })),
+        None,
+        None,
+    )
+    .await;
+    // TODO(notifications): customer-followed notification trigger (CRD 2825).
+
+    Ok(())
+}
+
+/// Unfollow / opt-out lifecycle handling (CRD 2828-2833).
+pub async fn handle_line_unfollow(state: &Arc<AppState>, event: &Value) -> Result<(), String> {
+    let Some(user_id) = event["source"]["userId"].as_str().filter(|s| !s.is_empty()) else {
+        return Ok(()); // absent identifier: ignored (CRD 2833)
+    };
+    let Some(customer) = find_customer(&state.db, "line", user_id).await? else {
+        return Ok(()); // no customer found: the event is a no-op (CRD 2831)
+    };
+
+    let now = now_iso();
+    sqlx::query("UPDATE customers SET updated_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(customer.id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Activity entry; failure tolerated (CRD 2832).
+    ensure_system_agent(&state.db).await;
+    log_activity(
+        &state.db,
+        SYSTEM_AGENT_ID,
+        "System",
+        "system",
+        "customer unfollow",
+        "customer",
+        Some(&customer.id.to_string()),
+        Some(json!({ "platform": "line", "platformUserId": user_id })),
+        None,
+        None,
+    )
+    .await;
+    Ok(())
+}
