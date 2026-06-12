@@ -1,6 +1,7 @@
 pub mod activity;
 pub mod agents;
 pub mod auth;
+pub mod auto_reply;
 pub mod channels;
 pub mod conversations;
 pub mod customer_conversations;

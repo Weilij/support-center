@@ -234,6 +234,16 @@ pub async fn ingest_message(
                 .await
                 .map_err(|e| e.to_string())?;
         if seen.is_some() {
+            // Redelivery recovery (CRD 1430-1433): the ledger's duplicate
+            // guard keeps the auto-reply at-most-once.
+            let _ = crate::domain::auto_reply::engine::retry_redelivered(
+                state,
+                inbound.platform,
+                mid,
+                inbound.platform_user_id,
+                None,
+            )
+            .await;
             return Ok(IngestOutcome::Duplicate);
         }
     }
@@ -322,26 +332,24 @@ pub async fn ingest_message(
         bump_received(&state.db, t, inbound.platform, &now).await;
     }
 
-    // Auto-reply idempotency ledger: at most one auto-reply attempt per
-    // inbound platform message (auto_reply_deliveries UNIQUE(platform, mid)).
-    if let Some(mid) = inbound.platform_message_id {
-        let _ = sqlx::query(
-            "INSERT OR IGNORE INTO auto_reply_deliveries
-                (platform, platform_message_id, conversation_id, customer_id, status, created_at)
-             VALUES (?, ?, ?, ?, 'pending', ?)",
-        )
-        .bind(inbound.platform)
-        .bind(mid)
-        .bind(&conversation_id)
-        .bind(customer.id)
-        .bind(&now)
-        .execute(&state.db)
-        .await;
-        // TODO(auto-reply): evaluate auto-reply rules synchronously here (the
-        // platform reply credential is short-lived, CRD 2768) and resolve the
-        // pending ledger row to success/failed. The auto-reply engine is the
-        // next sub-phase.
-    }
+    // Auto-reply evaluation runs synchronously because the platform reply
+    // credential is short-lived (CRD 2742); the engine owns the idempotency
+    // ledger (auto_reply_deliveries UNIQUE(platform, mid), CRD 1422).
+    let _ = crate::domain::auto_reply::engine::evaluate_message(
+        state,
+        crate::domain::auto_reply::engine::MessageEvalInput {
+            platform: inbound.platform,
+            content: &inbound.normalized.content,
+            message_type: &inbound.normalized.kind,
+            conversation_id: &conversation_id,
+            team_id,
+            customer_id: customer.id,
+            platform_user_id: inbound.platform_user_id,
+            platform_message_id: inbound.platform_message_id,
+            reply_token: None,
+        },
+    )
+    .await;
 
     // Non-critical follow-up work is deferred to run after the HTTP response
     // (CRD 2768): real-time broadcast, latest-message refresh, activity log.
@@ -554,10 +562,23 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
     }
 
     // Welcome auto-reply, attempted before notifications because the reply
-    // credential is short-lived (CRD 2823).
-    // TODO(auto-reply): evaluate welcome auto-reply rules here; only when no
-    // rule matches should the default welcome below be used.
+    // credential is short-lived (CRD 2823): welcome rules first, falling back
+    // to the default localized welcome only when no rule matched (CRD 2822).
+    let mut welcome_sent = false;
     if let Some(cid) = conversation_id.as_ref() {
+        let result = crate::domain::auto_reply::engine::evaluate_welcome(
+            state,
+            "line",
+            team_id,
+            cid,
+            customer.id,
+            user_id,
+            event["replyToken"].as_str(),
+        )
+        .await;
+        welcome_sent = result.sent;
+    }
+    if let (Some(cid), false) = (conversation_id.as_ref(), welcome_sent) {
         let welcome_id = crate::domain::messaging::store::new_message_id();
         let inserted = sqlx::query(
             "INSERT INTO messages

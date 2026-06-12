@@ -33,6 +33,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .merge(crate::domain::messaging::routes(state.clone()))
         .merge(crate::domain::customer_conversations::routes(state.clone()))
         .merge(crate::domain::channels::routes(state.clone()))
+        .merge(crate::domain::auto_reply::routes(state.clone()))
         .fallback(unknown_route)
         .layer(axum_mw::from_fn(
             crate::middleware::security_headers::security_headers_layer,

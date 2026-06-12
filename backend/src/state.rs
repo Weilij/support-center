@@ -152,6 +152,7 @@ pub struct AppState {
     pub team_cache: TeamCache,
     pub last_active: LastActiveDebounce,
     pub batch_undo: BatchUndoStore,
+    pub auto_reply_cache: crate::domain::auto_reply::engine::RuleCache,
     pub recallable_messages: RecallableMarkers,
     /// Central realtime hub (CRD §5.1): connection registry, rooms, channels
     /// and the broadcast API used by the domain modules.
@@ -167,6 +168,7 @@ impl AppState {
             team_cache: TeamCache::default(),
             last_active: LastActiveDebounce::default(),
             batch_undo: BatchUndoStore::default(),
+            auto_reply_cache: crate::domain::auto_reply::engine::RuleCache::default(),
             recallable_messages: RecallableMarkers::default(),
             realtime: Arc::new(crate::realtime::RealtimeHub::new()),
         })
