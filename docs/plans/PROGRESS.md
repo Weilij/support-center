@@ -37,7 +37,7 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
         (deeper protocol coverage pending: sync-after-reconnect, presence)
   - [ ] §8.4 remaining: full endpoint contract map, team context switcher
   - [ ] §8.5 traceability matrix check (6689-6723)
-- [ ] Phase 8: web installer
+- [~] Phase 8: web installer — provisioning service skeleton done (real cloud calls TODO(cloud)); setup-wizard frontend (§9.2) pending
 
 ## Session log
 
@@ -104,3 +104,6 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   and every §8.2 destination screen. Remaining: §8.5 traceability sweep,
   deeper §8.1 containers (teams/tags stores), §8.3 sync-after-reconnect.
   Then Phase 8 installer (CRD 6724-6979).
+- 2026-06-12 (cont. 15): installer binary committed. All 9 CRD phases now
+  have running implementations. Remaining polish: §9.2 wizard UI, §8.5
+  traceability sweep, TODO(cloud)/TODO(channels) live integrations.
