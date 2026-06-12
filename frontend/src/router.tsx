@@ -17,6 +17,7 @@ import Dashboard from './pages/Dashboard'
 import NotFound from './pages/NotFound'
 import Conversations from './pages/Conversations'
 import ConversationDetail from './pages/ConversationDetail'
+import Notifications from './pages/Notifications'
 
 interface RouteMeta {
   requiresAuth?: boolean // default true (CRD 6476)
@@ -100,7 +101,11 @@ export const router = createBrowserRouter([
     path: '/conversations/:id',
     element: page({ title: '對話' }, <ConversationDetail />),
   },
-  ...['/profile', '/tags', '/notifications',
+  {
+    path: '/notifications',
+    element: page({ title: '通知中心' }, <Notifications />),
+  },
+  ...['/profile', '/tags',
       '/export', '/reports'].map((path) => ({
     path,
     element: page({ title: t('dashboard.title') }, <Dashboard />),
