@@ -30,8 +30,9 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   - [~] §8.1 state model: Store<T> w/ optimistic+rollback, conversations
         container + screen done; remaining: messages/teams/tags/notifications
         containers (CRD 5846-6126)
-  - [~] §8.2 views: conversation list + detail (send/optimistic/realtime)
-        done; remaining: admin screens, tags/notifications/reports views
+  - [x] §8.2 views: ALL destination screens implemented — conversations
+        list/detail, notifications, tags, teams, settings, profile, reports,
+        activity, auto-reply, channels
   - [x] §8.3 realtime client core: connect/auth/reconnect/event routing
         (deeper protocol coverage pending: sync-after-reconnect, presence)
   - [ ] §8.4 remaining: full endpoint contract map, team context switcher
@@ -98,3 +99,8 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
 - 2026-06-12 (cont. 13): profile (9f37b60) + reports screens committed.
   Remaining §8.2: channels admin, activity log, auto-reply config screens.
   Then §8.5 traceability + Phase 8 installer.
+- 2026-06-12 (cont. 14): activity (b33bf8a), auto-reply + channels (6d574b4).
+  Phase 7 substantially complete: API layer, stores, realtime client, shell,
+  and every §8.2 destination screen. Remaining: §8.5 traceability sweep,
+  deeper §8.1 containers (teams/tags stores), §8.3 sync-after-reconnect.
+  Then Phase 8 installer (CRD 6724-6979).
