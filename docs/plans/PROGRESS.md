@@ -31,7 +31,8 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
         container + screen done; remaining: messages/teams/tags/notifications
         containers (CRD 5846-6126)
   - [ ] §8.2 views & flows (6127-6332): conversation list/detail, admin screens
-  - [ ] §8.3 realtime client (6332-6465): WS connect/auth/reconnect, event routing
+  - [x] §8.3 realtime client core: connect/auth/reconnect/event routing
+        (deeper protocol coverage pending: sync-after-reconnect, presence)
   - [ ] §8.4 remaining: full endpoint contract map, team context switcher
   - [ ] §8.5 traceability matrix check (6689-6723)
 - [ ] Phase 8: web installer
@@ -85,3 +86,4 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
 - 2026-06-12 (cont. 7): Phase 7 started — frontend foundation committed.
   npm run build green. Resume with §8.1 state model + §8.2 conversation views.
 - 2026-06-12 (cont. 8): §8.1 store layer + conversations screen committed.
+- 2026-06-12 (cont. 9): §8.3 realtime client committed.
