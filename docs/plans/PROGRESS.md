@@ -8,8 +8,8 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
 - [x] Phase 1: core scaffold + pipeline + data model + auth + authz (34 tests green, clippy clean)
 - [x] Phase 2: org — tags, customers, teams, agents, activity log (192 tests green)
 - [x] Phase 3: conversations, sessions, messaging, customer-facing (316 tests green)
-- [ ] Phase 4: realtime/WebSocket  ← IN PROGRESS
-- [ ] Phase 5: channels/webhooks/auto-reply/delayed/files
+- [x] Phase 4: realtime — WS gateway, rooms/broadcast, user sessions, customer channels, latest-message cache, collaboration (403 tests green)
+- [ ] Phase 5: channels/webhooks/auto-reply/delayed/files  ← IN PROGRESS
 - [ ] Phase 6: ops/analytics/reports/notifications/settings
 - [ ] Phase 7: frontend SPA
 - [ ] Phase 8: web installer
@@ -29,3 +29,5 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   persisted user state (migration 0007). 369 tests. Remaining: §5.4 customer-side channels
   (/api/realtime/typing, /broadcast, /conversation/:id/status, /online-status, config/stats/
   monitoring endpoints at CRD 3847-4080).
+- 2026-06-12: Phase 4 complete: gateway (191ea2c), rooms+user sessions (8e6668e),
+  customer channels+module+collaboration (6b0929d). 403 tests, clippy clean.
