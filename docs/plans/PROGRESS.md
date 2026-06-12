@@ -113,3 +113,8 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   stubs only: TODO(channels) live LINE/Facebook APIs, TODO(cloud) provider
   calls, TODO(scale-out) multi-instance realtime — each needs real
   credentials/infrastructure to implement.
+- 2026-06-12 (verification): hooks-order fix (3edaccc), CI (f24ae31), frontend
+  vitest 7 tests (3e438ba), installer tests + .env.example (34419cc).
+  FINAL FULL PASS: backend+installer 545 tests green, clippy 0 warnings,
+  frontend 7 tests + build green. Project complete; only external-credential
+  stubs (TODO channels/cloud/scale-out) remain by design.
