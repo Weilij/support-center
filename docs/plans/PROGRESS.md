@@ -62,3 +62,8 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   Phase 6 next: §6.4 notifications (CRD 4881-5106), §6.3 monitoring (4697-4881),
   §6.1 analytics (4201-4505), §6.2 reports (4505-4697), §6.6 settings (5247-5488),
   §6.7 rate-limit guarantees (5488-5578).
+- 2026-06-12 (cont. 5): §6.4 notifications (90454aa), §6.3 monitoring (df98c1f),
+  §6.7 rate-limit contract + lease locks (e5474c5). 518 tests, clippy clean.
+  PAUSED (context limit). NEXT: §6.1 analytics (CRD 4201-4505), §6.2 reports
+  (CRD 4505-4697, tables already in 0001), §6.6 settings (CRD 5247-5488),
+  then Phase 7 frontend (5844-6723), Phase 8 installer (6724-6979).
