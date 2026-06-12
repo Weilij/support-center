@@ -14,7 +14,7 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   - [x] §4.2 webhook ingestion LINE/FB (d82c8b6)
   - [x] §2.5 auto-reply engine + management (375943f)
   - [x] §2.4 delayed messages HTTP surface (2659fc7): both route families on the shared scheduler
-  - [ ] §4.3 LIFF (CRD 2862-2996)
+  - [x] §4.3 LIFF mini-page/admin/join (8a7a2d5)
   - [ ] §4.4 files & attachments (CRD 2996-3221)
   - [ ] §6.5 background queue (CRD 5106-5247)
 - [ ] Phase 6: ops/analytics/reports/notifications/settings
@@ -43,3 +43,12 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
 - 2026-06-12 (cont. 2): §2.4 delayed messages done (2659fc7). 471 tests green, clippy clean.
   Next: §4.3 LIFF (CRD 2862-2996), §4.4 files (CRD 2996-3221), §6.5 queue (CRD 5106-5247),
   then Phase 6 (CRD 4201-5578), Phase 7 frontend (5844-6723), Phase 8 installer (6724-6979).
+- 2026-06-12 (cont. 3): §4.3 LIFF done (8a7a2d5). 479 tests green, clippy clean.
+  PAUSED here (context limit). NEXT STEP: §4.4 File & Attachment Management
+  (CRD lines 2996-3221, ~20 ops: authenticated upload/list/download + the
+  signature-protected public proxy — note §7.1 line 5706 signed-proxy rule;
+  partial pieces exist in conversations/messaging attachments + config.upload_dir).
+  Then §6.5 background queue (CRD 5106-5247), then Phase 6 (CRD 4201-5578).
+  Pattern reminders: domain/<area>/{mod,handlers,store}.rs; envelope::*;
+  AppError; require_auth/require_admin; tests per op in backend/tests/<area>.rs;
+  cargo test + clippy clean before commit; user prefers inline work (no subagents).
