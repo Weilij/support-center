@@ -24,6 +24,7 @@ import Teams from './pages/Teams'
 import Settings from './pages/Settings'
 import ProfilePage from './pages/Profile'
 import Reports from './pages/Reports'
+import ActivityLog from './pages/Activity'
 
 interface RouteMeta {
   requiresAuth?: boolean // default true (CRD 6476)
@@ -138,7 +139,11 @@ export const router = createBrowserRouter([
     path: '/settings',
     element: page({ title: '系統設定', adminOnly: true }, <Settings />),
   },
-  ...['/channels', '/activity', '/auto-reply'].map((path) => ({
+  {
+    path: '/activity',
+    element: page({ title: '活動日誌', adminOnly: true }, <ActivityLog />),
+  },
+  ...['/channels', '/auto-reply'].map((path) => ({
     path,
     element: page({ title: t('dashboard.title'), adminOnly: true }, <Dashboard />),
   })),
