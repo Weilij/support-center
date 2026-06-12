@@ -17,14 +17,14 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   - [x] §4.3 LIFF mini-page/admin/join (8a7a2d5)
   - [x] §4.4 files & attachments (31f1d39): uploads, signed proxies, direct-upload flow
   - [x] §6.5 background queue (b5d14b8): jobs, retries, DLQ, monitoring
-- [ ] Phase 6: ops/analytics/reports/notifications/settings  ← IN PROGRESS
+- [x] Phase 6: ops/analytics/reports/notifications/monitoring/settings (542 tests green) — BACKEND COMPLETE
   - [x] §6.4 notifications + reminders + alerting (90454aa)
   - [x] §6.3 monitoring & health: sweeps, breaker, dashboards
   - [x] §6.1 analytics: insights/comparison/dashboards/security
   - [x] §6.2 reports: pipeline/downloads/batch/scheduling
-  - [ ] §6.6 system settings & admin (CRD 5247-5488)
+  - [x] §6.6 system settings & admin (dbaa7f2): ~50 endpoints
   - [x] §6.7 rate-limit contract + keyed lease locks
-- [ ] Phase 7: frontend SPA
+- [ ] Phase 7: frontend SPA  ← NEXT (CRD 5844-6723)
 - [ ] Phase 8: web installer
 
 ## Session log
@@ -67,3 +67,9 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   PAUSED (context limit). NEXT: §6.1 analytics (CRD 4201-4505), §6.2 reports
   (CRD 4505-4697, tables already in 0001), §6.6 settings (CRD 5247-5488),
   then Phase 7 frontend (5844-6723), Phase 8 installer (6724-6979).
+- 2026-06-12 (cont. 6): §6.1 analytics (1d0b78a), §6.2 reports (6ac745f),
+  §6.6 system/admin (dbaa7f2). 542 tests, clippy clean. ENTIRE BACKEND (Phases 1-6)
+  COMPLETE: all 7 CRD backend sections implemented with per-operation tests.
+  NEXT: Phase 7 frontend SPA (CRD 5844-6723: state model 5846, views 6127,
+  realtime client 6332, routing/API/i18n 6465, traceability 6689). Suggest
+  Vite+React in frontend/. Then Phase 8 installer (6724-6979).
