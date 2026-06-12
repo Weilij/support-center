@@ -5,6 +5,7 @@ pub mod db;
 pub mod domain;
 pub mod envelope;
 pub mod error;
+pub mod locks;
 pub mod middleware;
 pub mod realtime;
 pub mod state;

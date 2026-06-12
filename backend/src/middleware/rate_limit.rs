@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::error::AppError;
 
 #[derive(Clone, Copy, Debug)]
 pub struct RatePolicy {
@@ -31,9 +30,22 @@ impl RatePolicy {
     }
 }
 
-#[derive(Default)]
 pub struct RateLimiter {
     buckets: Mutex<HashMap<(String, String), Vec<Instant>>>,
+    total_checks: std::sync::atomic::AtomicU64,
+    total_blocked: std::sync::atomic::AtomicU64,
+    started: Instant,
+}
+
+impl Default for RateLimiter {
+    fn default() -> Self {
+        Self {
+            buckets: Mutex::new(HashMap::new()),
+            total_checks: std::sync::atomic::AtomicU64::new(0),
+            total_blocked: std::sync::atomic::AtomicU64::new(0),
+            started: Instant::now(),
+        }
+    }
 }
 
 pub struct RateDecision {
@@ -44,8 +56,43 @@ pub struct RateDecision {
 }
 
 impl RateLimiter {
+    /// Operational statistics view (CRD 5531): distinct callers, cumulative
+    /// checks/blocks, tracked entries, last checkpoint, uptime.
+    pub fn stats(&self) -> serde_json::Value {
+        use std::sync::atomic::Ordering;
+        let (callers, entries) = self
+            .buckets
+            .lock()
+            .map(|b| {
+                let callers: std::collections::HashSet<&String> = b.keys().map(|(_, c)| c).collect();
+                (callers.len(), b.len())
+            })
+            .unwrap_or((0, 0));
+        serde_json::json!({
+            "distinctCallers": callers,
+            "totalChecks": self.total_checks.load(Ordering::Relaxed),
+            "totalBlocked": self.total_blocked.load(Ordering::Relaxed),
+            "trackedEntries": entries,
+            "lastPersistedAt": null,
+            "uptimeSecs": self.started.elapsed().as_secs(),
+        })
+    }
+
+    /// Prune idle counters (operational facility, CRD 5533).
+    pub fn prune(&self, max_window: Duration) {
+        if let Ok(mut buckets) = self.buckets.lock() {
+            let now = Instant::now();
+            buckets.retain(|_, hits| {
+                hits.retain(|t| now.duration_since(*t) < max_window);
+                !hits.is_empty()
+            });
+        }
+    }
+
     /// Consume one request from the caller's sliding window; never panics (fail-open).
     pub fn check(&self, policy: &RatePolicy, caller: &str) -> RateDecision {
+        use std::sync::atomic::Ordering;
+        self.total_checks.fetch_add(1, Ordering::Relaxed);
         let now = Instant::now();
         let mut buckets = match self.buckets.lock() {
             Ok(g) => g,
@@ -61,6 +108,7 @@ impl RateLimiter {
             .map(|t| policy.window.saturating_sub(now.duration_since(*t)).as_secs() + 1)
             .unwrap_or(policy.window.as_secs());
         if hits.len() as u32 >= policy.max_requests {
+            self.total_blocked.fetch_add(1, Ordering::Relaxed);
             return RateDecision { allowed: false, limit: policy.max_requests, remaining: 0, reset_secs };
         }
         hits.push(now);
@@ -108,16 +156,34 @@ pub fn limit(
         let limiter = limiter.clone();
         Box::pin(async move {
             let ip = caller_ip(&req);
+            let path = req.uri().path().to_string();
             let decision = limiter.check(&policy, &ip);
             if !decision.allowed {
-                let mut resp = AppError::TooManyRequests {
-                    message: format!(
-                        "Too many requests. Please retry after {} seconds",
-                        decision.reset_secs
-                    ),
-                    retry_after: decision.reset_secs,
+                let retry_after = decision.reset_secs.max(1);
+                // Auth/login blocks emit security warnings (CRD 5523, 5574).
+                if policy.scope == "login" {
+                    tracing::warn!(caller = %ip, path = %path, retry_after,
+                        "login rate limit block (possible brute-force attempt)");
+                } else if policy.scope == "auth" {
+                    tracing::warn!(caller = %ip, path = %path, retry_after, "auth rate limit block");
                 }
-                .into_response();
+                // Documented throttled body (CRD 5530): error label, wait
+                // message, limit, window in seconds, retry-after seconds.
+                let body = serde_json::json!({
+                    "success": false,
+                    "error": "Rate limit exceeded",
+                    "code": "TOO_MANY_REQUESTS",
+                    "message": format!("Too many requests. Please retry after {retry_after} seconds"),
+                    "limit": decision.limit,
+                    "window": policy.window.as_secs().to_string(),
+                    "retryAfter": retry_after,
+                    "timestamp": crate::db::now_iso(),
+                });
+                let mut resp = (axum::http::StatusCode::TOO_MANY_REQUESTS, axum::Json(body))
+                    .into_response();
+                if let Ok(v) = retry_after.to_string().parse() {
+                    resp.headers_mut().insert("Retry-After", v);
+                }
                 decorate(&mut resp, &decision);
                 return resp;
             }
