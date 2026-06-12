@@ -1,11 +1,13 @@
 // Conversation list screen wired to the conversations store.
 
 import { useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import { conversationsStore, loadConversations, markConversationRead } from '../stores/conversations'
 import { useStore } from '../stores/store'
 
 export default function Conversations() {
+  const navigate = useNavigate()
   const state = useStore(conversationsStore)
   useEffect(() => {
     void loadConversations()
@@ -20,7 +22,7 @@ export default function Conversations() {
           <li
             key={c.id}
             style={{ padding: 8, borderBottom: '1px solid #eee', cursor: 'pointer' }}
-            onClick={() => void markConversationRead(c.id)}
+            onClick={() => { void markConversationRead(c.id); navigate(`/conversations/${c.id}`) }}
           >
             <strong>{c.customerName ?? c.id}</strong>
             {(c.unreadCount ?? 0) > 0 && (
