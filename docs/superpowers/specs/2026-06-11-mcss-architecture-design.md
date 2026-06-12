@@ -29,7 +29,7 @@ taxonomy, WebSocket events, authorization rules, and side effects.
 ## Repository layout
 
 ```
-mutifable/
+support-center/
 ├── Rust_CRD.md              # the spec (read-only input)
 ├── docs/
 │   ├── superpowers/specs/   # this design doc
