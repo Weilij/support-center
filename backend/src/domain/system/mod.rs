@@ -4,7 +4,7 @@ pub mod admin;
 pub mod handlers;
 
 use axum::middleware::from_fn_with_state;
-use axum::routing::{get, post, put};
+use axum::routing::{get, post};
 use axum::Router;
 use std::sync::Arc;
 
