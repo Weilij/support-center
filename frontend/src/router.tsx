@@ -18,6 +18,8 @@ import NotFound from './pages/NotFound'
 import Conversations from './pages/Conversations'
 import ConversationDetail from './pages/ConversationDetail'
 import Notifications from './pages/Notifications'
+import Tags from './pages/Tags'
+import Shell from './Shell'
 
 interface RouteMeta {
   requiresAuth?: boolean // default true (CRD 6476)
@@ -78,7 +80,9 @@ function Guard({ meta, children }: { meta: RouteMeta; children: React.ReactNode 
 }
 
 const page = (meta: RouteMeta, element: React.ReactNode) => (
-  <Guard meta={meta}>{element}</Guard>
+  <Guard meta={meta}>
+    {(meta.requiresAuth ?? true) && !meta.guestOnly ? <Shell>{element}</Shell> : element}
+  </Guard>
 )
 
 // Known navigable destinations and access tiers (CRD 6488-6494).
@@ -105,7 +109,11 @@ export const router = createBrowserRouter([
     path: '/notifications',
     element: page({ title: '通知中心' }, <Notifications />),
   },
-  ...['/profile', '/tags',
+  {
+    path: '/tags',
+    element: page({ title: '標籤管理' }, <Tags />),
+  },
+  ...['/profile',
       '/export', '/reports'].map((path) => ({
     path,
     element: page({ title: t('dashboard.title') }, <Dashboard />),
