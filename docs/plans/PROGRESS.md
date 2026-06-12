@@ -30,7 +30,8 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   - [~] §8.1 state model: Store<T> w/ optimistic+rollback, conversations
         container + screen done; remaining: messages/teams/tags/notifications
         containers (CRD 5846-6126)
-  - [ ] §8.2 views & flows (6127-6332): conversation list/detail, admin screens
+  - [~] §8.2 views: conversation list + detail (send/optimistic/realtime)
+        done; remaining: admin screens, tags/notifications/reports views
   - [x] §8.3 realtime client core: connect/auth/reconnect/event routing
         (deeper protocol coverage pending: sync-after-reconnect, presence)
   - [ ] §8.4 remaining: full endpoint contract map, team context switcher
@@ -87,3 +88,4 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   npm run build green. Resume with §8.1 state model + §8.2 conversation views.
 - 2026-06-12 (cont. 8): §8.1 store layer + conversations screen committed.
 - 2026-06-12 (cont. 9): §8.3 realtime client committed.
+- 2026-06-12 (cont. 10): §8.2 conversation detail committed.
