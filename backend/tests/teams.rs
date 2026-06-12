@@ -12,7 +12,7 @@ async fn admin_token(app: &TestApp) -> String {
 }
 
 async fn membership(app: &TestApp, agent_id: &str, team_id: i64) -> Option<(String, i64)> {
-    sqlx::query_as("SELECT role, is_primary FROM team_members WHERE agent_id = ? AND team_id = ?")
+    sqlx::query_as("SELECT role, is_primary FROM team_members WHERE agent_id = $1 AND team_id = $2")
         .bind(agent_id)
         .bind(team_id)
         .fetch_optional(&app.state.db)
@@ -56,7 +56,7 @@ async fn list_teams_admin_paginates_filters_and_searches() {
     let alpha = app.seed_team("Alpha Support").await;
     app.seed_team("Beta Sales").await;
     let inactive = app.seed_team("Sleepy").await;
-    sqlx::query("UPDATE teams SET is_active = 0 WHERE id = ?")
+    sqlx::query("UPDATE teams SET is_active = 0 WHERE id = $1")
         .bind(inactive)
         .execute(&app.state.db)
         .await
@@ -267,7 +267,7 @@ async fn delete_team_is_soft_and_audited() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], true);
     let deleted_at: Option<String> =
-        sqlx::query_scalar("SELECT deleted_at FROM teams WHERE id = ?")
+        sqlx::query_scalar("SELECT deleted_at FROM teams WHERE id = $1")
             .bind(team)
             .fetch_one(&app.state.db)
             .await
@@ -428,13 +428,13 @@ async fn team_members_lists_sorted_by_name() {
     let admin = admin_token(&app).await;
     let team = app.seed_team("Crew").await;
     let b = app.seed_agent("bb@test.com", "password1", "agent").await;
-    sqlx::query("UPDATE agents SET display_name = 'Zed' WHERE id = ?")
+    sqlx::query("UPDATE agents SET display_name = 'Zed' WHERE id = $1")
         .bind(&b)
         .execute(&app.state.db)
         .await
         .unwrap();
     let a = app.seed_agent("aa@test.com", "password1", "agent").await;
-    sqlx::query("UPDATE agents SET display_name = 'Amy' WHERE id = ?")
+    sqlx::query("UPDATE agents SET display_name = 'Amy' WHERE id = $1")
         .bind(&a)
         .execute(&app.state.db)
         .await
@@ -477,7 +477,7 @@ async fn add_member_creates_primary_first_membership_without_duplicates() {
         .await;
     assert_eq!(status, StatusCode::CREATED);
     let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM team_members WHERE agent_id = ? AND team_id = ?",
+        "SELECT COUNT(*) FROM team_members WHERE agent_id = $1 AND team_id = $2",
     )
     .bind(&newbie)
     .bind(team)
@@ -696,7 +696,7 @@ async fn check_email_reports_active_and_deleted_accounts() {
     assert_eq!(body["data"]["isDeleted"], false);
     // Soft-deleted account.
     let gone = app.seed_agent("gone@test.com", "password1", "agent").await;
-    sqlx::query("UPDATE agents SET deleted_at = '2026-01-01T00:00:00.000Z' WHERE id = ?")
+    sqlx::query("UPDATE agents SET deleted_at = '2026-01-01T00:00:00.000Z' WHERE id = $1")
         .bind(&gone)
         .execute(&app.state.db)
         .await
@@ -742,7 +742,7 @@ async fn create_member_with_team_and_reactivation() {
     assert_eq!(status, StatusCode::CONFLICT);
 
     // Soft-deleted account is reactivated with memberships cleared (CRD 1949).
-    sqlx::query("UPDATE agents SET deleted_at = '2026-01-01T00:00:00.000Z' WHERE id = ?")
+    sqlx::query("UPDATE agents SET deleted_at = '2026-01-01T00:00:00.000Z' WHERE id = $1")
         .bind(&member_id)
         .execute(&app.state.db)
         .await
@@ -869,7 +869,7 @@ async fn delete_member_account_is_permanent() {
     let target = app.seed_agent("dead@test.com", "password1", "agent").await;
     app.add_membership(&target, team, "member", true).await;
     sqlx::query(
-        "INSERT INTO notifications (id, agent_id, title, created_at) VALUES ('n1', ?, 't', '2026-01-01')",
+        "INSERT INTO notifications (id, agent_id, title, created_at) VALUES ('n1', $1, 't', '2026-01-01')",
     )
     .bind(&target)
     .execute(&app.state.db)
@@ -881,13 +881,13 @@ async fn delete_member_account_is_permanent() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["deletedMemberId"], target);
-    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE id = ?")
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE id = $1")
         .bind(&target)
         .fetch_one(&app.state.db)
         .await
         .unwrap();
     assert_eq!(remaining, 0);
-    let notifications: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE agent_id = ?")
+    let notifications: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE agent_id = $1")
         .bind(&target)
         .fetch_one(&app.state.db)
         .await
@@ -964,7 +964,7 @@ async fn bulk_update_members_skips_self_and_validates() {
     assert_eq!(body["data"]["updatedCount"], 1);
     assert_eq!(body["data"]["skipped"].as_array().unwrap().len(), 1);
     assert_eq!(body["data"]["failed"].as_array().unwrap().len(), 1);
-    let active: i64 = sqlx::query_scalar("SELECT is_active FROM agents WHERE id = ?")
+    let active: i64 = sqlx::query_scalar("SELECT is_active FROM agents WHERE id = $1")
         .bind(&a)
         .fetch_one(&app.state.db)
         .await
@@ -1025,7 +1025,7 @@ async fn batch_edit_members_and_undo_restore() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["restoredCount"], 1);
-    let name: String = sqlx::query_scalar("SELECT display_name FROM agents WHERE id = ?")
+    let name: String = sqlx::query_scalar("SELECT display_name FROM agents WHERE id = $1")
         .bind(&target)
         .fetch_one(&app.state.db)
         .await
@@ -1239,7 +1239,7 @@ async fn leave_team_promotes_notifies_and_counts_conversations() {
     assert_eq!(primary, 1);
     // Persisted high-priority personal notification (CRD 2151).
     let notif: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND type = 'team_removal'",
+        "SELECT COUNT(*) FROM notifications WHERE agent_id = $1 AND type = 'team_removal'",
     )
     .bind(&agent)
     .fetch_one(&app.state.db)
@@ -1388,7 +1388,7 @@ async fn deactivate_qr_code() {
         .request("PUT", &format!("/api/teams/{team}/qr-codes/{qr_id}/deactivate"), Some(&admin), None)
         .await;
     assert_eq!(status, StatusCode::OK);
-    let active: i64 = sqlx::query_scalar("SELECT is_active FROM qr_codes WHERE id = ?")
+    let active: i64 = sqlx::query_scalar("SELECT is_active FROM qr_codes WHERE id = $1")
         .bind(&qr_id)
         .fetch_one(&app.state.db)
         .await

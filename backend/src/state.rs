@@ -1,4 +1,4 @@
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -146,7 +146,7 @@ impl RecallableMarkers {
 }
 
 pub struct AppState {
-    pub db: SqlitePool,
+    pub db: PgPool,
     pub config: Config,
     pub rate_limiter: Arc<RateLimiter>,
     pub team_cache: TeamCache,
@@ -163,7 +163,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(db: SqlitePool, config: Config) -> Arc<Self> {
+    pub fn new(db: PgPool, config: Config) -> Arc<Self> {
         Arc::new(Self {
             db,
             config,

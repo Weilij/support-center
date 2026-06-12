@@ -55,7 +55,7 @@ async fn assign_team_is_idempotent_per_user_team_pair() {
     // Seed the LIFF code record so the scan counter applies.
     sqlx::query(
         "INSERT INTO team_liff_links (id, team_id, url, is_active, created_at)
-         VALUES ('liff-1', ?, 'https://liff.line.me/x', 1, ?)",
+         VALUES ('liff-1', $1, 'https://liff.line.me/x', 1, $2)",
     )
     .bind(team)
     .bind(chrono::Utc::now().to_rfc3339())
@@ -96,7 +96,7 @@ async fn assign_team_is_idempotent_per_user_team_pair() {
     .await
     .unwrap();
     assert_eq!(count, 1);
-    let scans: i64 = sqlx::query_scalar("SELECT scan_count FROM team_liff_links WHERE team_id = ?")
+    let scans: i64 = sqlx::query_scalar("SELECT scan_count FROM team_liff_links WHERE team_id = $1")
         .bind(team)
         .fetch_one(&app.state.db)
         .await
@@ -143,7 +143,7 @@ async fn welcome_validates_and_reconciles_conversations() {
             Some(json!({"lineUserId": "U-w", "teamId": team_b})))
         .await;
     assert_eq!(status, StatusCode::OK);
-    let assigned: Option<i64> = sqlx::query_scalar("SELECT team_id FROM conversations WHERE id = ?")
+    let assigned: Option<i64> = sqlx::query_scalar("SELECT team_id FROM conversations WHERE id = $1")
         .bind(&conversation)
         .fetch_one(&app.state.db)
         .await
@@ -151,7 +151,7 @@ async fn welcome_validates_and_reconciles_conversations() {
     assert_eq!(assigned, Some(team_b), "open conversation reassigned to the target team");
 
     // Closed conversations are never reassigned: a new one is created instead.
-    sqlx::query("UPDATE conversations SET status = 'closed' WHERE id = ?")
+    sqlx::query("UPDATE conversations SET status = 'closed' WHERE id = $1")
         .bind(&conversation)
         .execute(&app.state.db)
         .await
@@ -162,7 +162,7 @@ async fn welcome_validates_and_reconciles_conversations() {
         .await;
     assert_eq!(status, StatusCode::OK);
     let open_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM conversations WHERE customer_id = ? AND status = 'active' AND team_id = ?",
+        "SELECT COUNT(*) FROM conversations WHERE customer_id = $1 AND status = 'active' AND team_id = $2",
     )
     .bind(customer)
     .bind(team_a)
@@ -171,7 +171,7 @@ async fn welcome_validates_and_reconciles_conversations() {
     .unwrap();
     assert_eq!(open_count, 1, "new active conversation created for the target team");
     let closed_team: Option<i64> =
-        sqlx::query_scalar("SELECT team_id FROM conversations WHERE id = ?")
+        sqlx::query_scalar("SELECT team_id FROM conversations WHERE id = $1")
             .bind(&conversation)
             .fetch_one(&app.state.db)
             .await

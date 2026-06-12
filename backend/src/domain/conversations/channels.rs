@@ -7,7 +7,7 @@
 //! outbound support (LINE) delivers, all others remain effectively undelivered
 //! (CRD 773).
 
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 /// One outbound unit: the text body or one attachment reference.
 pub struct OutboundItem {
@@ -52,7 +52,7 @@ impl ChannelGateway for StubGateway {
 /// batches the items to the platform cap, then persists the final sent flag,
 /// delivery status (sent / partial / failed), and platform message id.
 pub async fn deliver_pending(
-    db: SqlitePool,
+    db: PgPool,
     hub: std::sync::Arc<crate::realtime::RealtimeHub>,
     conversation_id: String,
     message_id: String,
@@ -91,9 +91,9 @@ pub async fn deliver_pending(
     let now = crate::db::now_iso();
     let result = sqlx::query(
         "UPDATE messages
-            SET delivery_status = ?, is_sent = ?, platform_message_id = ?,
-                sent_at = CASE WHEN ? THEN ? ELSE sent_at END, updated_at = ?
-          WHERE id = ?",
+            SET delivery_status = $1, is_sent = $2, platform_message_id = $3,
+                sent_at = CASE WHEN $4::bigint = 1 THEN $5 ELSE sent_at END, updated_at = $6
+          WHERE id = $7",
     )
     .bind(status)
     .bind(is_sent as i64)

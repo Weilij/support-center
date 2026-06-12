@@ -44,7 +44,7 @@ async fn seed_attachment(
     sqlx::query(
         "INSERT INTO attachments (id, message_id, conversation_id, file_name, content_type,
                                   file_size, file_url, storage_key, created_at)
-         VALUES (?, ?, ?, 'f.png', 'image/png', 5, ?, ?, ?)",
+         VALUES ($1, $2, $3, 'f.png', 'image/png', 5, $4, $5, $6)",
     )
     .bind(&id)
     .bind(message_id)
@@ -233,7 +233,7 @@ async fn history_error_conditions() {
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     // Soft-deleted conversation is not a valid target -> 404.
-    sqlx::query("UPDATE conversations SET deleted_at = ? WHERE id = ?")
+    sqlx::query("UPDATE conversations SET deleted_at = $1 WHERE id = $2")
         .bind(chrono::Utc::now().to_rfc3339())
         .bind(&assigned)
         .execute(&app.state.db)
@@ -311,7 +311,7 @@ async fn reply_persists_delivered_message_and_echoes_correlation_id() {
     // Recorded as sent + delivered, with the display-name snapshot, and the
     // conversation recency markers advanced (CRD 1084-1086, 1158).
     let row: (String, i64, String, String) = sqlx::query_as(
-        "SELECT delivery_status, is_sent, sender_name, metadata FROM messages WHERE id = ?",
+        "SELECT delivery_status, is_sent, sender_name, metadata FROM messages WHERE id = $1",
     )
     .bind(message["id"].as_str().unwrap())
     .fetch_one(&app.state.db)
@@ -324,7 +324,7 @@ async fn reply_persists_delivered_message_and_echoes_correlation_id() {
     assert_eq!(metadata["correlationId"], json!("client-123"));
     assert_eq!(metadata["platform"], json!("line"));
     let (last_msg, updated): (Option<String>, Option<String>) =
-        sqlx::query_as("SELECT last_message_at, updated_at FROM conversations WHERE id = ?")
+        sqlx::query_as("SELECT last_message_at, updated_at FROM conversations WHERE id = $1")
             .bind(&conv)
             .fetch_one(&app.state.db)
             .await
@@ -355,7 +355,7 @@ async fn reply_links_attachments_and_forces_file_kind() {
     assert_eq!(body["message"]["attachments"].as_array().unwrap().len(), 1);
 
     let linked: Option<String> =
-        sqlx::query_scalar("SELECT message_id FROM attachments WHERE id = ?")
+        sqlx::query_scalar("SELECT message_id FROM attachments WHERE id = $1")
             .bind(&attachment)
             .fetch_one(&app.state.db)
             .await
@@ -440,7 +440,7 @@ async fn upload_stores_namespaced_file_and_creates_no_message() {
 
     // No message was created by the upload (CRD 1110, 1112).
     let messages: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE conversation_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE conversation_id = $1")
             .bind(&conv)
             .fetch_one(&app.state.db)
             .await

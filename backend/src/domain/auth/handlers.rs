@@ -130,7 +130,7 @@ pub async fn login(
     }
 
     // Best-effort last-login update (CRD 139: failure does not block sign-in).
-    let _ = sqlx::query("UPDATE agents SET last_login_at = ? WHERE id = ?")
+    let _ = sqlx::query("UPDATE agents SET last_login_at = $1 WHERE id = $2")
         .bind(crate::db::now_iso())
         .bind(&agent.id)
         .execute(&state.db)
@@ -207,13 +207,13 @@ pub async fn register(
 
     // Soft-deleted same-email account is reactivated in place (CRD 149).
     let user_id = if let Some(old) = store::find_deleted_agent_by_email(&state.db, &email).await? {
-        sqlx::query("DELETE FROM team_members WHERE agent_id = ?")
+        sqlx::query("DELETE FROM team_members WHERE agent_id = $1")
             .bind(&old.id)
             .execute(&state.db)
             .await?;
         sqlx::query(
-            "UPDATE agents SET password_hash = ?, display_name = ?, role = ?, is_active = 1,
-             password_policy = 'changeable', deleted_at = NULL, updated_at = ? WHERE id = ?",
+            "UPDATE agents SET password_hash = $1, display_name = $2, role = $3, is_active = 1,
+             password_policy = 'changeable', deleted_at = NULL, updated_at = $4 WHERE id = $5",
         )
         .bind(&hash)
         .bind(&display_name)
@@ -227,7 +227,7 @@ pub async fn register(
         let id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
             "INSERT INTO agents (id, email, password_hash, display_name, role, is_active, created_at)
-             VALUES (?, ?, ?, ?, ?, 1, ?)",
+             VALUES ($1, $2, $3, $4, $5, 1, $6)",
         )
         .bind(&id)
         .bind(&email)
@@ -247,7 +247,7 @@ pub async fn register(
             return Err(AppError::BadRequest(format!("Team {team_id} not found")));
         }
         sqlx::query(
-            "INSERT INTO team_members (agent_id, team_id, role, is_primary, joined_at) VALUES (?, ?, 'member', 1, ?)",
+            "INSERT INTO team_members (agent_id, team_id, role, is_primary, joined_at) VALUES ($1, $2, 'member', 1, $3)",
         )
         .bind(&user_id)
         .bind(team_id)
@@ -471,7 +471,7 @@ pub async fn update_me(
         return Ok(envelope::ok_msg(agent_view(&agent), "No changes"));
     }
 
-    sqlx::query("UPDATE agents SET display_name = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE agents SET display_name = $1, updated_at = $2 WHERE id = $3")
         .bind(&name)
         .bind(crate::db::now_iso())
         .bind(&user.id)
@@ -535,7 +535,7 @@ pub async fn change_password(
     let hash = store::hash_password(&new)
         .map_err(|e| AppError::Internal(format!("password hashing failed: {e}")))?;
     sqlx::query(
-        "UPDATE agents SET password_hash = ?, password_policy = 'changeable', updated_at = ? WHERE id = ?",
+        "UPDATE agents SET password_hash = $1, password_policy = 'changeable', updated_at = $2 WHERE id = $3",
     )
     .bind(&hash)
     .bind(crate::db::now_iso())
@@ -595,7 +595,7 @@ pub async fn reset_member_password(
         .map_err(|e| AppError::Internal(format!("password hashing failed: {e}")))?;
     let policy = body.policy.unwrap_or_else(|| target.password_policy.clone());
     sqlx::query(
-        "UPDATE agents SET password_hash = ?, password_policy = ?, updated_at = ? WHERE id = ?",
+        "UPDATE agents SET password_hash = $1, password_policy = $2, updated_at = $3 WHERE id = $4",
     )
     .bind(&hash)
     .bind(&policy)

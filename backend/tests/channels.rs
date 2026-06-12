@@ -32,7 +32,7 @@ async fn create_line(app: &TestApp, token: &str) -> Value {
 }
 
 async fn credentials_blob(app: &TestApp, id: i64) -> String {
-    sqlx::query_scalar("SELECT credentials FROM channel_integrations WHERE id = ?")
+    sqlx::query_scalar("SELECT credentials FROM channel_integrations WHERE id = $1")
         .bind(id)
         .fetch_one(&app.state.db)
         .await
@@ -391,7 +391,7 @@ async fn delete_soft_disables_and_frees_the_platform_slot() {
 
     // Not physically removed (CRD 2666).
     let active: i64 =
-        sqlx::query_scalar("SELECT is_active FROM channel_integrations WHERE id = ?")
+        sqlx::query_scalar("SELECT is_active FROM channel_integrations WHERE id = $1")
             .bind(id)
             .fetch_one(&app.state.db)
             .await
@@ -416,7 +416,7 @@ async fn verify_success_marks_verified_and_clears_errors() {
     let token = admin_in_team(&app, "a@x.io", team).await;
     let id = create_line(&app, &token).await["data"]["id"].as_i64().unwrap();
     // Seed a prior error state to observe the reset (CRD 2715).
-    sqlx::query("UPDATE channel_integrations SET error_count = 3, last_error = '{}' WHERE id = ?")
+    sqlx::query("UPDATE channel_integrations SET error_count = 3, last_error = '{}' WHERE id = $1")
         .bind(id)
         .execute(&app.state.db)
         .await
@@ -556,7 +556,7 @@ async fn health_classifies_healthy_degraded_down() {
     assert_eq!(body["data"]["consecutiveErrors"], 0);
     assert_eq!(body["data"]["recommendations"].as_array().unwrap().len(), 0);
 
-    sqlx::query("UPDATE channel_integrations SET error_count = 3 WHERE id = ?")
+    sqlx::query("UPDATE channel_integrations SET error_count = 3 WHERE id = $1")
         .bind(id)
         .execute(&app.state.db)
         .await
@@ -566,7 +566,7 @@ async fn health_classifies_healthy_degraded_down() {
     assert_eq!(body["data"]["status"], "degraded");
     assert!(!body["data"]["recommendations"].as_array().unwrap().is_empty());
 
-    sqlx::query("UPDATE channel_integrations SET error_count = 9 WHERE id = ?")
+    sqlx::query("UPDATE channel_integrations SET error_count = 9 WHERE id = $1")
         .bind(id)
         .execute(&app.state.db)
         .await

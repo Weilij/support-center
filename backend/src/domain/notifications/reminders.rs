@@ -89,7 +89,7 @@ pub async fn create(
     sqlx::query(
         "INSERT INTO task_reminders
             (id, agent_id, title, content, remind_at, conversation_id, repeat_type, repeat_interval, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(&id)
     .bind(&user.id)
@@ -118,11 +118,11 @@ pub async fn list(
     Query(q): Query<ListQuery>,
 ) -> Result {
     let include_completed = q.include_completed.as_deref() == Some("true");
-    let rows: Vec<ReminderRow> = sqlx::query_as(&format!(
+    let rows: Vec<ReminderRow> = sqlx::query_as(&crate::db::pg_params(&format!(
         "SELECT {COLUMNS} FROM task_reminders
-         WHERE agent_id = ? AND (? OR is_completed = 0)
+         WHERE agent_id = $1 AND ($2 OR is_completed = 0)
          ORDER BY remind_at ASC"
-    ))
+    )))
     .bind(&user.id)
     .bind(include_completed)
     .fetch_all(&state.db)
@@ -141,11 +141,11 @@ pub async fn upcoming(
 ) -> Result {
     let minutes = q.minutes.unwrap_or(30);
     let until = (chrono::Utc::now() + chrono::Duration::minutes(minutes)).to_rfc3339();
-    let rows: Vec<ReminderRow> = sqlx::query_as(&format!(
+    let rows: Vec<ReminderRow> = sqlx::query_as(&crate::db::pg_params(&format!(
         "SELECT {COLUMNS} FROM task_reminders
-         WHERE agent_id = ? AND is_completed = 0 AND is_sent = 0 AND remind_at <= ?
+         WHERE agent_id = $1 AND is_completed = 0 AND is_sent = 0 AND remind_at <= $2
          ORDER BY remind_at ASC"
-    ))
+    )))
     .bind(&user.id)
     .bind(&until)
     .fetch_all(&state.db)
@@ -165,10 +165,10 @@ pub async fn stats(
     let now = now_iso();
     let (total, pending, completed, overdue): (i64, i64, i64, i64) = sqlx::query_as(
         "SELECT COUNT(*),
-                COALESCE(SUM(CASE WHEN is_completed = 0 THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN is_completed = 1 THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN is_completed = 0 AND is_sent = 0 AND remind_at < ? THEN 1 ELSE 0 END), 0)
-         FROM task_reminders WHERE agent_id = ?",
+                COALESCE(SUM(CASE WHEN is_completed = 0 THEN 1 ELSE 0 END), 0)::bigint,
+                COALESCE(SUM(CASE WHEN is_completed = 1 THEN 1 ELSE 0 END), 0)::bigint,
+                COALESCE(SUM(CASE WHEN is_completed = 0 AND is_sent = 0 AND remind_at < $1 THEN 1 ELSE 0 END), 0)::bigint
+         FROM task_reminders WHERE agent_id = $2",
     )
     .bind(&now)
     .bind(&user.id)
@@ -180,9 +180,9 @@ pub async fn stats(
 }
 
 async fn find_owned(state: &AppState, user_id: &str, id: &str) -> Result<ReminderRow> {
-    sqlx::query_as::<_, ReminderRow>(&format!(
-        "SELECT {COLUMNS} FROM task_reminders WHERE id = ? AND agent_id = ?"
-    ))
+    sqlx::query_as::<_, ReminderRow>(&crate::db::pg_params(&format!(
+        "SELECT {COLUMNS} FROM task_reminders WHERE id = $1 AND agent_id = $2"
+    )))
     .bind(id)
     .bind(user_id)
     .fetch_optional(&state.db)
@@ -208,14 +208,14 @@ pub async fn update(
 ) -> Result {
     find_owned(&state, &user.id, &id).await?;
     if let Some(title) = &body.title {
-        sqlx::query("UPDATE task_reminders SET title = ? WHERE id = ?")
+        sqlx::query("UPDATE task_reminders SET title = $1 WHERE id = $2")
             .bind(title.trim())
             .bind(&id)
             .execute(&state.db)
             .await?;
     }
     if let Some(content) = &body.content {
-        sqlx::query("UPDATE task_reminders SET content = ? WHERE id = ?")
+        sqlx::query("UPDATE task_reminders SET content = $1 WHERE id = $2")
             .bind(content)
             .bind(&id)
             .execute(&state.db)
@@ -224,27 +224,27 @@ pub async fn update(
     if let Some(raw) = &body.remind_at {
         let at = chrono::DateTime::parse_from_rfc3339(raw)
             .map_err(|_| AppError::BadRequest("Invalid remindAt date format".into()))?;
-        sqlx::query("UPDATE task_reminders SET remind_at = ?, is_sent = 0, sent_at = NULL WHERE id = ?")
+        sqlx::query("UPDATE task_reminders SET remind_at = $1, is_sent = 0, sent_at = NULL WHERE id = $2")
             .bind(at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
             .bind(&id)
             .execute(&state.db)
             .await?;
     }
     if let Some(rt) = &body.repeat_type {
-        sqlx::query("UPDATE task_reminders SET repeat_type = ? WHERE id = ?")
+        sqlx::query("UPDATE task_reminders SET repeat_type = $1 WHERE id = $2")
             .bind(rt)
             .bind(&id)
             .execute(&state.db)
             .await?;
     }
     if let Some(ri) = body.repeat_interval {
-        sqlx::query("UPDATE task_reminders SET repeat_interval = ? WHERE id = ?")
+        sqlx::query("UPDATE task_reminders SET repeat_interval = $1 WHERE id = $2")
             .bind(ri)
             .bind(&id)
             .execute(&state.db)
             .await?;
     }
-    sqlx::query("UPDATE task_reminders SET updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE task_reminders SET updated_at = $1 WHERE id = $2")
         .bind(now_iso())
         .bind(&id)
         .execute(&state.db)
@@ -258,7 +258,7 @@ pub async fn complete(
     Path(id): Path<String>,
 ) -> Result {
     find_owned(&state, &user.id, &id).await?;
-    sqlx::query("UPDATE task_reminders SET is_completed = 1, completed_at = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE task_reminders SET is_completed = 1, completed_at = $1, updated_at = $2 WHERE id = $3")
         .bind(now_iso())
         .bind(now_iso())
         .bind(&id)
@@ -273,7 +273,7 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> Result {
     find_owned(&state, &user.id, &id).await?;
-    sqlx::query("DELETE FROM task_reminders WHERE id = ?")
+    sqlx::query("DELETE FROM task_reminders WHERE id = $1")
         .bind(&id)
         .execute(&state.db)
         .await?;
@@ -300,10 +300,10 @@ pub async fn process(
 /// are isolated.
 pub async fn process_due(state: &AppState) -> usize {
     let now = now_iso();
-    let due: Vec<ReminderRow> = sqlx::query_as(&format!(
+    let due: Vec<ReminderRow> = sqlx::query_as(&crate::db::pg_params(&format!(
         "SELECT {COLUMNS} FROM task_reminders
-         WHERE remind_at <= ? AND is_completed = 0 AND is_sent = 0"
-    ))
+         WHERE remind_at <= $1 AND is_completed = 0 AND is_sent = 0"
+    )))
     .bind(&now)
     .fetch_all(&state.db)
     .await
@@ -330,7 +330,7 @@ pub async fn process_due(state: &AppState) -> usize {
             },
         )
         .await;
-        let _ = sqlx::query("UPDATE task_reminders SET is_sent = 1, sent_at = ? WHERE id = ?")
+        let _ = sqlx::query("UPDATE task_reminders SET is_sent = 1, sent_at = $1 WHERE id = $2")
             .bind(&now)
             .bind(&r.id)
             .execute(&state.db)
@@ -353,7 +353,7 @@ pub async fn process_due(state: &AppState) -> usize {
                 let _ = sqlx::query(
                     "INSERT INTO task_reminders
                         (id, agent_id, title, content, remind_at, conversation_id, repeat_type, repeat_interval, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
                 )
                 .bind(uuid::Uuid::new_v4().to_string())
                 .bind(&r.agent_id)

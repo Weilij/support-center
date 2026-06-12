@@ -21,7 +21,7 @@ struct Seeded {
 async fn seed_agent_with_id(app: &TestApp, id: &str, email: &str, role: &str) {
     sqlx::query(
         "INSERT INTO agents (id, email, password_hash, display_name, role, is_active, created_at)
-         VALUES (?, ?, 'x', ?, ?, 1, ?)",
+         VALUES ($1, $2, 'x', $3, $4, 1, $5)",
     )
     .bind(id)
     .bind(email)

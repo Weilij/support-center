@@ -26,14 +26,14 @@ fn require_admin(user: &AuthUser) -> Result<()> {
 
 async fn put_setting(state: &AppState, key: &str, value: &Value) {
     let _ = sqlx::query(
-        "INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)
+        "INSERT INTO system_settings (key, value, updated_at) VALUES ($1, $2, $3)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
     )
     .bind(key).bind(value.to_string()).bind(now_iso()).execute(&state.db).await;
 }
 
 async fn get_setting(state: &AppState, key: &str) -> Option<Value> {
-    sqlx::query_scalar::<_, Option<String>>("SELECT value FROM system_settings WHERE key = ?")
+    sqlx::query_scalar::<_, Option<String>>("SELECT value FROM system_settings WHERE key = $1")
         .bind(key).fetch_optional(&state.db).await.ok().flatten().flatten()
         .and_then(|v| serde_json::from_str(&v).ok())
 }
@@ -559,8 +559,8 @@ pub async fn backfill_legacy_filenames(
     type LegacyRow = (String, Option<String>, Option<String>, Option<String>);
     let rows: Vec<LegacyRow> = sqlx::query_as(
         "SELECT id, file_name, content_type, storage_key FROM attachments
-         WHERE id > ? AND file_name IS NOT NULL AND file_name NOT LIKE '%.%'
-         ORDER BY id LIMIT ?",
+         WHERE id > $1 AND file_name IS NOT NULL AND file_name NOT LIKE '%.%'
+         ORDER BY id LIMIT $2",
     )
     .bind(&cursor).bind(limit).fetch_all(&state.db).await?;
 
@@ -593,7 +593,7 @@ pub async fn backfill_legacy_filenames(
             samples.push(json!({"id": id, "from": name, "to": new_name}));
         }
         if !dry_run {
-            sqlx::query("UPDATE attachments SET file_name = ?, updated_at = ? WHERE id = ?")
+            sqlx::query("UPDATE attachments SET file_name = $1, updated_at = $2 WHERE id = $3")
                 .bind(&new_name).bind(now_iso()).bind(id).execute(&state.db).await?;
         }
         fixed += 1;

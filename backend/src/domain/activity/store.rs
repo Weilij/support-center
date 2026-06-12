@@ -1,7 +1,7 @@
 //! Persistence and aggregation over the append-only audit trail (CRD §3.5).
 
 use serde_json::{json, Value};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ActivityRow {
@@ -58,7 +58,7 @@ pub fn entry_view(row: &ActivityRow) -> Value {
 }
 
 /// Shared filter for listing and the statistics families. Timestamps are ISO strings
-/// compared via SQLite `datetime()` so 'Z' and '+00:00' spellings collate together.
+/// compared via `::timestamptz` so 'Z' and '+00:00' spellings collate together.
 #[derive(Debug, Default, Clone)]
 pub struct ListFilter {
     pub user_id: Option<String>,
@@ -84,11 +84,11 @@ fn where_clause(f: &ListFilter) -> (String, Vec<String>) {
         binds.push(v.clone());
     }
     if let Some(v) = &f.start {
-        conds.push("datetime(created_at) >= datetime(?)");
+        conds.push("(created_at)::timestamptz >= (?)::timestamptz");
         binds.push(v.clone());
     }
     if let Some(v) = &f.end {
-        conds.push("datetime(created_at) <= datetime(?)");
+        conds.push("(created_at)::timestamptz <= (?)::timestamptz");
         binds.push(v.clone());
     }
     let w = if conds.is_empty() {
@@ -99,8 +99,8 @@ fn where_clause(f: &ListFilter) -> (String, Vec<String>) {
     (w, binds)
 }
 
-pub async fn find(pool: &SqlitePool, id: i64) -> sqlx::Result<Option<ActivityRow>> {
-    sqlx::query_as::<_, ActivityRow>("SELECT * FROM activity_logs WHERE id = ?")
+pub async fn find(pool: &PgPool, id: i64) -> sqlx::Result<Option<ActivityRow>> {
+    sqlx::query_as::<_, ActivityRow>("SELECT * FROM activity_logs WHERE id = $1")
         .bind(id)
         .fetch_optional(pool)
         .await
@@ -108,13 +108,14 @@ pub async fn find(pool: &SqlitePool, id: i64) -> sqlx::Result<Option<ActivityRow
 
 /// Newest-first page plus total count (CRD 2466-2472).
 pub async fn list(
-    pool: &SqlitePool,
+    pool: &PgPool,
     f: &ListFilter,
     page: i64,
     limit: i64,
 ) -> sqlx::Result<(Vec<ActivityRow>, i64)> {
     let (w, binds) = where_clause(f);
     let count_sql = format!("SELECT COUNT(*) FROM activity_logs{w}");
+    let count_sql = crate::db::pg_params(&count_sql);
     let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
     for b in &binds {
         count_q = count_q.bind(b.clone());
@@ -122,8 +123,9 @@ pub async fn list(
     let total = count_q.fetch_one(pool).await?;
 
     let sql = format!(
-        "SELECT * FROM activity_logs{w} ORDER BY datetime(created_at) DESC, id DESC LIMIT ? OFFSET ?"
+        "SELECT * FROM activity_logs{w} ORDER BY (created_at)::timestamptz DESC, id DESC LIMIT $1 OFFSET $2"
     );
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query_as::<_, ActivityRow>(&sql);
     for b in &binds {
         q = q.bind(b.clone());
@@ -132,9 +134,10 @@ pub async fn list(
     Ok((rows, total))
 }
 
-pub async fn count(pool: &SqlitePool, f: &ListFilter) -> sqlx::Result<i64> {
+pub async fn count(pool: &PgPool, f: &ListFilter) -> sqlx::Result<i64> {
     let (w, binds) = where_clause(f);
     let sql = format!("SELECT COUNT(*) FROM activity_logs{w}");
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query_scalar::<_, i64>(&sql);
     for b in &binds {
         q = q.bind(b.clone());
@@ -144,13 +147,14 @@ pub async fn count(pool: &SqlitePool, f: &ListFilter) -> sqlx::Result<i64> {
 
 /// `(action, count)` ordered by frequency.
 pub async fn action_breakdown(
-    pool: &SqlitePool,
+    pool: &PgPool,
     f: &ListFilter,
 ) -> sqlx::Result<Vec<(String, i64)>> {
     let (w, binds) = where_clause(f);
     let sql = format!(
         "SELECT action, COUNT(*) AS c FROM activity_logs{w} GROUP BY action ORDER BY c DESC, action"
     );
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query_as::<_, (String, i64)>(&sql);
     for b in &binds {
         q = q.bind(b.clone());
@@ -160,15 +164,16 @@ pub async fn action_breakdown(
 
 /// Top contributors `(display name, role, count)` (CRD 2509).
 pub async fn top_users(
-    pool: &SqlitePool,
+    pool: &PgPool,
     f: &ListFilter,
     limit: i64,
 ) -> sqlx::Result<Vec<(String, String, i64)>> {
     let (w, binds) = where_clause(f);
     let sql = format!(
-        "SELECT COALESCE(agent_name, agent_id), COALESCE(agent_role, 'agent'), COUNT(*) AS c
-         FROM activity_logs{w} GROUP BY agent_id ORDER BY c DESC LIMIT ?"
+        "SELECT COALESCE(MAX(agent_name), agent_id), COALESCE(MAX(agent_role), 'agent'), COUNT(*) AS c
+         FROM activity_logs{w} GROUP BY agent_id ORDER BY c DESC LIMIT $1"
     );
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query_as::<_, (String, String, i64)>(&sql);
     for b in &binds {
         q = q.bind(b.clone());
@@ -177,11 +182,12 @@ pub async fn top_users(
 }
 
 /// `(YYYY-MM-DD, count)` ascending by day.
-pub async fn daily_counts(pool: &SqlitePool, f: &ListFilter) -> sqlx::Result<Vec<(String, i64)>> {
+pub async fn daily_counts(pool: &PgPool, f: &ListFilter) -> sqlx::Result<Vec<(String, i64)>> {
     let (w, binds) = where_clause(f);
     let sql = format!(
         "SELECT substr(created_at, 1, 10) AS d, COUNT(*) FROM activity_logs{w} GROUP BY d ORDER BY d"
     );
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query_as::<_, (String, i64)>(&sql);
     for b in &binds {
         q = q.bind(b.clone());
@@ -191,7 +197,7 @@ pub async fn daily_counts(pool: &SqlitePool, f: &ListFilter) -> sqlx::Result<Vec
 
 /// `(YYYY-MM-DD, action, count)` ascending by day (trends, CRD 2530-2532).
 pub async fn daily_action_counts(
-    pool: &SqlitePool,
+    pool: &PgPool,
     f: &ListFilter,
 ) -> sqlx::Result<Vec<(String, String, i64)>> {
     let (w, binds) = where_clause(f);
@@ -199,6 +205,7 @@ pub async fn daily_action_counts(
         "SELECT substr(created_at, 1, 10) AS d, action, COUNT(*) FROM activity_logs{w}
          GROUP BY d, action ORDER BY d, action"
     );
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query_as::<_, (String, String, i64)>(&sql);
     for b in &binds {
         q = q.bind(b.clone());
@@ -208,14 +215,15 @@ pub async fn daily_action_counts(
 
 /// `(YYYY-MM-DD, hour-of-day, count)` buckets (heatmap, CRD 2534-2536).
 pub async fn heat_buckets(
-    pool: &SqlitePool,
+    pool: &PgPool,
     f: &ListFilter,
 ) -> sqlx::Result<Vec<(String, i64, i64)>> {
     let (w, binds) = where_clause(f);
     let sql = format!(
-        "SELECT substr(created_at, 1, 10) AS d, CAST(substr(created_at, 12, 2) AS INTEGER) AS h,
+        "SELECT substr(created_at, 1, 10) AS d, CAST(substr(created_at, 12, 2) AS BIGINT) AS h,
                 COUNT(*) FROM activity_logs{w} GROUP BY d, h ORDER BY d, h"
     );
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query_as::<_, (String, i64, i64)>(&sql);
     for b in &binds {
         q = q.bind(b.clone());
@@ -224,12 +232,13 @@ pub async fn heat_buckets(
 }
 
 /// `(hour-of-day, count)` across the window (metrics peak hour, CRD 2538-2540).
-pub async fn hour_counts(pool: &SqlitePool, f: &ListFilter) -> sqlx::Result<Vec<(i64, i64)>> {
+pub async fn hour_counts(pool: &PgPool, f: &ListFilter) -> sqlx::Result<Vec<(i64, i64)>> {
     let (w, binds) = where_clause(f);
     let sql = format!(
-        "SELECT CAST(substr(created_at, 12, 2) AS INTEGER) AS h, COUNT(*) AS c
+        "SELECT CAST(substr(created_at, 12, 2) AS BIGINT) AS h, COUNT(*) AS c
          FROM activity_logs{w} GROUP BY h ORDER BY c DESC, h"
     );
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query_as::<_, (i64, i64)>(&sql);
     for b in &binds {
         q = q.bind(b.clone());
@@ -239,7 +248,7 @@ pub async fn hour_counts(pool: &SqlitePool, f: &ListFilter) -> sqlx::Result<Vec<
 
 /// `(resource type, count)` ordered by frequency (CRD 2518-2520).
 pub async fn resource_counts(
-    pool: &SqlitePool,
+    pool: &PgPool,
     f: &ListFilter,
 ) -> sqlx::Result<Vec<(String, i64)>> {
     let (w, binds) = where_clause(f);
@@ -247,6 +256,7 @@ pub async fn resource_counts(
         "SELECT COALESCE(resource_type, 'unknown') AS r, COUNT(*) AS c
          FROM activity_logs{w} GROUP BY r ORDER BY c DESC, r"
     );
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query_as::<_, (String, i64)>(&sql);
     for b in &binds {
         q = q.bind(b.clone());
@@ -255,12 +265,13 @@ pub async fn resource_counts(
 }
 
 /// `(actor role, count)` ordered by frequency (CRD 2522-2524).
-pub async fn role_counts(pool: &SqlitePool, f: &ListFilter) -> sqlx::Result<Vec<(String, i64)>> {
+pub async fn role_counts(pool: &PgPool, f: &ListFilter) -> sqlx::Result<Vec<(String, i64)>> {
     let (w, binds) = where_clause(f);
     let sql = format!(
         "SELECT COALESCE(agent_role, 'unknown') AS r, COUNT(*) AS c
          FROM activity_logs{w} GROUP BY r ORDER BY c DESC, r"
     );
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query_as::<_, (String, i64)>(&sql);
     for b in &binds {
         q = q.bind(b.clone());
@@ -269,8 +280,8 @@ pub async fn role_counts(pool: &SqlitePool, f: &ListFilter) -> sqlx::Result<Vec<
 }
 
 /// Hard-deletes entries older than the cutoff; returns the removed count (CRD 2495-2502).
-pub async fn purge_before(pool: &SqlitePool, cutoff_iso: &str) -> sqlx::Result<i64> {
-    let res = sqlx::query("DELETE FROM activity_logs WHERE datetime(created_at) < datetime(?)")
+pub async fn purge_before(pool: &PgPool, cutoff_iso: &str) -> sqlx::Result<i64> {
+    let res = sqlx::query("DELETE FROM activity_logs WHERE (created_at)::timestamptz < ($1)::timestamptz")
         .bind(cutoff_iso)
         .execute(pool)
         .await?;

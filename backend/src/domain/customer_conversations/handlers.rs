@@ -88,7 +88,7 @@ async fn check_access(
         "SELECT c.customer_id, c.team_id, cu.platform, cu.platform_user_id
          FROM conversations c
          LEFT JOIN customers cu ON cu.id = c.customer_id AND cu.deleted_at IS NULL
-         WHERE c.id = ? AND c.deleted_at IS NULL",
+         WHERE c.id = $1 AND c.deleted_at IS NULL",
     )
     .bind(conversation_id)
     .fetch_optional(&state.db)
@@ -104,7 +104,7 @@ async fn check_access(
             None => true,
             Some(tid) => {
                 sqlx::query_scalar::<_, i64>(
-                    "SELECT COUNT(*) FROM team_members WHERE agent_id = ? AND team_id = ?",
+                    "SELECT COUNT(*) FROM team_members WHERE agent_id = $1 AND team_id = $2",
                 )
                 .bind(&session.user_id)
                 .bind(tid)
@@ -246,7 +246,7 @@ pub async fn history(
     let mut binds: Vec<String> = vec![conversation_id.clone()];
     if let Some(before) = q.before.as_deref().filter(|s| !s.is_empty()) {
         let anchor: Option<String> = match sqlx::query_scalar(
-            "SELECT created_at FROM messages WHERE id = ? AND conversation_id = ?",
+            "SELECT created_at FROM messages WHERE id = $1 AND conversation_id = $2",
         )
         .bind(before)
         .bind(&conversation_id)
@@ -268,8 +268,9 @@ pub async fn history(
         "SELECT id, conversation_id, sender_type, customer_id, agent_id, content, content_type,
                 is_sent, delivery_status, sender_name, metadata, created_at
          FROM messages WHERE {clause}
-         ORDER BY created_at DESC, id DESC LIMIT ?"
+         ORDER BY created_at DESC, id DESC LIMIT $1"
     );
+    let sql = crate::db::pg_params(&sql);
     let mut mq = sqlx::query_as::<_, HistoryRow>(&sql);
     for b in &binds {
         mq = mq.bind(b);
@@ -286,6 +287,7 @@ pub async fn history(
             "SELECT id, message_id, file_name, content_type, file_size, file_url, storage_key
              FROM attachments WHERE message_id IN ({placeholders})"
         );
+        let sql = crate::db::pg_params(&sql);
         let mut aq = sqlx::query_as::<_, AttachmentRow>(&sql);
         for r in &rows {
             aq = aq.bind(&r.id);
@@ -369,7 +371,7 @@ pub async fn send_reply(
     // (CRD 1084). The agent reference column is only populated when the
     // identity resolves to a real agent record.
     let agent: Option<(String, String)> =
-        match sqlx::query_as("SELECT id, display_name FROM agents WHERE id = ? AND deleted_at IS NULL")
+        match sqlx::query_as("SELECT id, display_name FROM agents WHERE id = $1 AND deleted_at IS NULL")
             .bind(&session.user_id)
             .fetch_optional(&state.db)
             .await
@@ -400,7 +402,7 @@ pub async fn send_reply(
             "INSERT INTO messages (id, conversation_id, sender_type, agent_id, content,
                                    content_type, is_sent, sent_at, delivery_status, metadata,
                                    sender_name, created_at)
-             VALUES (?, ?, 'agent', ?, ?, ?, 1, ?, 'delivered', ?, ?, ?)",
+             VALUES ($1, $2, 'agent', $3, $4, $5, 1, $6, 'delivered', $7, $8, $9)",
         )
         .bind(&message_id)
         .bind(&conversation_id)
@@ -416,9 +418,10 @@ pub async fn send_reply(
         if !attachment_ids.is_empty() {
             let placeholders = vec!["?"; attachment_ids.len()].join(", ");
             let sql = format!(
-                "UPDATE attachments SET message_id = ?
+                "UPDATE attachments SET message_id = $1
                  WHERE id IN ({placeholders}) AND message_id IS NULL"
             );
+            let sql = crate::db::pg_params(&sql);
             let mut q = sqlx::query(&sql).bind(&message_id);
             for aid in &attachment_ids {
                 q = q.bind(aid);
@@ -427,7 +430,7 @@ pub async fn send_reply(
         }
         // Recency markers advance so the conversation re-sorts to the top
         // (CRD 1086).
-        sqlx::query("UPDATE conversations SET last_message_at = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE conversations SET last_message_at = $1, updated_at = $2 WHERE id = $3")
             .bind(&now)
             .bind(&now)
             .bind(&conversation_id)
@@ -446,8 +449,9 @@ pub async fn send_reply(
         let placeholders = vec!["?"; attachment_ids.len()].join(", ");
         let sql = format!(
             "SELECT id, message_id, file_name, content_type, file_size, file_url, storage_key
-             FROM attachments WHERE message_id = ? AND id IN ({placeholders})"
+             FROM attachments WHERE message_id = $1 AND id IN ({placeholders})"
         );
+        let sql = crate::db::pg_params(&sql);
         let mut aq = sqlx::query_as::<_, AttachmentRow>(&sql).bind(&message_id);
         for aid in &attachment_ids {
             aq = aq.bind(aid);
@@ -595,7 +599,7 @@ pub async fn upload(
     // Storage-layer re-validation against the live session store: a session
     // record must exist and be unexpired (CRD 1109, 1119).
     let live: Result<Option<String>, _> = sqlx::query_scalar(
-        "SELECT id FROM auth_sessions WHERE agent_id = ? AND expires_at > ?",
+        "SELECT id FROM auth_sessions WHERE agent_id = $1 AND expires_at > $2",
     )
     .bind(&session.user_id)
     .bind(crate::db::now_iso())
@@ -656,7 +660,7 @@ pub async fn upload(
     // (CRD 1110, 1151).
     let file_url = format!("/uploads/{storage_key}");
     let agent_exists: Option<String> =
-        sqlx::query_scalar("SELECT id FROM agents WHERE id = ? AND deleted_at IS NULL")
+        sqlx::query_scalar("SELECT id FROM agents WHERE id = $1 AND deleted_at IS NULL")
             .bind(&session.user_id)
             .fetch_optional(&state.db)
             .await
@@ -665,7 +669,7 @@ pub async fn upload(
         "INSERT INTO attachments (id, message_id, conversation_id, file_name, content_type,
                                   file_size, file_url, storage_key, upload_status, uploaded_by,
                                   created_at)
-         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'completed', ?, ?)",
+         VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, 'completed', $8, $9)",
     )
     .bind(&attachment_id)
     .bind(&conversation_id)

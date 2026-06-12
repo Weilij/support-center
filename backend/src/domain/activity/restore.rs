@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::Utc;
 use serde_json::{json, Map, Value};
-use sqlx::sqlite::Sqlite;
+use sqlx::Postgres;
 use sqlx::Transaction;
 use std::sync::Arc;
 
@@ -256,7 +256,7 @@ fn conflict(field: &str, original: &Value, current: &Value, restore: &Value) -> 
 
 /// Reads the tracked fields of a live or soft-deleted row as a normalized JSON map.
 async fn current_state(
-    db: &sqlx::SqlitePool,
+    db: &sqlx::PgPool,
     spec: &'static TableSpec,
     id: &IdBind,
 ) -> sqlx::Result<Option<Map<String, Value>>> {
@@ -266,7 +266,8 @@ async fn current_state(
         .map(|f| format!("'{}', {}", f.key, f.column))
         .collect::<Vec<_>>()
         .join(", ");
-    let sql = format!("SELECT json_object({cols}) FROM {} WHERE id = ?", spec.table);
+    let sql = format!("SELECT jsonb_build_object({cols})::text FROM {} WHERE id = $1", spec.table);
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query_scalar::<_, String>(&sql);
     q = match id {
         IdBind::I(v) => q.bind(*v),
@@ -277,7 +278,7 @@ async fn current_state(
         .and_then(|r| serde_json::from_str::<Value>(&r).ok())
         .and_then(|v| v.as_object().cloned())
         .map(|mut m| {
-            // SQLite stores booleans as 0/1; normalize so they compare against snapshots.
+            // Boolean columns are stored as 0/1 bigints; normalize so they compare against snapshots.
             for f in spec.fields.iter().filter(|f| f.kind == Kind::Bool) {
                 if let Some(n) = m.get(f.key).and_then(Value::as_i64) {
                     m.insert(f.key.into(), json!(n != 0));
@@ -387,7 +388,7 @@ async fn build_plan(
                 return Ok(Err(batch_failed()));
             };
             let existing: Option<(Option<String>, String)> = sqlx::query_as(
-                "SELECT assigned_by, created_at FROM customer_tags WHERE customer_id = ? AND tag_id = ?",
+                "SELECT assigned_by, created_at FROM customer_tags WHERE customer_id = $1 AND tag_id = $2",
             )
             .bind(customer_id)
             .bind(tag_id)
@@ -453,7 +454,7 @@ async fn build_plan(
             };
             // A membership-style restore permits a missing current state (CRD 2557 step 4).
             let existing: Option<(String, i64)> = sqlx::query_as(
-                "SELECT role, is_primary FROM team_members WHERE agent_id = ? AND team_id = ?",
+                "SELECT role, is_primary FROM team_members WHERE agent_id = $1 AND team_id = $2",
             )
             .bind(&agent_id)
             .bind(team_id)
@@ -490,14 +491,16 @@ fn proto_err(msg: &str) -> sqlx::Error {
 }
 
 enum BindVal {
-    Null,
+    NullInt,
+    NullText,
     I(i64),
     S(String),
 }
 
 fn to_bind(kind: Kind, v: &Value) -> sqlx::Result<BindVal> {
     match (kind, v) {
-        (_, Value::Null) => Ok(BindVal::Null),
+        (Kind::Text, Value::Null) => Ok(BindVal::NullText),
+        (_, Value::Null) => Ok(BindVal::NullInt),
         (Kind::Bool, Value::Bool(b)) => Ok(BindVal::I(*b as i64)),
         (Kind::Bool, Value::Number(n)) if n.as_i64().is_some() => {
             Ok(BindVal::I((n.as_i64().unwrap() != 0) as i64))
@@ -511,7 +514,7 @@ fn to_bind(kind: Kind, v: &Value) -> sqlx::Result<BindVal> {
 }
 
 async fn apply_plan(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Postgres>,
     plan: &Plan,
     now: &str,
 ) -> sqlx::Result<()> {
@@ -539,11 +542,13 @@ async fn apply_plan(
             }
             sets.push("updated_at = ?".into());
             let sql =
-                format!("UPDATE {} SET {} WHERE id = ?", spec.table, sets.join(", "));
+                format!("UPDATE {} SET {} WHERE id = $1", spec.table, sets.join(", "));
+            let sql = crate::db::pg_params(&sql);
             let mut q = sqlx::query(&sql);
             for b in &binds {
                 q = match b {
-                    BindVal::Null => q.bind(Option::<String>::None),
+                    BindVal::NullInt => q.bind(Option::<i64>::None),
+                    BindVal::NullText => q.bind(Option::<String>::None),
                     BindVal::I(v) => q.bind(*v),
                     BindVal::S(s) => q.bind(s.clone()),
                 };
@@ -560,7 +565,7 @@ async fn apply_plan(
         }
         PlanKind::RemoveAssoc { customer_id, tag_id } => {
             let affected =
-                sqlx::query("DELETE FROM customer_tags WHERE customer_id = ? AND tag_id = ?")
+                sqlx::query("DELETE FROM customer_tags WHERE customer_id = $1 AND tag_id = $2")
                     .bind(customer_id)
                     .bind(tag_id)
                     .execute(&mut **tx)
@@ -573,8 +578,8 @@ async fn apply_plan(
         PlanKind::AddAssoc { customer_id, tag_id, assigned_by, assigned_at, exists } => {
             if !exists {
                 sqlx::query(
-                    "INSERT OR IGNORE INTO customer_tags (customer_id, tag_id, assigned_by, created_at)
-                     VALUES (?, ?, ?, ?)",
+                    "INSERT INTO customer_tags (customer_id, tag_id, assigned_by, created_at)
+                     VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
                 )
                 .bind(customer_id)
                 .bind(tag_id)
@@ -586,14 +591,14 @@ async fn apply_plan(
         }
         PlanKind::Membership { agent_id, team_id, role, is_primary, joined_at, exists } => {
             if *is_primary {
-                sqlx::query("UPDATE team_members SET is_primary = 0 WHERE agent_id = ?")
+                sqlx::query("UPDATE team_members SET is_primary = 0 WHERE agent_id = $1")
                     .bind(agent_id)
                     .execute(&mut **tx)
                     .await?;
             }
             if *exists {
                 sqlx::query(
-                    "UPDATE team_members SET role = ?, is_primary = ? WHERE agent_id = ? AND team_id = ?",
+                    "UPDATE team_members SET role = $1, is_primary = $2 WHERE agent_id = $3 AND team_id = $4",
                 )
                 .bind(role)
                 .bind(*is_primary as i64)
@@ -604,7 +609,7 @@ async fn apply_plan(
             } else {
                 sqlx::query(
                     "INSERT INTO team_members (agent_id, team_id, role, is_primary, joined_at)
-                     VALUES (?, ?, ?, ?, ?)",
+                     VALUES ($1, $2, $3, $4, $5)",
                 )
                 .bind(agent_id)
                 .bind(team_id)
@@ -740,7 +745,7 @@ pub async fn restore_activity(
     // 6. Atomically claim the restore: a guarded one-time transition so concurrent
     //    attempts cannot both proceed (CRD 2557 step 6, 2576).
     let claimed = sqlx::query(
-        "UPDATE activity_logs SET restore_state = 'in_progress' WHERE id = ? AND restore_state IS NULL",
+        "UPDATE activity_logs SET restore_state = 'in_progress' WHERE id = $1 AND restore_state IS NULL",
     )
     .bind(id)
     .execute(&state.db)
@@ -776,9 +781,9 @@ pub async fn restore_activity(
     let batch: sqlx::Result<i64> = async {
         let mut tx = state.db.begin().await?;
         apply_plan(&mut tx, &plan, &now).await?;
-        let new_id = sqlx::query(
+        let new_id = sqlx::query_scalar::<_, i64>(
             "INSERT INTO activity_logs (agent_id, agent_name, agent_role, action, resource_type, resource_id, details, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
         )
         .bind(&caller.id)
         .bind(&caller.name)
@@ -788,12 +793,12 @@ pub async fn restore_activity(
         .bind(&resource_id)
         .bind(restore_details.to_string())
         .bind(&now)
-        .execute(&mut *tx)
+        .fetch_one(&mut *tx)
         .await?
-        .last_insert_rowid();
+        ;
         let marked = sqlx::query(
-            "UPDATE activity_logs SET restore_state = 'restored', restored_by_log_id = ?, restored_at = ?
-             WHERE id = ? AND restore_state = 'in_progress'",
+            "UPDATE activity_logs SET restore_state = 'restored', restored_by_log_id = $1, restored_at = $2
+             WHERE id = $3 AND restore_state = 'in_progress'",
         )
         .bind(new_id)
         .bind(&now)
@@ -815,7 +820,7 @@ pub async fn restore_activity(
             tracing::error!(error = %e, activity = id, "restore batch failed");
             // Release the claim so a later retry is possible (CRD 2573).
             let _ = sqlx::query(
-                "UPDATE activity_logs SET restore_state = NULL WHERE id = ? AND restore_state = 'in_progress'",
+                "UPDATE activity_logs SET restore_state = NULL WHERE id = $1 AND restore_state = 'in_progress'",
             )
             .bind(id)
             .execute(&state.db)

@@ -32,7 +32,7 @@ impl Config {
         let _ = dotenvy::dotenv();
         Self {
             database_url: std::env::var("DATABASE_URL")
-                .unwrap_or_else(|_| "sqlite://data/mcss.db?mode=rwc".into()),
+                .unwrap_or_else(|_| "postgres://localhost/mcss".into()),
             jwt_secret: std::env::var("JWT_SECRET")
                 .unwrap_or_else(|_| "dev-only-insecure-secret".into()),
             encryption_key: std::env::var("ENCRYPTION_KEY").ok().filter(|s| !s.is_empty()),
@@ -106,7 +106,7 @@ impl Config {
 #[cfg(test)]
 pub fn test_config() -> Config {
     Config {
-        database_url: "sqlite::memory:".into(),
+        database_url: "postgres://localhost/mcss_test".into(),
         jwt_secret: "test-secret".into(),
         encryption_key: None,
         environment: "development".into(),

@@ -22,7 +22,7 @@ async fn agent_token(app: &TestApp, email: &str, team_id: i64) -> (String, Strin
 }
 
 async fn set_updated_at(app: &TestApp, conversation_id: &str, when: &str) {
-    sqlx::query("UPDATE conversations SET updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE conversations SET updated_at = $1 WHERE id = $2")
         .bind(when)
         .bind(conversation_id)
         .execute(&app.state.db)
@@ -97,7 +97,7 @@ async fn list_filters_by_tags_direct_and_via_customer_ignoring_non_numeric() {
     let tag = app.seed_tag("vip", &admin).await;
     app.add_customer_tag(tagged_cust, tag, &admin).await;
     sqlx::query(
-        "INSERT INTO conversation_tags (conversation_id, tag_id, assigned_by, created_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO conversation_tags (conversation_id, tag_id, assigned_by, created_at) VALUES ($1, $2, $3, $4)",
     )
     .bind(&direct)
     .bind(tag)
@@ -272,7 +272,7 @@ async fn assign_sets_team_status_history_and_reversible_audit() {
 
     // Reason supplied -> one routing-history record (CRD 706).
     let transfers: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM conversation_transfers WHERE conversation_id = ? AND transfer_type = 'assign'",
+        "SELECT COUNT(*) FROM conversation_transfers WHERE conversation_id = $1 AND transfer_type = 'assign'",
     )
     .bind(&conv)
     .fetch_one(&app.state.db)
@@ -282,7 +282,7 @@ async fn assign_sets_team_status_history_and_reversible_audit() {
 
     // Reversible audit entry with old/new team snapshots (CRD 704, 808).
     let details: String = sqlx::query_scalar(
-        "SELECT details FROM activity_logs WHERE action = 'conversation assign' AND resource_id = ?",
+        "SELECT details FROM activity_logs WHERE action = 'conversation assign' AND resource_id = $1",
     )
     .bind(&conv)
     .fetch_one(&app.state.db)
@@ -311,7 +311,7 @@ async fn assign_without_reason_skips_history() {
         .await;
     assert_eq!(status, StatusCode::OK);
     let transfers: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM conversation_transfers WHERE conversation_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM conversation_transfers WHERE conversation_id = $1")
             .bind(&conv)
             .fetch_one(&app.state.db)
             .await
@@ -382,7 +382,7 @@ async fn assign_can_be_restored_via_activity_restore() {
     assert_eq!(status, StatusCode::OK);
 
     let activity_id: i64 = sqlx::query_scalar(
-        "SELECT id FROM activity_logs WHERE action = 'conversation assign' AND resource_id = ?",
+        "SELECT id FROM activity_logs WHERE action = 'conversation assign' AND resource_id = $1",
     )
     .bind(&conv)
     .fetch_one(&app.state.db)
@@ -394,7 +394,7 @@ async fn assign_can_be_restored_via_activity_restore() {
     assert_eq!(status, StatusCode::OK, "{body}");
 
     let (team_id, conv_status): (Option<i64>, String) =
-        sqlx::query_as("SELECT team_id, status FROM conversations WHERE id = ?")
+        sqlx::query_as("SELECT team_id, status FROM conversations WHERE id = $1")
             .bind(&conv)
             .fetch_one(&app.state.db)
             .await
@@ -427,7 +427,7 @@ async fn unassign_clears_team_and_resets_active() {
     assert_eq!(body["data"]["status"], json!("active"));
 
     let transfers: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM conversation_transfers WHERE conversation_id = ? AND transfer_type = 'unassign'",
+        "SELECT COUNT(*) FROM conversation_transfers WHERE conversation_id = $1 AND transfer_type = 'unassign'",
     )
     .bind(&conv)
     .fetch_one(&app.state.db)
@@ -495,7 +495,7 @@ async fn transfer_always_writes_history_and_returns_no_data() {
     assert!(body.get("data").is_none());
 
     let (team_id, conv_status): (Option<i64>, String) =
-        sqlx::query_as("SELECT team_id, status FROM conversations WHERE id = ?")
+        sqlx::query_as("SELECT team_id, status FROM conversations WHERE id = $1")
             .bind(&conv)
             .fetch_one(&app.state.db)
             .await
@@ -506,7 +506,7 @@ async fn transfer_always_writes_history_and_returns_no_data() {
     // History is written even without a reason (CRD 726).
     let (from, to): (Option<i64>, Option<i64>) = sqlx::query_as(
         "SELECT from_team_id, to_team_id FROM conversation_transfers
-         WHERE conversation_id = ? AND transfer_type = 'transfer'",
+         WHERE conversation_id = $1 AND transfer_type = 'transfer'",
     )
     .bind(&conv)
     .fetch_one(&app.state.db)
@@ -592,7 +592,7 @@ async fn list_messages_paginates_newest_first_with_attachments() {
     let m2 = app.seed_message(&conv, "agent", "second", Some("2026-01-02T00:00:00.000Z")).await;
     sqlx::query(
         "INSERT INTO attachments (id, message_id, conversation_id, file_name, content_type, file_size, file_url, storage_key, created_at)
-         VALUES ('att-1', ?, ?, 'doc.pdf', 'application/pdf', 42, '/uploads/doc.pdf', 'missing-key', ?)",
+         VALUES ('att-1', $1, $2, 'doc.pdf', 'application/pdf', 42, '/uploads/doc.pdf', 'missing-key', $3)",
     )
     .bind(&m2)
     .bind(&conv)
@@ -666,7 +666,7 @@ async fn list_messages_permission_and_not_found_errors() {
 async fn wait_for_delivery(app: &TestApp, message_id: &str) -> String {
     for _ in 0..100 {
         let status: String =
-            sqlx::query_scalar("SELECT delivery_status FROM messages WHERE id = ?")
+            sqlx::query_scalar("SELECT delivery_status FROM messages WHERE id = $1")
                 .bind(message_id)
                 .fetch_one(&app.state.db)
                 .await
@@ -709,7 +709,7 @@ async fn send_message_returns_pending_then_delivers_on_line() {
     let message_id = body["data"]["id"].as_str().unwrap().to_string();
     assert_eq!(wait_for_delivery(&app, &message_id).await, "sent");
     let (is_sent, pmid): (i64, Option<String>) =
-        sqlx::query_as("SELECT is_sent, platform_message_id FROM messages WHERE id = ?")
+        sqlx::query_as("SELECT is_sent, platform_message_id FROM messages WHERE id = $1")
             .bind(&message_id)
             .fetch_one(&app.state.db)
             .await
@@ -719,7 +719,7 @@ async fn send_message_returns_pending_then_delivers_on_line() {
 
     // Conversation last-message/update times advanced (CRD 769).
     let last: Option<String> =
-        sqlx::query_scalar("SELECT last_message_at FROM conversations WHERE id = ?")
+        sqlx::query_scalar("SELECT last_message_at FROM conversations WHERE id = $1")
             .bind(&conv)
             .fetch_one(&app.state.db)
             .await
@@ -772,7 +772,7 @@ async fn send_message_links_uploaded_attachments() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let message_id = body["data"]["id"].as_str().unwrap().to_string();
     let linked: Option<String> =
-        sqlx::query_scalar("SELECT message_id FROM attachments WHERE id = ?")
+        sqlx::query_scalar("SELECT message_id FROM attachments WHERE id = $1")
             .bind(&attachment_id)
             .fetch_one(&app.state.db)
             .await
@@ -893,7 +893,7 @@ async fn upload_attachment_stores_file_and_record() {
 
     // The stored object exists and the row is unlinked until a send (CRD 783).
     let (message_id, storage_key): (Option<String>, String) =
-        sqlx::query_as("SELECT message_id, storage_key FROM attachments WHERE id = ?")
+        sqlx::query_as("SELECT message_id, storage_key FROM attachments WHERE id = $1")
             .bind(body["data"]["attachmentId"].as_str().unwrap())
             .fetch_one(&app.state.db)
             .await
@@ -963,7 +963,7 @@ async fn bulk_assign_and_set_priority() {
     assert_eq!(body["message"], json!("Bulk assign completed successfully"));
     assert_eq!(body["data"]["affectedCount"], json!(2));
     let (team_id, st): (Option<i64>, String) =
-        sqlx::query_as("SELECT team_id, status FROM conversations WHERE id = ?")
+        sqlx::query_as("SELECT team_id, status FROM conversations WHERE id = $1")
             .bind(&c1)
             .fetch_one(&app.state.db)
             .await
@@ -980,7 +980,7 @@ async fn bulk_assign_and_set_priority() {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    let priority: String = sqlx::query_scalar("SELECT priority FROM conversations WHERE id = ?")
+    let priority: String = sqlx::query_scalar("SELECT priority FROM conversations WHERE id = $1")
         .bind(&c1)
         .fetch_one(&app.state.db)
         .await
@@ -1010,7 +1010,7 @@ async fn bulk_tag_operations_are_idempotent() {
         assert_eq!(status, StatusCode::OK);
     }
     let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM conversation_tags WHERE conversation_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM conversation_tags WHERE conversation_id = $1")
             .bind(&c1)
             .fetch_one(&app.state.db)
             .await
@@ -1027,7 +1027,7 @@ async fn bulk_tag_operations_are_idempotent() {
         .await;
     assert_eq!(status, StatusCode::OK);
     let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM conversation_tags WHERE conversation_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM conversation_tags WHERE conversation_id = $1")
             .bind(&c1)
             .fetch_one(&app.state.db)
             .await

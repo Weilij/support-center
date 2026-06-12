@@ -1,7 +1,7 @@
 //! Message row access and shared view assembly (CRD §2.2, lines 830-1042).
 
 use serde_json::{json, Map, Value};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
@@ -71,9 +71,9 @@ pub const MESSAGE_SELECT: &str = "
 
 /// Fetch one non-deleted message with its joined context (CRD 861-862:
 /// soft-deleted messages are treated as nonexistent).
-pub async fn find_message(db: &SqlitePool, id: &str) -> Result<Option<FullMessage>, AppError> {
-    let sql = format!("{MESSAGE_SELECT} WHERE m.id = ? AND m.deleted_at IS NULL");
-    Ok(sqlx::query_as::<_, FullMessage>(&sql).bind(id).fetch_optional(db).await?)
+pub async fn find_message(db: &PgPool, id: &str) -> Result<Option<FullMessage>, AppError> {
+    let sql = format!("{MESSAGE_SELECT} WHERE m.id = $1 AND m.deleted_at IS NULL");
+    Ok(sqlx::query_as::<_, FullMessage>(&crate::db::pg_params(&sql)).bind(id).fetch_optional(db).await?)
 }
 
 /// Team-scoped read/write gate (CRD 852, 861): administrators always; any
@@ -90,11 +90,11 @@ pub fn team_scope_ok(user: &AuthUser, team_id: Option<i64>) -> bool {
 /// Bare conversation lookup: (team_id, customer_id). None when missing or
 /// soft-deleted (CRD 852).
 pub async fn conversation_bare(
-    db: &SqlitePool,
+    db: &PgPool,
     id: &str,
 ) -> Result<Option<(Option<i64>, i64)>, AppError> {
     Ok(sqlx::query_as(
-        "SELECT team_id, customer_id FROM conversations WHERE id = ? AND deleted_at IS NULL",
+        "SELECT team_id, customer_id FROM conversations WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(id)
     .fetch_optional(db)
@@ -173,13 +173,13 @@ pub struct AttachmentRow {
 }
 
 pub async fn attachments_for(
-    db: &SqlitePool,
+    db: &PgPool,
     message_id: &str,
 ) -> Result<Vec<AttachmentRow>, AppError> {
     Ok(sqlx::query_as::<_, AttachmentRow>(
         "SELECT id, message_id, file_name, content_type, file_size, file_url, storage_key,
                 created_at
-         FROM attachments WHERE message_id = ? ORDER BY created_at, id",
+         FROM attachments WHERE message_id = $1 ORDER BY created_at, id",
     )
     .bind(message_id)
     .fetch_all(db)
@@ -201,11 +201,11 @@ pub fn attachment_view(a: &AttachmentRow) -> Value {
 
 /// Bump a conversation's last-activity and updated markers (CRD 853, 936, 965).
 pub async fn touch_conversation(
-    db: &SqlitePool,
+    db: &PgPool,
     conversation_id: &str,
     now: &str,
 ) -> Result<(), AppError> {
-    sqlx::query("UPDATE conversations SET last_message_at = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE conversations SET last_message_at = $1, updated_at = $2 WHERE id = $3")
         .bind(now)
         .bind(now)
         .bind(conversation_id)

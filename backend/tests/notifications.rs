@@ -60,7 +60,7 @@ async fn create_validates_sanitizes_and_enforces_ownership() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let id = body["data"]["id"].as_str().unwrap().to_string();
     let (owner, data): (String, Option<String>) =
-        sqlx::query_as("SELECT agent_id, data FROM notifications WHERE id = ?")
+        sqlx::query_as("SELECT agent_id, data FROM notifications WHERE id = $1")
             .bind(&id)
             .fetch_one(&app.state.db)
             .await
@@ -74,7 +74,7 @@ async fn create_validates_sanitizes_and_enforces_ownership() {
             Some(json!({"type": "system", "title": "For agent", "content": "c", "userId": agent_id})))
         .await;
     assert_eq!(status, StatusCode::OK);
-    let owner: String = sqlx::query_scalar("SELECT agent_id FROM notifications WHERE id = ?")
+    let owner: String = sqlx::query_scalar("SELECT agent_id FROM notifications WHERE id = $1")
         .bind(body["data"]["id"].as_str().unwrap())
         .fetch_one(&app.state.db)
         .await
@@ -89,7 +89,7 @@ async fn list_filters_and_excludes_expired() {
     for (title, kind, read) in [("a", "system", 0), ("b", "mention", 0), ("c", "system", 1)] {
         sqlx::query(
             "INSERT INTO notifications (id, agent_id, type, title, content, is_read, priority, created_at)
-             VALUES (?, ?, ?, ?, 'x', ?, 'normal', ?)",
+             VALUES ($1, $2, $3, $4, 'x', $5, 'normal', $6)",
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(&agent_id)
@@ -104,7 +104,7 @@ async fn list_filters_and_excludes_expired() {
     // An already-expired record never appears.
     sqlx::query(
         "INSERT INTO notifications (id, agent_id, type, title, content, expires_at, priority, created_at)
-         VALUES ('expired-1', ?, 'system', 'old', 'x', '2000-01-01T00:00:00Z', 'normal', ?)",
+         VALUES ('expired-1', $1, 'system', 'old', 'x', '2000-01-01T00:00:00Z', 'normal', $2)",
     )
     .bind(&agent_id)
     .bind(chrono::Utc::now().to_rfc3339())
@@ -183,7 +183,7 @@ async fn read_delete_counts_and_recent() {
         .request("DELETE", &format!("/api/notifications/{}", ids[1]), Some(&agent), None)
         .await;
     assert_eq!(status, StatusCode::OK);
-    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE id = ?")
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE id = $1")
         .bind(&ids[1])
         .fetch_one(&app.state.db)
         .await
@@ -235,7 +235,7 @@ async fn bulk_admin_broadcast_and_cleanup() {
     // Cleanup removes expired records system-wide (admin only).
     sqlx::query(
         "INSERT INTO notifications (id, agent_id, type, title, content, expires_at, priority, created_at)
-         VALUES ('exp-1', ?, 'system', 'old', 'x', '2000-01-01T00:00:00Z', 'normal', ?)",
+         VALUES ('exp-1', $1, 'system', 'old', 'x', '2000-01-01T00:00:00Z', 'normal', $2)",
     )
     .bind(&agent_id)
     .bind(chrono::Utc::now().to_rfc3339())
@@ -278,7 +278,7 @@ async fn trigger_endpoints_create_typed_records() {
         .await;
     assert_eq!(status, StatusCode::OK);
     let (kind, content, priority): (String, String, String) = sqlx::query_as(
-        "SELECT type, content, priority FROM notifications WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1",
+        "SELECT type, content, priority FROM notifications WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1",
     )
     .bind(&agent_id)
     .fetch_one(&app.state.db)
@@ -295,7 +295,7 @@ async fn trigger_endpoints_create_typed_records() {
         .await;
     assert_eq!(status, StatusCode::OK);
     let (kind, priority): (String, String) = sqlx::query_as(
-        "SELECT type, priority FROM notifications WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1",
+        "SELECT type, priority FROM notifications WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1",
     )
     .bind(&agent_id)
     .fetch_one(&app.state.db)
@@ -334,7 +334,7 @@ async fn reminder_crud_and_validation() {
     assert_eq!(body["data"]["count"], 1);
 
     // Update re-arms the sent flag when the time changes.
-    sqlx::query("UPDATE task_reminders SET is_sent = 1 WHERE id = ?")
+    sqlx::query("UPDATE task_reminders SET is_sent = 1 WHERE id = $1")
         .bind(&id)
         .execute(&app.state.db)
         .await
@@ -345,7 +345,7 @@ async fn reminder_crud_and_validation() {
             Some(json!({"remindAt": new_time})))
         .await;
     assert_eq!(status, StatusCode::OK);
-    let sent: i64 = sqlx::query_scalar("SELECT is_sent FROM task_reminders WHERE id = ?")
+    let sent: i64 = sqlx::query_scalar("SELECT is_sent FROM task_reminders WHERE id = $1")
         .bind(&id)
         .fetch_one(&app.state.db)
         .await
@@ -382,7 +382,7 @@ async fn due_reminders_fire_notifications_and_repeat() {
     // A due repeating reminder (inserted directly so it is already past-due).
     sqlx::query(
         "INSERT INTO task_reminders (id, agent_id, title, content, remind_at, repeat_type, repeat_interval, created_at)
-         VALUES ('rem-1', ?, '每日站會', '別忘了', ?, 'daily', 1, ?)",
+         VALUES ('rem-1', $1, '每日站會', '別忘了', $2, 'daily', 1, $3)",
     )
     .bind(&agent_id)
     .bind((chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339())
@@ -404,7 +404,7 @@ async fn due_reminders_fire_notifications_and_repeat() {
 
     // Fired: high-priority task_reminder notification + sent flag + next occurrence.
     let (kind, priority): (String, String) = sqlx::query_as(
-        "SELECT type, priority FROM notifications WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1",
+        "SELECT type, priority FROM notifications WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1",
     )
     .bind(&agent_id)
     .fetch_one(&app.state.db)
@@ -418,7 +418,7 @@ async fn due_reminders_fire_notifications_and_repeat() {
         .unwrap();
     assert_eq!(sent, 1);
     let spawned: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM task_reminders WHERE agent_id = ? AND is_sent = 0",
+        "SELECT COUNT(*) FROM task_reminders WHERE agent_id = $1 AND is_sent = 0",
     )
     .bind(&agent_id)
     .fetch_one(&app.state.db)

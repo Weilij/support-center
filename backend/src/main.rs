@@ -10,13 +10,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let config = Config::from_env();
-    if let Some(dir) = config
-        .database_url
-        .strip_prefix("sqlite://")
-        .and_then(|p| std::path::Path::new(p.split('?').next().unwrap_or(p)).parent())
-    {
-        std::fs::create_dir_all(dir).ok();
-    }
     let pool = db::init_pool(&config.database_url).await?;
     let port = config.port;
     let state = AppState::new(pool, config);

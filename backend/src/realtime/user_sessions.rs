@@ -16,7 +16,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::sync::Arc;
 
 use crate::domain::auth::{store, tokens};
@@ -41,7 +41,7 @@ pub async fn hydrate(state: &Arc<AppState>, user_id: &str) {
     type StateRow = (Option<String>, String, Option<String>, Option<String>);
     let row: Option<StateRow> = sqlx::query_as(
         "SELECT last_seen, subscriptions, preferences, stats
-         FROM realtime_user_state WHERE user_id = ?",
+         FROM realtime_user_state WHERE user_id = $1",
     )
     .bind(user_id)
     .fetch_optional(&state.db)
@@ -57,12 +57,12 @@ pub async fn hydrate(state: &Arc<AppState>, user_id: &str) {
 
 /// Upsert one user-state snapshot row (CRD 3815: re-persisted on relevant
 /// changes). Best-effort: persistence failures never alter request outcomes.
-pub async fn persist_snapshot(db: &SqlitePool, snapshot: &Value) {
+pub async fn persist_snapshot(db: &PgPool, snapshot: &Value) {
     let Some(user_id) = snapshot["userId"].as_str() else { return };
     let _ = sqlx::query(
         "INSERT INTO realtime_user_state
              (user_id, online, last_seen, subscriptions, preferences, stats, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT(user_id) DO UPDATE SET
              online = excluded.online,
              last_seen = excluded.last_seen,

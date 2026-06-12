@@ -288,14 +288,14 @@ async fn legacy_recall_enforces_marker_ownership_and_deadline() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let db_status: String =
-        sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = ?")
+        sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = $1")
             .bind(&message_id)
             .fetch_one(&app.state.db)
             .await
             .unwrap();
     assert_eq!(db_status, "cancelled");
     let recalls: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM message_recall_logs WHERE message_id = ?",
+        "SELECT COUNT(*) FROM message_recall_logs WHERE message_id = $1",
     )
     .bind(&message_id)
     .fetch_one(&app.state.db)
@@ -309,7 +309,7 @@ async fn legacy_recall_enforces_marker_ownership_and_deadline() {
             Some(legacy_send_body(&conversation, &agent, 60)))
         .await;
     let expired_id = body["data"]["messageId"].as_str().unwrap().to_string();
-    sqlx::query("UPDATE scheduled_messages SET scheduled_at = '2000-01-01T00:00:00Z' WHERE id = ?")
+    sqlx::query("UPDATE scheduled_messages SET scheduled_at = '2000-01-01T00:00:00Z' WHERE id = $1")
         .bind(&expired_id)
         .execute(&app.state.db)
         .await
@@ -401,7 +401,7 @@ async fn legacy_reschedule_moves_fire_time_for_the_sender_only() {
     let new_fire = body2["data"]["newSendTime"].as_str().unwrap();
     assert!(new_fire > original_fire.as_str());
     let db_status: String =
-        sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = ?")
+        sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = $1")
             .bind(&message_id)
             .fetch_one(&app.state.db)
             .await

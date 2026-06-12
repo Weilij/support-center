@@ -134,7 +134,7 @@ pub async fn authenticate(
         let db = state.db.clone();
         let id = agent.id.clone();
         tokio::spawn(async move {
-            let _ = sqlx::query("UPDATE agents SET last_active_at = ? WHERE id = ?")
+            let _ = sqlx::query("UPDATE agents SET last_active_at = $1 WHERE id = $2")
                 .bind(crate::db::now_iso())
                 .bind(id)
                 .execute(&db)

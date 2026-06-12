@@ -406,7 +406,7 @@ async fn delete_session_is_admin_only_hard_delete() {
     assert_eq!(body["data"]["deleted"], json!(true));
     assert_eq!(body["data"]["sessionId"], json!(sid));
     let remaining: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM conversation_sessions WHERE id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM conversation_sessions WHERE id = $1")
             .bind(&sid)
             .fetch_one(&app.state.db)
             .await
@@ -435,7 +435,7 @@ async fn close_then_reopen_session() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["closed"], json!(true));
     let (active, ended): (i64, Option<String>) =
-        sqlx::query_as("SELECT is_active, ended_at FROM conversation_sessions WHERE id = ?")
+        sqlx::query_as("SELECT is_active, ended_at FROM conversation_sessions WHERE id = $1")
             .bind(&sid)
             .fetch_one(&app.state.db)
             .await
@@ -453,7 +453,7 @@ async fn close_then_reopen_session() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["reopened"], json!(true));
     let (active, ended): (i64, Option<String>) =
-        sqlx::query_as("SELECT is_active, ended_at FROM conversation_sessions WHERE id = ?")
+        sqlx::query_as("SELECT is_active, ended_at FROM conversation_sessions WHERE id = $1")
             .bind(&sid)
             .fetch_one(&app.state.db)
             .await
@@ -557,7 +557,7 @@ async fn update_topic_sets_topic() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let topic: Option<String> =
-        sqlx::query_scalar("SELECT topic FROM conversation_sessions WHERE id = ?")
+        sqlx::query_scalar("SELECT topic FROM conversation_sessions WHERE id = $1")
             .bind(&sid)
             .fetch_one(&app.state.db)
             .await
@@ -707,7 +707,7 @@ async fn batch_update_priority_and_tags_and_delete() {
         .await;
     assert_eq!(status, StatusCode::OK);
     let (priority, tags): (Option<String>, Option<String>) =
-        sqlx::query_as("SELECT priority, tags FROM conversation_sessions WHERE id = ?")
+        sqlx::query_as("SELECT priority, tags FROM conversation_sessions WHERE id = $1")
             .bind(&sid)
             .fetch_one(&app.state.db)
             .await
@@ -725,7 +725,7 @@ async fn batch_update_priority_and_tags_and_delete() {
         .await;
     assert_eq!(status, StatusCode::OK);
     let remaining: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM conversation_sessions WHERE id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM conversation_sessions WHERE id = $1")
             .bind(&sid)
             .fetch_one(&app.state.db)
             .await
@@ -817,7 +817,7 @@ async fn get_or_create_closes_stale_session_and_opens_new_segment() {
     assert!(body["data"]["topic"].is_string());
 
     let (active, ended): (i64, Option<String>) =
-        sqlx::query_as("SELECT is_active, ended_at FROM conversation_sessions WHERE id = ?")
+        sqlx::query_as("SELECT is_active, ended_at FROM conversation_sessions WHERE id = $1")
             .bind(&stale)
             .fetch_one(&app.state.db)
             .await

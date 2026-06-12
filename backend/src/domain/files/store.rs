@@ -1,7 +1,7 @@
 //! File metadata persistence + local object store (CRD §4.4 Data Concepts).
 
 use serde_json::{json, Value};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::db::now_iso;
 
@@ -49,8 +49,8 @@ pub fn file_view(row: &FileRow) -> Value {
     })
 }
 
-pub async fn find(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<FileRow>> {
-    sqlx::query_as(&format!("SELECT {COLUMNS} FROM attachments WHERE id = ?"))
+pub async fn find(pool: &PgPool, id: &str) -> sqlx::Result<Option<FileRow>> {
+    sqlx::query_as(&crate::db::pg_params(&format!("SELECT {COLUMNS} FROM attachments WHERE id = $1")))
         .bind(id)
         .fetch_optional(pool)
         .await
@@ -74,13 +74,13 @@ pub struct NewFile<'a> {
     pub status: &'a str, // completed | pending
 }
 
-pub async fn insert(pool: &SqlitePool, f: &NewFile<'_>) -> sqlx::Result<()> {
+pub async fn insert(pool: &PgPool, f: &NewFile<'_>) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO attachments
             (id, message_id, conversation_id, file_name, original_name, content_type, file_size,
              file_url, public_url, storage_key, upload_status, uploaded_by, platform, file_type,
              created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
     )
     .bind(f.id)
     .bind(f.message_id)

@@ -2,7 +2,7 @@
 -- error/quality analytics records, operational alerts, alert thresholds.
 
 CREATE TABLE realtime_config (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
+    id BIGINT PRIMARY KEY CHECK (id = 1),
     config TEXT NOT NULL,
     updated_by TEXT,
     updated_at TEXT
@@ -37,17 +37,17 @@ CREATE TABLE realtime_alerts (
     title TEXT NOT NULL,
     description TEXT NOT NULL,
     triggered_by TEXT,
-    resolved INTEGER NOT NULL DEFAULT 0,
+    resolved BIGINT NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 
 -- Alert thresholds (CRD 3389-3397); a missing row means defaults are in effect.
 CREATE TABLE realtime_alert_config (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    error_rate_threshold REAL NOT NULL,
-    latency_threshold REAL NOT NULL,
-    connection_failure_threshold REAL NOT NULL,
-    satisfaction_threshold REAL NOT NULL,
-    time_window INTEGER NOT NULL,
+    id BIGINT PRIMARY KEY CHECK (id = 1),
+    error_rate_threshold DOUBLE PRECISION NOT NULL,
+    latency_threshold DOUBLE PRECISION NOT NULL,
+    connection_failure_threshold DOUBLE PRECISION NOT NULL,
+    satisfaction_threshold DOUBLE PRECISION NOT NULL,
+    time_window BIGINT NOT NULL,
     updated_at TEXT
 );

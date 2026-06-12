@@ -87,7 +87,7 @@ pub async fn connect(
         tokio::spawn(async move {
             let _ = sqlx::query(
                 "INSERT INTO realtime_quality_samples (id, timestamp, user_id, connection_id, details, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                 VALUES ($1, $2, $3, $4, $5, $6)",
             )
             .bind(uuid::Uuid::new_v4().to_string())
             .bind(crate::db::now_iso())
@@ -510,7 +510,7 @@ pub(crate) async fn can_view(
         return allowed;
     }
     let team: Option<Option<i64>> =
-        sqlx::query_scalar("SELECT team_id FROM conversations WHERE id = ?")
+        sqlx::query_scalar("SELECT team_id FROM conversations WHERE id = $1")
             .bind(conversation_id)
             .fetch_optional(&state.db)
             .await

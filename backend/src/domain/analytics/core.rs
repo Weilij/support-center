@@ -131,11 +131,11 @@ pub async fn conversations(
 
     let (total, active, closed): (i64, i64, i64) = sqlx::query_as(
         "SELECT COUNT(*),
-                COALESCE(SUM(CASE WHEN status != 'closed' THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END), 0)
+                COALESCE(SUM(CASE WHEN status != 'closed' THEN 1 ELSE 0 END), 0)::bigint,
+                COALESCE(SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END), 0)::bigint
          FROM conversations
-         WHERE deleted_at IS NULL AND created_at >= ? AND created_at <= ?
-           AND (? IS NULL OR team_id = ?)",
+         WHERE deleted_at IS NULL AND created_at >= $1 AND created_at <= $2
+           AND ($3 IS NULL OR team_id = $4)",
     )
     .bind(&s)
     .bind(&e)
@@ -144,11 +144,11 @@ pub async fn conversations(
     .fetch_one(&state.db)
     .await?;
     let avg_messages: f64 = sqlx::query_scalar(
-        "SELECT COALESCE(AVG(cnt), 0) FROM (
+        "SELECT COALESCE(AVG(cnt)::float8, 0) FROM (
             SELECT COUNT(m.id) AS cnt FROM conversations c
             LEFT JOIN messages m ON m.conversation_id = c.id
-            WHERE c.deleted_at IS NULL AND c.created_at >= ? AND c.created_at <= ?
-              AND (? IS NULL OR c.team_id = ?)
+            WHERE c.deleted_at IS NULL AND c.created_at >= $1 AND c.created_at <= $2
+              AND ($3 IS NULL OR c.team_id = $4)
             GROUP BY c.id)",
     )
     .bind(&s)
@@ -162,8 +162,8 @@ pub async fn conversations(
     // Daily trend buckets.
     let trend_rows: Vec<(String, i64)> = sqlx::query_as(
         "SELECT substr(created_at, 1, 10), COUNT(*) FROM conversations
-         WHERE deleted_at IS NULL AND created_at >= ? AND created_at <= ?
-           AND (? IS NULL OR team_id = ?)
+         WHERE deleted_at IS NULL AND created_at >= $1 AND created_at <= $2
+           AND ($3 IS NULL OR team_id = $4)
          GROUP BY 1 ORDER BY 1",
     )
     .bind(&s)
@@ -175,8 +175,8 @@ pub async fn conversations(
     let by_channel: Vec<(Option<String>, i64)> = sqlx::query_as(
         "SELECT cu.platform, COUNT(*) FROM conversations c
          JOIN customers cu ON cu.id = c.customer_id
-         WHERE c.deleted_at IS NULL AND c.created_at >= ? AND c.created_at <= ?
-           AND (? IS NULL OR c.team_id = ?)
+         WHERE c.deleted_at IS NULL AND c.created_at >= $1 AND c.created_at <= $2
+           AND ($3 IS NULL OR c.team_id = $4)
          GROUP BY cu.platform",
     )
     .bind(&s)
@@ -236,9 +236,9 @@ pub async fn messages(
     let total: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM messages m
          JOIN conversations c ON c.id = m.conversation_id
-         WHERE m.deleted_at IS NULL AND m.created_at >= ? AND m.created_at <= ?
-           AND (? IS NULL OR c.team_id = ?)
-           AND (? IS NULL OR m.conversation_id = ?)",
+         WHERE m.deleted_at IS NULL AND m.created_at >= $1 AND m.created_at <= $2
+           AND ($3 IS NULL OR c.team_id = $4)
+           AND ($5 IS NULL OR m.conversation_id = $6)",
     )
     .bind(&s)
     .bind(&e)
@@ -252,8 +252,8 @@ pub async fn messages(
     let by_type: Vec<(String, i64)> = sqlx::query_as(
         "SELECT m.content_type, COUNT(*) FROM messages m
          JOIN conversations c ON c.id = m.conversation_id
-         WHERE m.deleted_at IS NULL AND m.created_at >= ? AND m.created_at <= ?
-           AND (? IS NULL OR c.team_id = ?)
+         WHERE m.deleted_at IS NULL AND m.created_at >= $1 AND m.created_at <= $2
+           AND ($3 IS NULL OR c.team_id = $4)
          GROUP BY m.content_type",
     )
     .bind(&s)
@@ -265,8 +265,8 @@ pub async fn messages(
     let volume: Vec<(String, i64)> = sqlx::query_as(
         "SELECT substr(m.created_at, 1, 13), COUNT(*) FROM messages m
          JOIN conversations c ON c.id = m.conversation_id
-         WHERE m.deleted_at IS NULL AND m.created_at >= ? AND m.created_at <= ?
-           AND (? IS NULL OR c.team_id = ?)
+         WHERE m.deleted_at IS NULL AND m.created_at >= $1 AND m.created_at <= $2
+           AND ($3 IS NULL OR c.team_id = $4)
          GROUP BY 1 ORDER BY 1",
     )
     .bind(&s)
@@ -316,7 +316,7 @@ pub async fn users(
     let user_filter = if user.is_admin() { q.user_id.clone() } else { Some(user.id.clone()) };
 
     let (total_users, active_users): (i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN last_active_at >= ? THEN 1 ELSE 0 END), 0)
+        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN last_active_at >= $1 THEN 1 ELSE 0 END), 0)::bigint
          FROM agents WHERE deleted_at IS NULL AND is_active = 1",
     )
     .bind(&s)
@@ -325,9 +325,9 @@ pub async fn users(
     let performance: Vec<(String, String, String, i64)> = sqlx::query_as(
         "SELECT a.id, a.display_name, a.role, COUNT(DISTINCT m.conversation_id)
          FROM agents a
-         LEFT JOIN messages m ON m.agent_id = a.id AND m.created_at >= ? AND m.created_at <= ?
-         WHERE a.deleted_at IS NULL AND a.is_active = 1 AND (? IS NULL OR a.id = ?)
-         GROUP BY a.id ORDER BY 4 DESC LIMIT ?",
+         LEFT JOIN messages m ON m.agent_id = a.id AND m.created_at >= $1 AND m.created_at <= $2
+         WHERE a.deleted_at IS NULL AND a.is_active = 1 AND ($3 IS NULL OR a.id = $4)
+         GROUP BY a.id ORDER BY 4 DESC LIMIT $5",
     )
     .bind(&s)
     .bind(&e)
@@ -338,7 +338,7 @@ pub async fn users(
     .await?;
     let activity: Vec<(String, i64)> = sqlx::query_as(
         "SELECT substr(created_at, 1, 10), COUNT(*) FROM activity_logs
-         WHERE created_at >= ? AND created_at <= ? AND (? IS NULL OR agent_id = ?)
+         WHERE created_at >= $1 AND created_at <= $2 AND ($3 IS NULL OR agent_id = $4)
          GROUP BY 1 ORDER BY 1",
     )
     .bind(&s)
@@ -394,9 +394,9 @@ pub async fn performance(
 
     // Sourced from the request-metrics accumulation (§7.1 middleware).
     let (count, avg_ms, errors): (i64, f64, i64) = sqlx::query_as(
-        "SELECT COUNT(*), COALESCE(AVG(value), 0),
-                COALESCE(SUM(CASE WHEN CAST(json_extract(tags, '$.status') AS INTEGER) >= 500 THEN 1 ELSE 0 END), 0)
-         FROM metrics WHERE name = 'http_request' AND timestamp >= ?",
+        "SELECT COUNT(*), COALESCE(AVG(value)::float8, 0),
+                COALESCE(SUM(CASE WHEN CAST(tags::json->>'status' AS BIGINT) >= 500 THEN 1 ELSE 0 END), 0)::bigint
+         FROM metrics WHERE name = 'http_request' AND timestamp >= $1",
     )
     .bind(since_ms)
     .fetch_one(&state.db)
@@ -451,10 +451,10 @@ pub async fn custom(
     }
     let limit = body.limit.unwrap_or(100).clamp(1, 1000);
     let sql = match dataset.as_str() {
-        "conversations" => "SELECT status AS category, COUNT(*) AS count FROM conversations WHERE deleted_at IS NULL GROUP BY status LIMIT ?",
-        "messages" => "SELECT sender_type AS category, COUNT(*) AS count FROM messages WHERE deleted_at IS NULL GROUP BY sender_type LIMIT ?",
-        "activities" => "SELECT action AS category, COUNT(*) AS count FROM activity_logs GROUP BY action LIMIT ?",
-        _ => "SELECT name AS category, COUNT(*) AS count FROM metrics GROUP BY name LIMIT ?",
+        "conversations" => "SELECT status AS category, COUNT(*) AS count FROM conversations WHERE deleted_at IS NULL GROUP BY status LIMIT $1",
+        "messages" => "SELECT sender_type AS category, COUNT(*) AS count FROM messages WHERE deleted_at IS NULL GROUP BY sender_type LIMIT $1",
+        "activities" => "SELECT action AS category, COUNT(*) AS count FROM activity_logs GROUP BY action LIMIT $1",
+        _ => "SELECT name AS category, COUNT(*) AS count FROM metrics GROUP BY name LIMIT $1",
     };
     let rows: Vec<(Option<String>, i64)> =
         sqlx::query_as(sql).bind(limit).fetch_all(&state.db).await?;
@@ -542,7 +542,7 @@ pub async fn export(
 // ------------------------------------------------------------ health & metrics
 
 pub async fn health(State(state): State<Arc<AppState>>) -> Result {
-    let db_ok = sqlx::query_scalar::<_, i64>("SELECT 1").fetch_one(&state.db).await.is_ok();
+    let db_ok = sqlx::query_scalar::<_, i64>("SELECT 1::bigint").fetch_one(&state.db).await.is_ok();
     Ok(envelope::ok(json!({
         "status": if db_ok { "healthy" } else { "unhealthy" },
         "services": {
@@ -586,7 +586,7 @@ pub async fn record_metrics(
         validate_metric(m).map_err(AppError::BadRequest)?;
     }
     for m in &batch {
-        sqlx::query("INSERT INTO metrics (name, value, timestamp, tags, unit) VALUES (?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO metrics (name, value, timestamp, tags, unit) VALUES ($1, $2, $3, $4, $5)")
             .bind(m["name"].as_str())
             .bind(m["value"].as_f64())
             .bind(m["timestamp"].as_i64())
@@ -653,8 +653,8 @@ pub async fn query_metric(
     }
     let rows: Vec<(f64, i64, Option<String>)> = sqlx::query_as(
         "SELECT value, timestamp, tags FROM metrics
-         WHERE name = ? AND timestamp >= ? AND timestamp <= ?
-         ORDER BY timestamp ASC LIMIT ?",
+         WHERE name = $1 AND timestamp >= $2 AND timestamp <= $3
+         ORDER BY timestamp ASC LIMIT $4",
     )
     .bind(&name)
     .bind(start)

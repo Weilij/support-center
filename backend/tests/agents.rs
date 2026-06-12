@@ -66,7 +66,7 @@ async fn list_agents_filters() {
     let member = app.seed_agent("findme@test.com", "password1", "agent").await;
     app.add_membership(&member, team, "member", true).await;
     let inactive = app.seed_agent("sleepy@test.com", "password1", "agent").await;
-    sqlx::query("UPDATE agents SET is_active = 0 WHERE id = ?")
+    sqlx::query("UPDATE agents SET is_active = 0 WHERE id = $1")
         .bind(&inactive)
         .execute(&app.state.db)
         .await
@@ -120,7 +120,7 @@ async fn batch_update_applies_same_changes_best_effort() {
     // Failing operators are silently omitted (CRD 2178).
     assert_eq!(body["data"].as_array().unwrap().len(), 2);
     assert!(body["message"].as_str().unwrap().contains("2"));
-    let active: i64 = sqlx::query_scalar("SELECT is_active FROM agents WHERE id = ?")
+    let active: i64 = sqlx::query_scalar("SELECT is_active FROM agents WHERE id = $1")
         .bind(&a)
         .fetch_one(&app.state.db)
         .await
@@ -182,7 +182,7 @@ async fn batch_transfer_replaces_memberships_with_primary() {
     assert_eq!(body["data"]["errors"].as_array().unwrap().len(), 1);
 
     let memberships: Vec<(i64, i64)> =
-        sqlx::query_as("SELECT team_id, is_primary FROM team_members WHERE agent_id = ?")
+        sqlx::query_as("SELECT team_id, is_primary FROM team_members WHERE agent_id = $1")
             .bind(&agent)
             .fetch_all(&app.state.db)
             .await
@@ -455,7 +455,7 @@ async fn get_status_defaults_to_offline_and_auto_expires() {
     // A stored record with a past expiry auto-transitions to offline on read.
     sqlx::query(
         "INSERT INTO agent_status (agent_id, status, since, available_until)
-         VALUES (?, 'busy', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')",
+         VALUES ($1, 'busy', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')",
     )
     .bind(&agent)
     .execute(&app.state.db)
@@ -467,7 +467,7 @@ async fn get_status_defaults_to_offline_and_auto_expires() {
     assert_eq!(body["data"]["note"], "auto-expired");
     // The auto-expiry transition is recorded in history (CRD 2254).
     let history: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM agent_status_history WHERE agent_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_status_history WHERE agent_id = $1")
             .bind(&agent)
             .fetch_one(&app.state.db)
             .await
@@ -505,7 +505,7 @@ async fn update_status_validates_and_records_history() {
 
     // History entry recorded.
     let history: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM agent_status_history WHERE agent_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_status_history WHERE agent_id = $1")
             .bind(&agent)
             .fetch_one(&app.state.db)
             .await
@@ -599,7 +599,7 @@ async fn update_agent_profile_fields_and_team() {
     assert_eq!(body["data"]["teamId"], new_team);
     // Prior memberships replaced with one primary membership (CRD 2285).
     let memberships: Vec<(i64, i64)> =
-        sqlx::query_as("SELECT team_id, is_primary FROM team_members WHERE agent_id = ?")
+        sqlx::query_as("SELECT team_id, is_primary FROM team_members WHERE agent_id = $1")
             .bind(&agent)
             .fetch_all(&app.state.db)
             .await
@@ -697,14 +697,14 @@ async fn delete_agent_is_admin_only_with_cleanup() {
     let (status, _, _) =
         app.request("DELETE", &format!("/api/agents/{agent}"), Some(&admin), None).await;
     assert_eq!(status, StatusCode::OK);
-    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE id = ?")
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE id = $1")
         .bind(&agent)
         .fetch_one(&app.state.db)
         .await
         .unwrap();
     assert_eq!(remaining, 0);
     let memberships: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM team_members WHERE agent_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM team_members WHERE agent_id = $1")
             .bind(&agent)
             .fetch_one(&app.state.db)
             .await

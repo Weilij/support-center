@@ -31,10 +31,42 @@ pub async fn spawn_app_with_env(environment: &str) -> TestApp {
 
 /// Spawn an app after applying a configuration customization (e.g. setting an
 /// encryption key or clearing a webhook secret).
+/// Admin connection for creating per-test databases. Override with
+/// TEST_DATABASE_ADMIN_URL (CI uses a service container).
+fn admin_url() -> String {
+    std::env::var("TEST_DATABASE_ADMIN_URL")
+        .unwrap_or_else(|_| "postgres://localhost/postgres".into())
+}
+
+/// Drop leftover databases from previous runs, once per test binary.
+/// In-use databases (current run) refuse the drop and are skipped.
+async fn sweep_stale_test_dbs(admin: &sqlx::PgPool) {
+    static ONCE: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+    ONCE.get_or_init(|| async {
+        let names: Vec<String> = sqlx::query_scalar(
+            "SELECT datname FROM pg_database WHERE datname LIKE 'mcss_test_%'",
+        )
+        .fetch_all(admin)
+        .await
+        .unwrap_or_default();
+        for name in names {
+            let _ = sqlx::query(&format!("DROP DATABASE \"{name}\"")).execute(admin).await;
+        }
+    })
+    .await;
+}
+
 pub async fn spawn_app_custom(customize: impl FnOnce(&mut Config)) -> TestApp {
     let dir = tempfile::tempdir().expect("tempdir");
-    let db_path = dir.path().join("test.db");
-    let url = format!("sqlite://{}?mode=rwc", db_path.display());
+    let admin = sqlx::PgPool::connect(&admin_url()).await.expect("admin pg connect");
+    sweep_stale_test_dbs(&admin).await;
+    let db_name = format!("mcss_test_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE DATABASE \"{db_name}\""))
+        .execute(&admin)
+        .await
+        .expect("create test db");
+    let base = admin_url();
+    let url = format!("{}/{db_name}", base.rsplit_once('/').map(|(b, _)| b).unwrap_or(&base));
     let pool = db::init_pool(&url).await.expect("db init");
     let mut config = Config {
         database_url: url,
@@ -142,7 +174,7 @@ impl TestApp {
         let hash = mcss_backend::domain::auth::store::hash_password(password).unwrap();
         sqlx::query(
             "INSERT INTO agents (id, email, password_hash, display_name, role, is_active, created_at)
-             VALUES (?, ?, ?, ?, ?, 1, ?)",
+             VALUES ($1, $2, $3, $4, $5, 1, $6)",
         )
         .bind(&id)
         .bind(email)
@@ -157,18 +189,18 @@ impl TestApp {
     }
 
     pub async fn seed_team(&self, name: &str) -> i64 {
-        sqlx::query("INSERT INTO teams (name, created_at) VALUES (?, ?)")
+        sqlx::query_scalar::<_, i64>("INSERT INTO teams (name, created_at) VALUES ($1, $2) RETURNING id")
             .bind(name)
             .bind(chrono::Utc::now().to_rfc3339())
-            .execute(&self.state.db)
+            .fetch_one(&self.state.db)
             .await
             .unwrap()
-            .last_insert_rowid()
+            
     }
 
     pub async fn add_membership(&self, agent_id: &str, team_id: i64, role: &str, primary: bool) {
         sqlx::query(
-            "INSERT INTO team_members (agent_id, team_id, role, is_primary, joined_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO team_members (agent_id, team_id, role, is_primary, joined_at) VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(agent_id)
         .bind(team_id)
@@ -188,19 +220,19 @@ impl TestApp {
         display_name: &str,
         team_id: Option<i64>,
     ) -> i64 {
-        sqlx::query(
+        sqlx::query_scalar::<_, i64>(
             "INSERT INTO customers (platform, platform_user_id, display_name, source_team_id, created_at)
-             VALUES (?, ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5) RETURNING id",
         )
         .bind(platform)
         .bind(platform_user_id)
         .bind(display_name)
         .bind(team_id)
         .bind(chrono::Utc::now().to_rfc3339())
-        .execute(&self.state.db)
+        .fetch_one(&self.state.db)
         .await
         .unwrap()
-        .last_insert_rowid()
+        
     }
 
     /// Insert an active, global tag directly and return its id.
@@ -216,19 +248,19 @@ impl TestApp {
         team_id: Option<i64>,
         is_active: bool,
     ) -> i64 {
-        sqlx::query(
+        sqlx::query_scalar::<_, i64>(
             "INSERT INTO tags (name, color, description, team_id, is_active, created_by, created_at)
-             VALUES (?, '#3B82F6', NULL, ?, ?, ?, ?)",
+             VALUES ($1, '#3B82F6', NULL, $2, $3, $4, $5) RETURNING id",
         )
         .bind(name)
         .bind(team_id)
         .bind(is_active as i64)
         .bind(created_by)
         .bind(chrono::Utc::now().to_rfc3339())
-        .execute(&self.state.db)
+        .fetch_one(&self.state.db)
         .await
         .unwrap()
-        .last_insert_rowid()
+        
     }
 
     /// Insert a conversation directly and return its id.
@@ -240,7 +272,7 @@ impl TestApp {
     ) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
-            "INSERT INTO conversations (id, customer_id, team_id, status, created_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO conversations (id, customer_id, team_id, status, created_at) VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(&id)
         .bind(customer_id)
@@ -277,7 +309,7 @@ impl TestApp {
     ) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         let customer_id: Option<i64> = if sender_type == "customer" {
-            sqlx::query_scalar("SELECT customer_id FROM conversations WHERE id = ?")
+            sqlx::query_scalar("SELECT customer_id FROM conversations WHERE id = $1")
                 .bind(conversation_id)
                 .fetch_optional(&self.state.db)
                 .await
@@ -288,7 +320,7 @@ impl TestApp {
         sqlx::query(
             "INSERT INTO messages (id, conversation_id, sender_type, customer_id, content,
                                    content_type, session_id, session_seq, created_at)
-             VALUES (?, ?, ?, ?, ?, 'text', ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5, 'text', $6, $7, $8)",
         )
         .bind(&id)
         .bind(conversation_id)
@@ -325,7 +357,7 @@ impl TestApp {
             "INSERT INTO conversation_sessions
                  (id, conversation_id, session_type, topic, started_at, ended_at,
                   last_activity_at, message_count, is_active, created_at)
-             VALUES (?, ?, 'continuous', ?, ?, ?, ?, ?, ?, ?)",
+             VALUES ($1, $2, 'continuous', $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(&id)
         .bind(conversation_id)
@@ -345,7 +377,7 @@ impl TestApp {
     /// Attach a tag to a customer directly.
     pub async fn add_customer_tag(&self, customer_id: i64, tag_id: i64, assigned_by: &str) {
         sqlx::query(
-            "INSERT INTO customer_tags (customer_id, tag_id, assigned_by, created_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO customer_tags (customer_id, tag_id, assigned_by, created_at) VALUES ($1, $2, $3, $4)",
         )
         .bind(customer_id)
         .bind(tag_id)
@@ -368,16 +400,16 @@ impl TestApp {
         created_at: Option<&str>,
     ) -> i64 {
         let actor: Option<(String, String)> =
-            sqlx::query_as("SELECT display_name, role FROM agents WHERE id = ?")
+            sqlx::query_as("SELECT display_name, role FROM agents WHERE id = $1")
                 .bind(agent_id)
                 .fetch_optional(&self.state.db)
                 .await
                 .unwrap();
         let (name, role) =
             actor.unwrap_or_else(|| ("seed user".to_string(), "agent".to_string()));
-        sqlx::query(
+        sqlx::query_scalar::<_, i64>(
             "INSERT INTO activity_logs (agent_id, agent_name, agent_role, action, resource_type, resource_id, details, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
         )
         .bind(agent_id)
         .bind(name)
@@ -389,10 +421,10 @@ impl TestApp {
         .bind(created_at.map(str::to_string).unwrap_or_else(|| {
             chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
         }))
-        .execute(&self.state.db)
+        .fetch_one(&self.state.db)
         .await
         .unwrap()
-        .last_insert_rowid()
+        
     }
 
     /// Login and return (accessToken, refreshToken, sessionId).

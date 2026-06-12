@@ -1,7 +1,7 @@
 //! Conversation queries and view assembly (CRD §2.1, lines 651-830).
 
 use serde_json::{json, Value};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
@@ -58,7 +58,7 @@ fn base_select(where_clause: &str) -> String {
                   WHERE m.conversation_id = c.id
                     AND m.sender_type = 'customer'
                     AND m.deleted_at IS NULL
-                    AND m.created_at > MAX(
+                    AND m.created_at > GREATEST(
                         COALESCE((SELECT MAX(r.created_at) FROM messages r
                                    WHERE r.conversation_id = c.id
                                      AND r.sender_type IN ('agent', 'system')
@@ -102,7 +102,7 @@ pub struct ListFilters {
 }
 
 pub async fn list_visible(
-    db: &SqlitePool,
+    db: &PgPool,
     user: &AuthUser,
     f: &ListFilters,
 ) -> Result<Vec<ConvRow>, AppError> {
@@ -137,6 +137,7 @@ pub async fn list_visible(
     }
 
     let sql = base_select(&clause);
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query_as::<_, ConvRow>(&sql);
     for b in &binds {
         q = q.bind(b.clone());
@@ -144,18 +145,18 @@ pub async fn list_visible(
     Ok(q.fetch_all(db).await?)
 }
 
-pub async fn find_full(db: &SqlitePool, id: &str) -> Result<Option<ConvRow>, AppError> {
+pub async fn find_full(db: &PgPool, id: &str) -> Result<Option<ConvRow>, AppError> {
     let sql = base_select(" AND c.id = ?");
-    Ok(sqlx::query_as::<_, ConvRow>(&sql).bind(id).fetch_optional(db).await?)
+    Ok(sqlx::query_as::<_, ConvRow>(&crate::db::pg_params(&sql)).bind(id).fetch_optional(db).await?)
 }
 
 /// Bare assignment state: (team_id, status). None when the conversation is missing.
 pub async fn find_bare(
-    db: &SqlitePool,
+    db: &PgPool,
     id: &str,
 ) -> Result<Option<(Option<i64>, String)>, AppError> {
     Ok(sqlx::query_as(
-        "SELECT team_id, status FROM conversations WHERE id = ? AND deleted_at IS NULL",
+        "SELECT team_id, status FROM conversations WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(id)
     .fetch_optional(db)
@@ -165,7 +166,7 @@ pub async fn find_bare(
 /// Per-conversation capability condition (CRD 578-584, 682): a missing or
 /// unassigned conversation is in the shared pool (granted); an assigned one is
 /// granted only to admins and to agents whose primary team matches.
-pub async fn can_act_on(db: &SqlitePool, user: &AuthUser, id: &str) -> Result<bool, AppError> {
+pub async fn can_act_on(db: &PgPool, user: &AuthUser, id: &str) -> Result<bool, AppError> {
     if user.is_admin() {
         return Ok(true);
     }
@@ -257,8 +258,8 @@ pub fn conversation_view(r: &ConvRow, detail: bool) -> Value {
     })
 }
 
-pub async fn team_name(db: &SqlitePool, id: i64) -> Result<Option<String>, AppError> {
-    Ok(sqlx::query_scalar("SELECT name FROM teams WHERE id = ? AND deleted_at IS NULL")
+pub async fn team_name(db: &PgPool, id: i64) -> Result<Option<String>, AppError> {
+    Ok(sqlx::query_scalar("SELECT name FROM teams WHERE id = $1 AND deleted_at IS NULL")
         .bind(id)
         .fetch_optional(db)
         .await?)
@@ -268,7 +269,7 @@ pub async fn team_name(db: &SqlitePool, id: i64) -> Result<Option<String>, AppEr
 /// reversible audit entry (CRD 706, 716, 726).
 #[allow(clippy::too_many_arguments)]
 pub async fn apply_routing_change(
-    db: &SqlitePool,
+    db: &PgPool,
     user: &AuthUser,
     conversation_id: &str,
     new_team: Option<i64>,
@@ -279,7 +280,7 @@ pub async fn apply_routing_change(
 ) -> Result<(), AppError> {
     let now = crate::db::now_iso();
     let mut tx = db.begin().await?;
-    sqlx::query("UPDATE conversations SET team_id = ?, status = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE conversations SET team_id = $1, status = $2, updated_at = $3 WHERE id = $4")
         .bind(new_team)
         .bind(new_status)
         .bind(&now)
@@ -290,7 +291,7 @@ pub async fn apply_routing_change(
         sqlx::query(
             "INSERT INTO conversation_transfers
                  (conversation_id, from_team_id, to_team_id, reason, transferred_by, transfer_type, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(conversation_id)
         .bind(from)
@@ -305,7 +306,7 @@ pub async fn apply_routing_change(
     sqlx::query(
         "INSERT INTO activity_logs
              (agent_id, agent_name, agent_role, action, resource_type, resource_id, details, created_at)
-         VALUES (?, ?, ?, ?, 'conversation', ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, 'conversation', $5, $6, $7)",
     )
     .bind(&user.id)
     .bind(&user.display_name)

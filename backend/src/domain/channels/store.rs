@@ -1,7 +1,7 @@
 //! Channel-integration persistence helpers (CRD §4.1, lines 2612-2720).
 
 use serde_json::{json, Map, Value};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::crypto;
 use crate::db::now_iso;
@@ -69,15 +69,15 @@ pub fn view(row: &ChannelRow) -> Value {
     })
 }
 
-pub async fn find_by_id(db: &SqlitePool, id: i64) -> Result<Option<ChannelRow>, AppError> {
-    let sql = format!("{SELECT} WHERE id = ?");
-    Ok(sqlx::query_as(&sql).bind(id).fetch_optional(db).await?)
+pub async fn find_by_id(db: &PgPool, id: i64) -> Result<Option<ChannelRow>, AppError> {
+    let sql = format!("{SELECT} WHERE id = $1");
+    Ok(sqlx::query_as(&crate::db::pg_params(&sql)).bind(id).fetch_optional(db).await?)
 }
 
 /// Connections matching the team (and optional platform) filter, newest first
 /// (CRD 2627, 2705). `team_id = None` lists across all teams (admin only).
 pub async fn list(
-    db: &SqlitePool,
+    db: &PgPool,
     team_id: Option<i64>,
     platform: Option<&str>,
 ) -> Result<Vec<ChannelRow>, AppError> {
@@ -89,6 +89,7 @@ pub async fn list(
         sql.push_str(" AND platform = ?");
     }
     sql.push_str(" ORDER BY created_at DESC, id DESC");
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query_as(&sql);
     if let Some(t) = team_id {
         q = q.bind(t);
@@ -102,14 +103,14 @@ pub async fn list(
 /// Whether the team already has an *enabled* connection for this platform
 /// (CRD 2716: at most one enabled connection per (team, platform)).
 pub async fn active_exists(
-    db: &SqlitePool,
+    db: &PgPool,
     team_id: i64,
     platform: &str,
     exclude_id: Option<i64>,
 ) -> Result<bool, AppError> {
     let row: Option<i64> = sqlx::query_scalar(
         "SELECT id FROM channel_integrations
-         WHERE team_id = ? AND platform = ? AND is_active = 1 AND COALESCE(id != ?, 1)
+         WHERE team_id = $1 AND platform = $2 AND is_active = 1 AND ($3::bigint IS NULL OR id != $3::bigint)
          LIMIT 1",
     )
     .bind(team_id)
@@ -132,13 +133,13 @@ pub struct NewChannel<'a> {
 
 /// Persist a new connection: enabled, not-yet-verified, zeroed statistics
 /// (CRD 2637).
-pub async fn insert(db: &SqlitePool, new: NewChannel<'_>) -> Result<ChannelRow, AppError> {
+pub async fn insert(db: &PgPool, new: NewChannel<'_>) -> Result<ChannelRow, AppError> {
     let stats = json!({ "messagesSent": 0, "messagesReceived": 0, "lastMessageAt": null });
-    let id = sqlx::query(
+    let id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO channel_integrations
             (team_id, platform, config, credentials, webhook_config, stats,
              is_active, is_verified, configured_by, metadata, error_count, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?, 0, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, 1, 0, $7, $8, 0, $9) RETURNING id",
     )
     .bind(new.team_id)
     .bind(new.platform)
@@ -149,9 +150,9 @@ pub async fn insert(db: &SqlitePool, new: NewChannel<'_>) -> Result<ChannelRow, 
     .bind(new.configured_by)
     .bind(new.metadata.map(|m| m.to_string()))
     .bind(now_iso())
-    .execute(db)
+    .fetch_one(db)
     .await?
-    .last_insert_rowid();
+    ;
     find_by_id(db, id)
         .await?
         .ok_or_else(|| AppError::Internal("Failed to create channel integration".into()))
@@ -160,7 +161,7 @@ pub async fn insert(db: &SqlitePool, new: NewChannel<'_>) -> Result<ChannelRow, 
 /// Resolve an enabled connection from a presented (platform, team, token)
 /// triple, rejecting a token mismatch or a disabled connection (CRD 2722).
 pub async fn resolve_by_webhook_token(
-    db: &SqlitePool,
+    db: &PgPool,
     platform: &str,
     team_id: i64,
     token: &str,

@@ -232,7 +232,7 @@ pub async fn channel_ws(
         };
         type SessionRow = (String, Option<String>, String);
         let row: Option<SessionRow> = match sqlx::query_as(
-            "SELECT agent_id, data, expires_at FROM auth_sessions WHERE id = ?",
+            "SELECT agent_id, data, expires_at FROM auth_sessions WHERE id = $1",
         )
         .bind(&session_id)
         .fetch_optional(&state.db)
@@ -446,7 +446,7 @@ pub async fn list_messages(
     let mut binds: Vec<String> = vec![conversation_id.clone()];
     if let Some(before) = q.before.as_deref().filter(|s| !s.is_empty()) {
         let anchor: Option<String> = match sqlx::query_scalar(
-            "SELECT created_at FROM messages WHERE id = ? AND conversation_id = ?",
+            "SELECT created_at FROM messages WHERE id = $1 AND conversation_id = $2",
         )
         .bind(before)
         .bind(&conversation_id)
@@ -466,8 +466,9 @@ pub async fn list_messages(
         "SELECT id, conversation_id, sender_type, customer_id, agent_id, content, content_type,
                 is_sent, delivery_status, sender_name, metadata, created_at
          FROM messages WHERE {clause}
-         ORDER BY created_at DESC, id DESC LIMIT ?"
+         ORDER BY created_at DESC, id DESC LIMIT $1"
     );
+    let sql = crate::db::pg_params(&sql);
     let mut mq = sqlx::query_as::<_, MessageRow>(&sql);
     for b in &binds {
         mq = mq.bind(b);
@@ -484,6 +485,7 @@ pub async fn list_messages(
             "SELECT id, message_id, file_name, content_type, file_size, file_url, storage_key
              FROM attachments WHERE message_id IN ({placeholders})"
         );
+        let sql = crate::db::pg_params(&sql);
         let mut aq = sqlx::query_as::<_, AttachmentRow>(&sql);
         for r in &rows {
             aq = aq.bind(&r.id);
@@ -594,7 +596,7 @@ pub async fn create_message(
     // The agent reference column is only populated for a real agent record;
     // the display label is captured as a snapshot (CRD 3911).
     let agent: Option<(String, String)> = match sqlx::query_as(
-        "SELECT id, display_name FROM agents WHERE id = ? AND deleted_at IS NULL",
+        "SELECT id, display_name FROM agents WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(&user_id)
     .fetch_optional(&state.db)
@@ -625,7 +627,7 @@ pub async fn create_message(
             "INSERT INTO messages (id, conversation_id, sender_type, agent_id, content,
                                    content_type, is_sent, sent_at, delivery_status, metadata,
                                    sender_name, created_at)
-             VALUES (?, ?, 'agent', ?, ?, ?, 1, ?, 'delivered', ?, ?, ?)",
+             VALUES ($1, $2, 'agent', $3, $4, $5, 1, $6, 'delivered', $7, $8, $9)",
         )
         .bind(&message_id)
         .bind(&conversation_id)
@@ -641,9 +643,10 @@ pub async fn create_message(
         if !attachment_ids.is_empty() {
             let placeholders = vec!["?"; attachment_ids.len()].join(", ");
             let sql = format!(
-                "UPDATE attachments SET message_id = ?
+                "UPDATE attachments SET message_id = $1
                  WHERE id IN ({placeholders}) AND message_id IS NULL"
             );
+            let sql = crate::db::pg_params(&sql);
             let mut q = sqlx::query(&sql).bind(&message_id);
             for aid in &attachment_ids {
                 q = q.bind(aid);
@@ -652,7 +655,7 @@ pub async fn create_message(
         }
         // Recency markers advance so the conversation re-sorts to the top
         // (CRD 3913).
-        sqlx::query("UPDATE conversations SET last_message_at = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE conversations SET last_message_at = $1, updated_at = $2 WHERE id = $3")
             .bind(&now)
             .bind(&now)
             .bind(&conversation_id)
@@ -671,8 +674,9 @@ pub async fn create_message(
         let placeholders = vec!["?"; attachment_ids.len()].join(", ");
         let sql = format!(
             "SELECT id, message_id, file_name, content_type, file_size, file_url, storage_key
-             FROM attachments WHERE message_id = ? AND id IN ({placeholders})"
+             FROM attachments WHERE message_id = $1 AND id IN ({placeholders})"
         );
+        let sql = crate::db::pg_params(&sql);
         let mut aq = sqlx::query_as::<_, AttachmentRow>(&sql).bind(&message_id);
         for aid in &attachment_ids {
             aq = aq.bind(aid);
@@ -693,7 +697,7 @@ pub async fn create_message(
         "SELECT cu.platform, cu.platform_user_id
          FROM conversations c
          LEFT JOIN customers cu ON cu.id = c.customer_id AND cu.deleted_at IS NULL
-         WHERE c.id = ? AND c.deleted_at IS NULL",
+         WHERE c.id = $1 AND c.deleted_at IS NULL",
     )
     .bind(&conversation_id)
     .fetch_optional(&state.db)
@@ -817,7 +821,7 @@ pub async fn upload(
     // The session token must resolve to a live, unexpired session record
     // (CRD 3932, 3938).
     let live: Result<Option<String>, _> = sqlx::query_scalar(
-        "SELECT id FROM auth_sessions WHERE id = ? AND expires_at > ?",
+        "SELECT id FROM auth_sessions WHERE id = $1 AND expires_at > $2",
     )
     .bind(&session_token)
     .bind(crate::db::now_iso())

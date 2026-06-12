@@ -163,7 +163,7 @@ pub async fn list_agents(
     }
     if let Some(team_id) = q.team_id.as_deref().and_then(|t| t.trim().parse::<i64>().ok()) {
         filter.push_str(
-            " AND EXISTS (SELECT 1 FROM team_members f WHERE f.agent_id = a.id AND f.team_id = ?)",
+            " AND EXISTS (SELECT 1 FROM team_members f WHERE f.agent_id = a.id AND f.team_id = $1::bigint)",
         );
         binds.push(team_id.to_string());
     }
@@ -177,6 +177,7 @@ pub async fn list_agents(
 
     let count_sql =
         format!("SELECT COUNT(*) FROM agents a WHERE a.deleted_at IS NULL {filter}");
+    let count_sql = crate::db::pg_params(&count_sql);
     let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
     for b in &binds {
         count_q = count_q.bind(b.clone());
@@ -187,6 +188,7 @@ pub async fn list_agents(
         "{} {filter} ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?",
         store::OPERATOR_SELECT
     );
+    let list_sql = crate::db::pg_params(&list_sql);
     let mut list_q = sqlx::query_as::<_, OperatorRow>(&list_sql);
     for b in &binds {
         list_q = list_q.bind(b.clone());
@@ -306,7 +308,7 @@ async fn apply_profile_updates(
         {
             return Err(AppError::Internal("Email already in use by another agent".into()));
         }
-        sqlx::query("UPDATE agents SET email = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE agents SET email = $1, updated_at = $2 WHERE id = $3")
             .bind(email)
             .bind(&now)
             .bind(&operator.id)
@@ -314,7 +316,7 @@ async fn apply_profile_updates(
             .await?;
     }
     if let Some(name) = &updates.display_name {
-        sqlx::query("UPDATE agents SET display_name = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE agents SET display_name = $1, updated_at = $2 WHERE id = $3")
             .bind(name)
             .bind(&now)
             .bind(&operator.id)
@@ -322,7 +324,7 @@ async fn apply_profile_updates(
             .await?;
     }
     if let Some(role) = &updates.role {
-        sqlx::query("UPDATE agents SET role = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE agents SET role = $1, updated_at = $2 WHERE id = $3")
             .bind(role)
             .bind(&now)
             .bind(&operator.id)
@@ -330,7 +332,7 @@ async fn apply_profile_updates(
             .await?;
     }
     if let Some(active) = updates.is_active {
-        sqlx::query("UPDATE agents SET is_active = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE agents SET is_active = $1, updated_at = $2 WHERE id = $3")
             .bind(active as i64)
             .bind(&now)
             .bind(&operator.id)
@@ -338,7 +340,7 @@ async fn apply_profile_updates(
             .await?;
     }
     if let Some(policy) = &updates.password_policy {
-        sqlx::query("UPDATE agents SET password_policy = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE agents SET password_policy = $1, updated_at = $2 WHERE id = $3")
             .bind(policy)
             .bind(&now)
             .bind(&operator.id)
@@ -347,7 +349,7 @@ async fn apply_profile_updates(
     }
     if let Some(team_id) = updates.team_id {
         let exists: Option<i64> =
-            sqlx::query_scalar("SELECT id FROM teams WHERE id = ? AND deleted_at IS NULL")
+            sqlx::query_scalar("SELECT id FROM teams WHERE id = $1 AND deleted_at IS NULL")
                 .bind(team_id)
                 .fetch_optional(&state.db)
                 .await?;
@@ -449,7 +451,7 @@ pub async fn batch_transfer(
 
     // A missing target team surfaces as a server error (CRD 2186).
     let exists: Option<i64> =
-        sqlx::query_scalar("SELECT id FROM teams WHERE id = ? AND deleted_at IS NULL")
+        sqlx::query_scalar("SELECT id FROM teams WHERE id = $1 AND deleted_at IS NULL")
             .bind(to_team_id)
             .fetch_optional(&state.db)
             .await?;
@@ -504,7 +506,7 @@ pub async fn search_agents(
     if let Some(team_ids) = body.get("teamIds").and_then(Value::as_array) {
         let ids: Vec<i64> = team_ids.iter().filter_map(Value::as_i64).collect();
         if !ids.is_empty() {
-            let placeholders = vec!["?"; ids.len()].join(", ");
+            let placeholders = vec!["?::bigint"; ids.len()].join(", ");
             filter.push_str(&format!(
                 " AND EXISTS (SELECT 1 FROM team_members f WHERE f.agent_id = a.id
                               AND f.team_id IN ({placeholders}))"
@@ -521,7 +523,7 @@ pub async fn search_agents(
         }
     }
     if let Some(active) = body.get("isActive").and_then(Value::as_bool) {
-        filter.push_str(" AND a.is_active = ?");
+        filter.push_str(" AND a.is_active = ?::bigint");
         binds.push((active as i64).to_string());
     }
     if let Some(after) = body.get("lastActiveAfter").and_then(Value::as_str) {
@@ -540,6 +542,7 @@ pub async fn search_agents(
         "{} {filter} ORDER BY a.last_active_at DESC, a.created_at DESC LIMIT ? OFFSET ?",
         store::OPERATOR_SELECT
     );
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query_as::<_, OperatorRow>(&sql);
     for b in &binds {
         q = q.bind(b.clone());
@@ -557,7 +560,7 @@ pub async fn status_statistics(
     require_privileged(&user)?;
     // Reading statuses passively triggers auto-expiry (CRD 2204).
     let expired: Vec<String> = sqlx::query_scalar(
-        "SELECT agent_id FROM agent_status WHERE available_until IS NOT NULL AND available_until <= ?",
+        "SELECT agent_id FROM agent_status WHERE available_until IS NOT NULL AND available_until <= $1",
     )
     .bind(now_iso())
     .fetch_all(&state.db)
@@ -650,7 +653,7 @@ pub async fn add_skill(
 
     // Skill names are unique per operator; duplicates surface as a server error (CRD 2220).
     let dup: Option<String> =
-        sqlx::query_scalar("SELECT id FROM agent_skills WHERE agent_id = ? AND name = ?")
+        sqlx::query_scalar("SELECT id FROM agent_skills WHERE agent_id = $1 AND name = $2")
             .bind(&agent_id)
             .bind(&name)
             .fetch_optional(&state.db)
@@ -665,7 +668,7 @@ pub async fn add_skill(
     sqlx::query(
         "INSERT INTO agent_skills (id, agent_id, name, category, level, description,
                                    certified, certified_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(&id)
     .bind(&agent_id)
@@ -712,7 +715,7 @@ pub async fn update_skill(
                 SKILL_LEVELS.join(", ")
             )));
         }
-        sqlx::query("UPDATE agent_skills SET level = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE agent_skills SET level = $1, updated_at = $2 WHERE id = $3")
             .bind(level)
             .bind(&now)
             .bind(&skill_id)
@@ -724,7 +727,7 @@ pub async fn update_skill(
         if text.as_deref().map(|s| s.chars().count()).unwrap_or(0) > 500 {
             return Err(AppError::BadRequest("description cannot exceed 500 characters".into()));
         }
-        sqlx::query("UPDATE agent_skills SET description = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE agent_skills SET description = $1, updated_at = $2 WHERE id = $3")
             .bind(text)
             .bind(&now)
             .bind(&skill_id)
@@ -737,7 +740,7 @@ pub async fn update_skill(
         Some(Value::Bool(c)) => {
             let certified_at = c.then(|| now.clone());
             sqlx::query(
-                "UPDATE agent_skills SET certified = ?, certified_at = ?, updated_at = ? WHERE id = ?",
+                "UPDATE agent_skills SET certified = $1, certified_at = $2, updated_at = $3 WHERE id = $4",
             )
             .bind(*c as i64)
             .bind(&certified_at)
@@ -763,7 +766,7 @@ pub async fn delete_skill(
 ) -> Result {
     validate_agent_id(&agent_id)?;
     require_scope(&user, &agent_id)?;
-    let res = sqlx::query("DELETE FROM agent_skills WHERE agent_id = ? AND id = ?")
+    let res = sqlx::query("DELETE FROM agent_skills WHERE agent_id = $1 AND id = $2")
         .bind(&agent_id)
         .bind(&skill_id)
         .execute(&state.db)
@@ -880,13 +883,13 @@ pub async fn update_status(
     // the transition; best-effort by construction.
     {
         let team_ids: Vec<i64> =
-            sqlx::query_scalar("SELECT team_id FROM team_members WHERE agent_id = ?")
+            sqlx::query_scalar("SELECT team_id FROM team_members WHERE agent_id = $1")
                 .bind(&agent_id)
                 .fetch_all(&state.db)
                 .await
                 .unwrap_or_default();
         let display_name: String =
-            sqlx::query_scalar("SELECT display_name FROM agents WHERE id = ?")
+            sqlx::query_scalar("SELECT display_name FROM agents WHERE id = $1")
                 .bind(&agent_id)
                 .fetch_optional(&state.db)
                 .await
@@ -924,8 +927,8 @@ pub async fn status_history(
     }
     let rows: Vec<Row> = sqlx::query_as(
         "SELECT status, since, available_until, note, recorded_at
-         FROM agent_status_history WHERE agent_id = ?
-         ORDER BY id DESC LIMIT ?",
+         FROM agent_status_history WHERE agent_id = $1
+         ORDER BY id DESC LIMIT $2",
     )
     .bind(&agent_id)
     .bind(limit)

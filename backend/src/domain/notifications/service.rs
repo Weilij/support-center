@@ -2,7 +2,7 @@
 //! triggers, and reminder firing (CRD 4894, 5094).
 
 use serde_json::{json, Map, Value};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::db::now_iso;
 use crate::state::AppState;
@@ -69,7 +69,7 @@ pub async fn create(state: &AppState, n: NewNotification<'_>) -> sqlx::Result<St
     sqlx::query(
         "INSERT INTO notifications
             (id, agent_id, type, title, content, data, priority, is_read, expires_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, $10)",
     )
     .bind(&id)
     .bind(n.recipient)
@@ -107,7 +107,7 @@ pub fn expiry(hours: i64) -> Option<String> {
 }
 
 /// All active (non-deleted, enabled) staff ids.
-pub async fn active_staff(db: &SqlitePool) -> sqlx::Result<Vec<String>> {
+pub async fn active_staff(db: &PgPool) -> sqlx::Result<Vec<String>> {
     sqlx::query_scalar("SELECT id FROM agents WHERE deleted_at IS NULL AND is_active = 1")
         .fetch_all(db)
         .await

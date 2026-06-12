@@ -126,10 +126,10 @@ pub async fn list(
     let read_bind = is_read.map(|b| b as i64);
     let total: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM notifications
-         WHERE agent_id = ? AND (expires_at IS NULL OR expires_at > ?)
-           AND (? IS NULL OR type = ?) AND (? IS NULL OR priority = ?)
-           AND (? IS NULL OR is_read = ?)
-           AND (? IS NULL OR created_at >= ?) AND (? IS NULL OR created_at <= ?)",
+         WHERE agent_id = $1 AND (expires_at IS NULL OR expires_at > $2)
+           AND ($3 IS NULL OR type = $4) AND ($5 IS NULL OR priority = $6)
+           AND ($7 IS NULL OR is_read = $8)
+           AND ($9 IS NULL OR created_at >= $10) AND ($11 IS NULL OR created_at <= $12)",
     )
     .bind(&user.id)
     .bind(&now)
@@ -145,14 +145,14 @@ pub async fn list(
     .bind(&q.date_to)
     .fetch_one(&state.db)
     .await?;
-    let rows: Vec<NotificationRow> = sqlx::query_as(&format!(
+    let rows: Vec<NotificationRow> = sqlx::query_as(&crate::db::pg_params(&format!(
         "SELECT {COLUMNS} FROM notifications
-         WHERE agent_id = ? AND (expires_at IS NULL OR expires_at > ?)
-           AND (? IS NULL OR type = ?) AND (? IS NULL OR priority = ?)
-           AND (? IS NULL OR is_read = ?)
-           AND (? IS NULL OR created_at >= ?) AND (? IS NULL OR created_at <= ?)
-         ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
-    ))
+         WHERE agent_id = $1 AND (expires_at IS NULL OR expires_at > $2)
+           AND ($3 IS NULL OR type = $4) AND ($5 IS NULL OR priority = $6)
+           AND ($7 IS NULL OR is_read = $8)
+           AND ($9 IS NULL OR created_at >= $10) AND ($11 IS NULL OR created_at <= $12)
+         ORDER BY created_at DESC, id DESC LIMIT $13 OFFSET $14"
+    )))
     .bind(&user.id)
     .bind(&now)
     .bind(&q.kind)
@@ -182,9 +182,9 @@ async fn find_owned(
     user_id: &str,
     id: &str,
 ) -> Result<NotificationRow> {
-    sqlx::query_as::<_, NotificationRow>(&format!(
-        "SELECT {COLUMNS} FROM notifications WHERE id = ? AND agent_id = ?"
-    ))
+    sqlx::query_as::<_, NotificationRow>(&crate::db::pg_params(&format!(
+        "SELECT {COLUMNS} FROM notifications WHERE id = $1 AND agent_id = $2"
+    )))
     .bind(id)
     .bind(user_id)
     .fetch_optional(&state.db)
@@ -358,7 +358,7 @@ pub async fn mark_read(
 ) -> Result {
     find_owned(&state, &user.id, &id).await?;
     sqlx::query(
-        "UPDATE notifications SET is_read = 1, read_at = COALESCE(read_at, ?), updated_at = ? WHERE id = ?",
+        "UPDATE notifications SET is_read = 1, read_at = COALESCE(read_at, $1), updated_at = $2 WHERE id = $3",
     )
     .bind(now_iso())
     .bind(now_iso())
@@ -381,8 +381,8 @@ pub async fn mark_all_read(
 ) -> Result {
     let kind = body.and_then(|Json(b)| b.kind);
     let updated = sqlx::query(
-        "UPDATE notifications SET is_read = 1, read_at = ?, updated_at = ?
-         WHERE agent_id = ? AND is_read = 0 AND (? IS NULL OR type = ?)",
+        "UPDATE notifications SET is_read = 1, read_at = $1, updated_at = $2
+         WHERE agent_id = $3 AND is_read = 0 AND ($4 IS NULL OR type = $5)",
     )
     .bind(now_iso())
     .bind(now_iso())
@@ -404,7 +404,7 @@ pub async fn delete_one(
     Path(id): Path<String>,
 ) -> Result {
     find_owned(&state, &user.id, &id).await?;
-    sqlx::query("DELETE FROM notifications WHERE id = ?")
+    sqlx::query("DELETE FROM notifications WHERE id = $1")
         .bind(&id)
         .execute(&state.db)
         .await?;
@@ -418,8 +418,8 @@ pub async fn stats(
 ) -> Result {
     let now = now_iso();
     let (total, unread): (i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END), 0)
-         FROM notifications WHERE agent_id = ? AND (expires_at IS NULL OR expires_at > ?)",
+        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END), 0)::bigint
+         FROM notifications WHERE agent_id = $1 AND (expires_at IS NULL OR expires_at > $2)",
     )
     .bind(&user.id)
     .bind(&now)
@@ -431,8 +431,8 @@ pub async fn stats(
         // (CRD 4946); the remaining types report zeros.
         let counts = if ["new_message", "conversation_assigned", "mention", "system"].contains(t) {
             let (tt, tu): (i64, i64) = sqlx::query_as(
-                "SELECT COUNT(*), COALESCE(SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END), 0)
-                 FROM notifications WHERE agent_id = ? AND type = ? AND (expires_at IS NULL OR expires_at > ?)",
+                "SELECT COUNT(*), COALESCE(SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END), 0)::bigint
+                 FROM notifications WHERE agent_id = $1 AND type = $2 AND (expires_at IS NULL OR expires_at > $3)",
             )
             .bind(&user.id)
             .bind(t)
@@ -451,7 +451,7 @@ pub async fn stats(
         let count: i64 = if ["high", "urgent"].contains(p) {
             sqlx::query_scalar(
                 "SELECT COUNT(*) FROM notifications
-                 WHERE agent_id = ? AND priority = ? AND (expires_at IS NULL OR expires_at > ?)",
+                 WHERE agent_id = $1 AND priority = $2 AND (expires_at IS NULL OR expires_at > $3)",
             )
             .bind(&user.id)
             .bind(p)
@@ -470,7 +470,7 @@ pub async fn stats(
     let mut ranges = serde_json::Map::new();
     for (label, since) in [("today", day_start), ("thisWeek", week_start), ("thisMonth", month_start)] {
         let c: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND created_at >= ?",
+            "SELECT COUNT(*) FROM notifications WHERE agent_id = $1 AND created_at >= $2",
         )
         .bind(&user.id)
         .bind(&since)
@@ -507,8 +507,8 @@ pub async fn unread_count(
 ) -> Result {
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM notifications
-         WHERE agent_id = ? AND is_read = 0 AND (expires_at IS NULL OR expires_at > ?)
-           AND (? IS NULL OR type = ?)",
+         WHERE agent_id = $1 AND is_read = 0 AND (expires_at IS NULL OR expires_at > $2)
+           AND ($3 IS NULL OR type = $4)",
     )
     .bind(&user.id)
     .bind(now_iso())
@@ -528,11 +528,11 @@ pub async fn recent(
     Query(q): Query<CountQuery>,
 ) -> Result {
     let limit = q.limit.unwrap_or(10).clamp(1, 50);
-    let rows: Vec<NotificationRow> = sqlx::query_as(&format!(
+    let rows: Vec<NotificationRow> = sqlx::query_as(&crate::db::pg_params(&format!(
         "SELECT {COLUMNS} FROM notifications
-         WHERE agent_id = ? AND is_read = 0 AND (expires_at IS NULL OR expires_at > ?)
-         ORDER BY created_at DESC, id DESC LIMIT ?"
-    ))
+         WHERE agent_id = $1 AND is_read = 0 AND (expires_at IS NULL OR expires_at > $2)
+         ORDER BY created_at DESC, id DESC LIMIT $3"
+    )))
     .bind(&user.id)
     .bind(now_iso())
     .bind(limit)
@@ -553,7 +553,7 @@ pub async fn cleanup(
     if !user.is_admin() {
         return Err(AppError::Forbidden("Administrator role required".into()));
     }
-    let deleted = sqlx::query("DELETE FROM notifications WHERE expires_at IS NOT NULL AND expires_at <= ?")
+    let deleted = sqlx::query("DELETE FROM notifications WHERE expires_at IS NOT NULL AND expires_at <= $1")
         .bind(now_iso())
         .execute(&state.db)
         .await?

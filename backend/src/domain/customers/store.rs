@@ -1,7 +1,7 @@
 //! Persistence helpers for the customer directory (CRD §3.1).
 
 use serde_json::{json, Value};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct CustomerRow {
@@ -41,20 +41,20 @@ pub fn customer_view(c: &CustomerRow) -> Value {
     })
 }
 
-pub async fn find_customer(pool: &SqlitePool, id: i64) -> sqlx::Result<Option<CustomerRow>> {
-    sqlx::query_as::<_, CustomerRow>("SELECT * FROM customers WHERE id = ? AND deleted_at IS NULL")
+pub async fn find_customer(pool: &PgPool, id: i64) -> sqlx::Result<Option<CustomerRow>> {
+    sqlx::query_as::<_, CustomerRow>("SELECT * FROM customers WHERE id = $1 AND deleted_at IS NULL")
         .bind(id)
         .fetch_optional(pool)
         .await
 }
 
 pub async fn find_customer_by_platform(
-    pool: &SqlitePool,
+    pool: &PgPool,
     platform: &str,
     platform_user_id: &str,
 ) -> sqlx::Result<Option<CustomerRow>> {
     sqlx::query_as::<_, CustomerRow>(
-        "SELECT * FROM customers WHERE platform = ? AND platform_user_id = ? AND deleted_at IS NULL",
+        "SELECT * FROM customers WHERE platform = $1 AND platform_user_id = $2 AND deleted_at IS NULL",
     )
     .bind(platform)
     .bind(platform_user_id)
@@ -92,13 +92,13 @@ pub fn conversation_view(c: &ConversationRow) -> Value {
 }
 
 pub async fn customer_conversations(
-    pool: &SqlitePool,
+    pool: &PgPool,
     customer_id: i64,
 ) -> sqlx::Result<Vec<ConversationRow>> {
     sqlx::query_as::<_, ConversationRow>(
         "SELECT id, customer_id, team_id, status, priority, first_response_at, closed_at,
                 last_message_at, created_at, updated_at
-         FROM conversations WHERE customer_id = ? AND deleted_at IS NULL
+         FROM conversations WHERE customer_id = $1 AND deleted_at IS NULL
          ORDER BY created_at DESC",
     )
     .bind(customer_id)
@@ -107,7 +107,7 @@ pub async fn customer_conversations(
 }
 
 /// Distinct ids among `ids` that reference an existing, active, non-deleted tag.
-pub async fn active_tag_ids(pool: &SqlitePool, ids: &[i64]) -> sqlx::Result<Vec<i64>> {
+pub async fn active_tag_ids(pool: &PgPool, ids: &[i64]) -> sqlx::Result<Vec<i64>> {
     if ids.is_empty() {
         return Ok(vec![]);
     }
@@ -115,6 +115,7 @@ pub async fn active_tag_ids(pool: &SqlitePool, ids: &[i64]) -> sqlx::Result<Vec<
     let sql = format!(
         "SELECT id FROM tags WHERE id IN ({placeholders}) AND is_active = 1 AND deleted_at IS NULL"
     );
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query_scalar::<_, i64>(&sql);
     for id in ids {
         q = q.bind(id);

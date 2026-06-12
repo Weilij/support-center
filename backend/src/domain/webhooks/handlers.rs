@@ -15,7 +15,7 @@ use base64::Engine;
 use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
 use sha2::Sha256;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -54,7 +54,7 @@ fn client_ip(headers: &HeaderMap) -> Option<String> {
 
 /// Record one webhook security event (best-effort).
 async fn security_event(
-    db: &SqlitePool,
+    db: &PgPool,
     event_type: &str,
     severity: &str,
     platform: &str,
@@ -64,7 +64,7 @@ async fn security_event(
     let _ = sqlx::query(
         "INSERT INTO webhook_security_events
             (id, event_type, severity, platform, source_ip, details, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(uuid::Uuid::new_v4().to_string())
     .bind(event_type)

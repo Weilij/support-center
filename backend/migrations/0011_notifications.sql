@@ -11,10 +11,10 @@ CREATE TABLE monitoring_alerts (
     level TEXT NOT NULL,                      -- info|warning|critical|emergency
     title TEXT NOT NULL,
     description TEXT,
-    acknowledged INTEGER NOT NULL DEFAULT 0,
+    acknowledged BIGINT NOT NULL DEFAULT 0,
     acknowledged_by TEXT,
     acknowledged_at TEXT,
-    resolved INTEGER NOT NULL DEFAULT 0,
+    resolved BIGINT NOT NULL DEFAULT 0,
     resolved_at TEXT,
     channel_attempts TEXT,                    -- JSON array of {channel, time, success, error}
     metadata TEXT,

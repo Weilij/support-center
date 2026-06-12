@@ -169,7 +169,7 @@ async fn rule_crud_round_trip_with_scope_and_priority_order() {
         .iter()
         .all(|r| r["id"] != rule_id));
     let still_there: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM auto_reply_rules WHERE id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM auto_reply_rules WHERE id = $1")
             .bind(rule_id)
             .fetch_one(&app.state.db)
             .await
@@ -247,7 +247,7 @@ async fn health_endpoints_report_healthy() {
 async fn route_user(app: &TestApp, user: &str, team: i64) {
     sqlx::query(
         "INSERT INTO customer_team_assignments (id, platform_user_id, team_id, source, assigned_at)
-         VALUES (?, ?, ?, 'manual', ?)",
+         VALUES ($1, $2, $3, 'manual', $4)",
     )
     .bind(uuid::Uuid::new_v4().to_string())
     .bind(user)

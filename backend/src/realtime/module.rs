@@ -571,7 +571,7 @@ pub async fn monitoring_health(
     require_elevated(&user)?;
     // Database probe: degraded above ~1 second (CRD 4054).
     let started = Instant::now();
-    let db_ok = sqlx::query_scalar::<_, i64>("SELECT 1").fetch_one(&state.db).await.is_ok();
+    let db_ok = sqlx::query_scalar::<_, i64>("SELECT 1::bigint").fetch_one(&state.db).await.is_ok();
     let db_ms = started.elapsed().as_millis() as u64;
     let db_status = if !db_ok {
         "down"

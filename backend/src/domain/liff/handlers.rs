@@ -65,7 +65,7 @@ pub async fn team_info(
         .parse()
         .map_err(|_| AppError::BadRequest("無效的團隊編號".into()))?;
     let row: Option<(i64, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, name, description FROM teams WHERE id = ? AND deleted_at IS NULL",
+        "SELECT id, name, description FROM teams WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(team_id)
     .fetch_optional(&state.db)
@@ -100,7 +100,7 @@ pub async fn assign_team(
         return Err(AppError::BadRequest("缺少必要欄位 lineUserId 或 teamId".into()));
     }
     let team_name: Option<String> =
-        sqlx::query_scalar("SELECT name FROM teams WHERE id = ? AND deleted_at IS NULL")
+        sqlx::query_scalar("SELECT name FROM teams WHERE id = $1 AND deleted_at IS NULL")
             .bind(team_id)
             .fetch_optional(&state.db)
             .await?;
@@ -111,7 +111,7 @@ pub async fn assign_team(
     // Idempotent per (platform user, team): an existing record is returned
     // unchanged and the scan counter is NOT re-incremented (CRD 2897, 2901).
     let existing: Option<String> = sqlx::query_scalar(
-        "SELECT id FROM customer_team_assignments WHERE platform_user_id = ? AND team_id = ?",
+        "SELECT id FROM customer_team_assignments WHERE platform_user_id = $1 AND team_id = $2",
     )
     .bind(user_id)
     .bind(team_id)
@@ -134,7 +134,7 @@ pub async fn assign_team(
     sqlx::query(
         "INSERT INTO customer_team_assignments
             (id, platform_user_id, team_id, source, display_name, assigned_at, metadata)
-         VALUES (?, ?, ?, 'scan', ?, ?, ?)",
+         VALUES ($1, $2, $3, 'scan', $4, $5, $6)",
     )
     .bind(&assignment_id)
     .bind(user_id)
@@ -147,7 +147,7 @@ pub async fn assign_team(
 
     // Scan counter on the team's front-end code, when one exists (CRD 2897).
     let _ = sqlx::query(
-        "UPDATE team_liff_links SET scan_count = scan_count + 1, updated_at = ? WHERE team_id = ?",
+        "UPDATE team_liff_links SET scan_count = scan_count + 1, updated_at = $1 WHERE team_id = $2",
     )
     .bind(now_iso())
     .bind(team_id)
@@ -212,7 +212,7 @@ pub async fn welcome(
         return Err(AppError::BadRequest("缺少必要欄位 lineUserId 或 teamId".into()));
     }
     let team_name: Option<String> =
-        sqlx::query_scalar("SELECT name FROM teams WHERE id = ? AND deleted_at IS NULL")
+        sqlx::query_scalar("SELECT name FROM teams WHERE id = $1 AND deleted_at IS NULL")
             .bind(team_id)
             .fetch_optional(&state.db)
             .await?;
@@ -243,7 +243,7 @@ async fn reconcile(
 ) -> std::result::Result<(), String> {
     let customer: Option<(i64, Option<String>)> = sqlx::query_as(
         "SELECT id, display_name FROM customers
-         WHERE platform = 'line' AND platform_user_id = ? AND deleted_at IS NULL",
+         WHERE platform = 'line' AND platform_user_id = $1 AND deleted_at IS NULL",
     )
     .bind(user_id)
     .fetch_optional(&state.db)
@@ -255,7 +255,7 @@ async fn reconcile(
 
     let conversation: Option<(String, Option<i64>, String)> = sqlx::query_as(
         "SELECT id, team_id, status FROM conversations
-         WHERE customer_id = ? AND status != 'closed' AND deleted_at IS NULL
+         WHERE customer_id = $1 AND status != 'closed' AND deleted_at IS NULL
          ORDER BY created_at DESC LIMIT 1",
     )
     .bind(customer_id)
@@ -271,7 +271,7 @@ async fn reconcile(
     match conversation {
         Some((_, Some(current), _)) if current == team_id => {} // already correct
         Some((conversation_id, prior_team, status)) => {
-            sqlx::query("UPDATE conversations SET team_id = ?, updated_at = ? WHERE id = ?")
+            sqlx::query("UPDATE conversations SET team_id = $1, updated_at = $2 WHERE id = $3")
                 .bind(team_id)
                 .bind(now_iso())
                 .bind(&conversation_id)
@@ -301,7 +301,7 @@ async fn reconcile(
             let conversation_id = uuid::Uuid::new_v4().to_string();
             sqlx::query(
                 "INSERT INTO conversations (id, customer_id, team_id, status, priority, created_at)
-                 VALUES (?, ?, ?, 'active', 'normal', ?)",
+                 VALUES ($1, $2, $3, 'active', 'normal', $4)",
             )
             .bind(&conversation_id)
             .bind(customer_id)
@@ -349,7 +349,7 @@ pub async fn join_page(
     };
     let team: Option<(i64, String, Option<String>)> = match team_ref.parse::<i64>() {
         Ok(id) => sqlx::query_as(
-            "SELECT id, name, description FROM teams WHERE id = ? AND deleted_at IS NULL",
+            "SELECT id, name, description FROM teams WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(id)
         .fetch_optional(&state.db)
@@ -358,7 +358,7 @@ pub async fn join_page(
         Err(_) => sqlx::query_as(
             "SELECT t.id, t.name, t.description FROM teams t
              JOIN qr_codes q ON q.team_id = t.id
-             WHERE q.token = ? AND t.deleted_at IS NULL",
+             WHERE q.token = $1 AND t.deleted_at IS NULL",
         )
         .bind(team_ref)
         .fetch_optional(&state.db)
@@ -421,7 +421,7 @@ pub async fn coverage_status(
 ) -> Result {
     let teams: Vec<(i64, String, i64)> = sqlx::query_as(
         "SELECT t.id, t.name,
-                EXISTS(SELECT 1 FROM team_liff_links l WHERE l.team_id = t.id) AS has_liff
+                (CASE WHEN EXISTS(SELECT 1 FROM team_liff_links l WHERE l.team_id = t.id) THEN 1 ELSE 0 END)::bigint AS has_liff
          FROM teams t WHERE t.deleted_at IS NULL AND t.is_active = 1 ORDER BY t.id",
     )
     .fetch_all(&state.db)

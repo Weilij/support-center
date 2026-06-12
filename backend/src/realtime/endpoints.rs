@@ -128,7 +128,7 @@ pub async fn migration_config(
     // Persist the effective configuration (CRD 3289, 3292).
     let now = crate::db::now_iso();
     sqlx::query(
-        "INSERT INTO realtime_config (id, config, updated_by, updated_at) VALUES (1, ?, ?, ?)
+        "INSERT INTO realtime_config (id, config, updated_by, updated_at) VALUES (1, $1, $2, $3)
          ON CONFLICT(id) DO UPDATE SET config = excluded.config,
              updated_by = excluded.updated_by, updated_at = excluded.updated_at",
     )
@@ -174,7 +174,7 @@ pub async fn hydrate_config(state: &Arc<AppState>) {
 // --------------------------------------------------------- health (CRD 3294-3311)
 
 async fn db_healthy(state: &Arc<AppState>) -> bool {
-    sqlx::query_scalar::<_, i64>("SELECT 1").fetch_one(&state.db).await.is_ok()
+    sqlx::query_scalar::<_, i64>("SELECT 1::bigint").fetch_one(&state.db).await.is_ok()
 }
 
 /// GET /api/websocket/health — basic when anonymous (CRD 3294-3297),
@@ -533,17 +533,17 @@ async fn trend_data(state: &Arc<AppState>, hours: i64) -> Result<Value> {
     let since = (chrono::Utc::now() - chrono::Duration::hours(hours))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let errors: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM realtime_error_events WHERE timestamp >= ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM realtime_error_events WHERE timestamp >= $1")
             .bind(&since)
             .fetch_one(&state.db)
             .await?;
     let quality: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM realtime_quality_samples WHERE timestamp >= ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM realtime_quality_samples WHERE timestamp >= $1")
             .bind(&since)
             .fetch_one(&state.db)
             .await?;
     let by_code: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT error_code, COUNT(*) FROM realtime_error_events WHERE timestamp >= ?
+        "SELECT error_code, COUNT(*) FROM realtime_error_events WHERE timestamp >= $1
          GROUP BY error_code ORDER BY COUNT(*) DESC",
     )
     .bind(&since)
@@ -600,7 +600,7 @@ pub async fn analytics_record_error(
     let id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO realtime_error_events (id, timestamp, error_code, error_type, details, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(&id)
     .bind(timestamp)
@@ -633,7 +633,7 @@ pub async fn analytics_record_quality(
     let id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO realtime_quality_samples (id, timestamp, user_id, connection_id, details, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(&id)
     .bind(timestamp)
@@ -671,7 +671,7 @@ pub async fn analytics_trigger_alert(
     let now = crate::db::now_iso();
     sqlx::query(
         "INSERT INTO realtime_alerts (id, level, title, description, triggered_by, resolved, created_at)
-         VALUES (?, ?, ?, ?, ?, 0, ?)",
+         VALUES ($1, $2, $3, $4, $5, 0, $6)",
     )
     .bind(&id)
     .bind(level)
@@ -767,7 +767,7 @@ pub async fn analytics_update_alert_config(
         "INSERT INTO realtime_alert_config
              (id, error_rate_threshold, latency_threshold, connection_failure_threshold,
               satisfaction_threshold, time_window, updated_at)
-         VALUES (1, ?, ?, ?, ?, ?, ?)
+         VALUES (1, $1, $2, $3, $4, $5, $6)
          ON CONFLICT(id) DO UPDATE SET
              error_rate_threshold = excluded.error_rate_threshold,
              latency_threshold = excluded.latency_threshold,

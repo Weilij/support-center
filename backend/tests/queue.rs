@@ -39,7 +39,7 @@ async fn seed_pending_message(app: &TestApp) -> (String, String) {
     sqlx::query(
         "INSERT INTO messages (id, conversation_id, sender_type, content, content_type,
                                delivery_status, created_at)
-         VALUES (?, ?, 'agent', 'queued hello', 'text', 'pending', ?)",
+         VALUES ($1, $2, 'agent', 'queued hello', 'text', 'pending', $3)",
     )
     .bind(&message_id)
     .bind(&conversation)
@@ -118,7 +118,7 @@ async fn outbound_job_delivers_and_marks_message() {
     assert!(ack.get("error").is_none());
 
     let delivered = wait_for(5000, || async {
-        sqlx::query_scalar::<_, String>("SELECT delivery_status FROM messages WHERE id = ?")
+        sqlx::query_scalar::<_, String>("SELECT delivery_status FROM messages WHERE id = $1")
             .bind(&message_id)
             .fetch_one(&app.state.db)
             .await
@@ -151,7 +151,7 @@ async fn placeholder_only_content_fails_without_retry() {
 
     let dead = wait_for(5000, || async { app.state.queue.dead_letter_size() == 1 }).await;
     assert!(dead, "non-retryable job dead-lettered immediately");
-    let status: String = sqlx::query_scalar("SELECT delivery_status FROM messages WHERE id = ?")
+    let status: String = sqlx::query_scalar("SELECT delivery_status FROM messages WHERE id = $1")
         .bind(&message_id)
         .fetch_one(&app.state.db)
         .await
@@ -186,7 +186,7 @@ async fn media_job_stores_attachment_idempotently() {
     });
     app.state.queue.enqueue_media(job.clone());
     let stored = wait_for(5000, || async {
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM attachments WHERE message_id = ?")
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM attachments WHERE message_id = $1")
             .bind(&message_id)
             .fetch_one(&app.state.db)
             .await
@@ -200,7 +200,7 @@ async fn media_job_stores_attachment_idempotently() {
     app.state.queue.enqueue_media(job);
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM attachments WHERE message_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM attachments WHERE message_id = $1")
             .bind(&message_id)
             .fetch_one(&app.state.db)
             .await

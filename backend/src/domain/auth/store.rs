@@ -1,6 +1,6 @@
 //! Persistence for accounts, sessions, refresh-token rotation, revocation, activity log.
 
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::db::now_iso;
 use crate::state::TeamMembership;
@@ -30,11 +30,11 @@ impl AgentRow {
 }
 
 pub async fn find_active_agent_by_email(
-    pool: &SqlitePool,
+    pool: &PgPool,
     email: &str,
 ) -> sqlx::Result<Option<AgentRow>> {
     sqlx::query_as::<_, AgentRow>(
-        "SELECT * FROM agents WHERE email = ? AND deleted_at IS NULL",
+        "SELECT * FROM agents WHERE email = $1 AND deleted_at IS NULL",
     )
     .bind(email)
     .fetch_optional(pool)
@@ -42,27 +42,27 @@ pub async fn find_active_agent_by_email(
 }
 
 pub async fn find_deleted_agent_by_email(
-    pool: &SqlitePool,
+    pool: &PgPool,
     email: &str,
 ) -> sqlx::Result<Option<AgentRow>> {
     sqlx::query_as::<_, AgentRow>(
-        "SELECT * FROM agents WHERE email = ? AND deleted_at IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+        "SELECT * FROM agents WHERE email = $1 AND deleted_at IS NOT NULL ORDER BY created_at DESC LIMIT 1",
     )
     .bind(email)
     .fetch_optional(pool)
     .await
 }
 
-pub async fn find_agent_by_id(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<AgentRow>> {
-    sqlx::query_as::<_, AgentRow>("SELECT * FROM agents WHERE id = ? AND deleted_at IS NULL")
+pub async fn find_agent_by_id(pool: &PgPool, id: &str) -> sqlx::Result<Option<AgentRow>> {
+    sqlx::query_as::<_, AgentRow>("SELECT * FROM agents WHERE id = $1 AND deleted_at IS NULL")
         .bind(id)
         .fetch_optional(pool)
         .await
 }
 
-pub async fn memberships(pool: &SqlitePool, agent_id: &str) -> sqlx::Result<Vec<TeamMembership>> {
+pub async fn memberships(pool: &PgPool, agent_id: &str) -> sqlx::Result<Vec<TeamMembership>> {
     let rows: Vec<(i64, String, i64)> = sqlx::query_as(
-        "SELECT team_id, role, is_primary FROM team_members WHERE agent_id = ? ORDER BY is_primary DESC, team_id",
+        "SELECT team_id, role, is_primary FROM team_members WHERE agent_id = $1 ORDER BY is_primary DESC, team_id",
     )
     .bind(agent_id)
     .fetch_all(pool)
@@ -73,8 +73,8 @@ pub async fn memberships(pool: &SqlitePool, agent_id: &str) -> sqlx::Result<Vec<
         .collect())
 }
 
-pub async fn team_name(pool: &SqlitePool, team_id: i64) -> sqlx::Result<Option<String>> {
-    sqlx::query_scalar("SELECT name FROM teams WHERE id = ? AND deleted_at IS NULL")
+pub async fn team_name(pool: &PgPool, team_id: i64) -> sqlx::Result<Option<String>> {
+    sqlx::query_scalar("SELECT name FROM teams WHERE id = $1 AND deleted_at IS NULL")
         .bind(team_id)
         .fetch_optional(pool)
         .await
@@ -84,7 +84,7 @@ pub async fn team_name(pool: &SqlitePool, team_id: i64) -> sqlx::Result<Option<S
 
 pub const SESSION_TTL_HOURS: i64 = 24;
 
-pub async fn create_session(pool: &SqlitePool, agent: &AgentRow) -> sqlx::Result<String> {
+pub async fn create_session(pool: &PgPool, agent: &AgentRow) -> sqlx::Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let expires = (chrono::Utc::now() + chrono::Duration::hours(SESSION_TTL_HOURS))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -96,7 +96,7 @@ pub async fn create_session(pool: &SqlitePool, agent: &AgentRow) -> sqlx::Result
     })
     .to_string();
     sqlx::query(
-        "INSERT INTO auth_sessions (id, agent_id, data, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO auth_sessions (id, agent_id, data, expires_at, created_at) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(&id)
     .bind(&agent.id)
@@ -109,9 +109,9 @@ pub async fn create_session(pool: &SqlitePool, agent: &AgentRow) -> sqlx::Result
 }
 
 /// Returns the owning agent id when the session exists and is unexpired.
-pub async fn lookup_session(pool: &SqlitePool, session_id: &str) -> sqlx::Result<Option<String>> {
+pub async fn lookup_session(pool: &PgPool, session_id: &str) -> sqlx::Result<Option<String>> {
     sqlx::query_scalar(
-        "SELECT agent_id FROM auth_sessions WHERE id = ? AND expires_at > ?",
+        "SELECT agent_id FROM auth_sessions WHERE id = $1 AND expires_at > $2",
     )
     .bind(session_id)
     .bind(now_iso())
@@ -119,8 +119,8 @@ pub async fn lookup_session(pool: &SqlitePool, session_id: &str) -> sqlx::Result
     .await
 }
 
-pub async fn delete_session(pool: &SqlitePool, session_id: &str) -> sqlx::Result<()> {
-    sqlx::query("DELETE FROM auth_sessions WHERE id = ?")
+pub async fn delete_session(pool: &PgPool, session_id: &str) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM auth_sessions WHERE id = $1")
         .bind(session_id)
         .execute(pool)
         .await?;
@@ -130,7 +130,7 @@ pub async fn delete_session(pool: &SqlitePool, session_id: &str) -> sqlx::Result
 // --- refresh-token rotation (CRD lines 165-172) ---
 
 pub async fn record_refresh_token(
-    pool: &SqlitePool,
+    pool: &PgPool,
     jti: &str,
     agent_id: &str,
     exp_unix: i64,
@@ -139,7 +139,7 @@ pub async fn record_refresh_token(
         .unwrap_or_else(chrono::Utc::now)
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     sqlx::query(
-        "INSERT INTO refresh_tokens (jti, agent_id, issued_at, expires_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO refresh_tokens (jti, agent_id, issued_at, expires_at) VALUES ($1, $2, $3, $4)",
     )
     .bind(jti)
     .bind(agent_id)
@@ -158,17 +158,17 @@ pub struct RefreshRow {
     pub revoked_at: Option<String>,
 }
 
-pub async fn get_refresh_token(pool: &SqlitePool, jti: &str) -> sqlx::Result<Option<RefreshRow>> {
+pub async fn get_refresh_token(pool: &PgPool, jti: &str) -> sqlx::Result<Option<RefreshRow>> {
     sqlx::query_as::<_, RefreshRow>(
-        "SELECT jti, agent_id, consumed_at, revoked_at FROM refresh_tokens WHERE jti = ?",
+        "SELECT jti, agent_id, consumed_at, revoked_at FROM refresh_tokens WHERE jti = $1",
     )
     .bind(jti)
     .fetch_optional(pool)
     .await
 }
 
-pub async fn consume_refresh_token(pool: &SqlitePool, jti: &str) -> sqlx::Result<()> {
-    sqlx::query("UPDATE refresh_tokens SET consumed_at = ? WHERE jti = ?")
+pub async fn consume_refresh_token(pool: &PgPool, jti: &str) -> sqlx::Result<()> {
+    sqlx::query("UPDATE refresh_tokens SET consumed_at = $1 WHERE jti = $2")
         .bind(now_iso())
         .bind(jti)
         .execute(pool)
@@ -176,8 +176,8 @@ pub async fn consume_refresh_token(pool: &SqlitePool, jti: &str) -> sqlx::Result
     Ok(())
 }
 
-pub async fn revoke_refresh_token(pool: &SqlitePool, jti: &str) -> sqlx::Result<()> {
-    sqlx::query("UPDATE refresh_tokens SET revoked_at = ? WHERE jti = ?")
+pub async fn revoke_refresh_token(pool: &PgPool, jti: &str) -> sqlx::Result<()> {
+    sqlx::query("UPDATE refresh_tokens SET revoked_at = $1 WHERE jti = $2")
         .bind(now_iso())
         .bind(jti)
         .execute(pool)
@@ -188,7 +188,7 @@ pub async fn revoke_refresh_token(pool: &SqlitePool, jti: &str) -> sqlx::Result<
 // --- jti revocation (access credentials, CRD line 269) ---
 
 pub async fn revoke_jti(
-    pool: &SqlitePool,
+    pool: &PgPool,
     jti: &str,
     agent_id: Option<&str>,
     exp_unix: Option<i64>,
@@ -197,7 +197,7 @@ pub async fn revoke_jti(
         t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
     });
     sqlx::query(
-        "INSERT OR IGNORE INTO revoked_tokens (jti, agent_id, revoked_at, expires_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO revoked_tokens (jti, agent_id, revoked_at, expires_at) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
     )
     .bind(jti)
     .bind(agent_id)
@@ -208,8 +208,8 @@ pub async fn revoke_jti(
     Ok(())
 }
 
-pub async fn is_jti_revoked(pool: &SqlitePool, jti: &str) -> sqlx::Result<bool> {
-    let found: Option<String> = sqlx::query_scalar("SELECT jti FROM revoked_tokens WHERE jti = ?")
+pub async fn is_jti_revoked(pool: &PgPool, jti: &str) -> sqlx::Result<bool> {
+    let found: Option<String> = sqlx::query_scalar("SELECT jti FROM revoked_tokens WHERE jti = $1")
         .bind(jti)
         .fetch_optional(pool)
         .await?;
@@ -220,7 +220,7 @@ pub async fn is_jti_revoked(pool: &SqlitePool, jti: &str) -> sqlx::Result<bool> 
 
 #[allow(clippy::too_many_arguments)]
 pub async fn log_activity(
-    pool: &SqlitePool,
+    pool: &PgPool,
     agent_id: &str,
     agent_name: &str,
     agent_role: &str,
@@ -233,7 +233,7 @@ pub async fn log_activity(
 ) {
     let _ = sqlx::query(
         "INSERT INTO activity_logs (agent_id, agent_name, agent_role, action, resource_type, resource_id, details, ip_address, user_agent, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(agent_id)
     .bind(agent_name)

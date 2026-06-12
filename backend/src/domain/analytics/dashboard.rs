@@ -33,7 +33,7 @@ fn config_key(user_id: &str, dashboard_id: &str) -> String {
 
 async fn load_config(state: &AppState, user_id: &str, dashboard_id: &str) -> Option<Value> {
     let stored: Option<String> =
-        sqlx::query_scalar("SELECT value FROM system_settings WHERE key = ?")
+        sqlx::query_scalar("SELECT value FROM system_settings WHERE key = $1")
             .bind(config_key(user_id, dashboard_id))
             .fetch_optional(&state.db)
             .await
@@ -44,7 +44,7 @@ async fn load_config(state: &AppState, user_id: &str, dashboard_id: &str) -> Opt
 
 async fn store_config(state: &AppState, user_id: &str, dashboard_id: &str, config: &Value) {
     let _ = sqlx::query(
-        "INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)
+        "INSERT INTO system_settings (key, value, updated_at) VALUES ($1, $2, $3)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
     )
     .bind(config_key(user_id, dashboard_id))

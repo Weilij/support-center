@@ -4,7 +4,7 @@
 //! configuration-gated; unconfigured destinations fail gracefully.
 
 use serde_json::{json, Value};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::db::now_iso;
 use crate::state::AppState;
@@ -71,9 +71,9 @@ pub async fn send_security_alert(
 
 // ------------------------------------------------ monitoring alerts
 
-pub async fn get_config(db: &SqlitePool) -> Value {
+pub async fn get_config(db: &PgPool) -> Value {
     let stored: Option<String> =
-        sqlx::query_scalar("SELECT value FROM system_settings WHERE key = ?")
+        sqlx::query_scalar("SELECT value FROM system_settings WHERE key = $1")
             .bind(CONFIG_KEY)
             .fetch_optional(db)
             .await
@@ -99,7 +99,7 @@ pub fn default_config() -> Value {
     })
 }
 
-pub async fn update_config(db: &SqlitePool, partial: &Value) -> Value {
+pub async fn update_config(db: &PgPool, partial: &Value) -> Value {
     let mut config = get_config(db).await;
     if let (Some(base), Some(patch)) = (config.as_object_mut(), partial.as_object()) {
         for (k, v) in patch {
@@ -107,7 +107,7 @@ pub async fn update_config(db: &SqlitePool, partial: &Value) -> Value {
         }
     }
     let _ = sqlx::query(
-        "INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)
+        "INSERT INTO system_settings (key, value, updated_at) VALUES ($1, $2, $3)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
     )
     .bind(CONFIG_KEY)
@@ -134,7 +134,7 @@ pub async fn send_monitoring_alert(
     // Per-hour rate limit; emergency always bypasses (CRD 5066).
     let hour_ago = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
     let recent: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM monitoring_alerts WHERE created_at >= ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM monitoring_alerts WHERE created_at >= $1")
             .bind(&hour_ago)
             .fetch_one(&state.db)
             .await
@@ -170,7 +170,7 @@ pub async fn send_monitoring_alert(
     let _ = sqlx::query(
         "INSERT INTO monitoring_alerts
             (id, level, title, description, channel_attempts, metadata, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(&id)
     .bind(level)
@@ -195,9 +195,9 @@ pub async fn send_monitoring_alert(
     })
 }
 
-pub async fn acknowledge(db: &SqlitePool, alert_id: &str, actor: &str) -> bool {
+pub async fn acknowledge(db: &PgPool, alert_id: &str, actor: &str) -> bool {
     sqlx::query(
-        "UPDATE monitoring_alerts SET acknowledged = 1, acknowledged_by = ?, acknowledged_at = ? WHERE id = ?",
+        "UPDATE monitoring_alerts SET acknowledged = 1, acknowledged_by = $1, acknowledged_at = $2 WHERE id = $3",
     )
     .bind(actor)
     .bind(now_iso())
@@ -208,8 +208,8 @@ pub async fn acknowledge(db: &SqlitePool, alert_id: &str, actor: &str) -> bool {
     .unwrap_or(false)
 }
 
-pub async fn resolve(db: &SqlitePool, alert_id: &str) -> bool {
-    sqlx::query("UPDATE monitoring_alerts SET resolved = 1, resolved_at = ? WHERE id = ?")
+pub async fn resolve(db: &PgPool, alert_id: &str) -> bool {
+    sqlx::query("UPDATE monitoring_alerts SET resolved = 1, resolved_at = $1 WHERE id = $2")
         .bind(now_iso())
         .bind(alert_id)
         .execute(db)

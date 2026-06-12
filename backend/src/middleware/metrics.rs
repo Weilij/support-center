@@ -48,7 +48,7 @@ pub async fn metrics_layer(
         })
         .to_string();
         let _ = sqlx::query(
-            "INSERT INTO metrics (name, value, timestamp, tags, unit) VALUES ('http_request', ?, ?, ?, 'ms')",
+            "INSERT INTO metrics (name, value, timestamp, tags, unit) VALUES ('http_request', $1, $2, $3, 'ms')",
         )
         .bind(elapsed_ms)
         .bind(chrono::Utc::now().timestamp_millis())

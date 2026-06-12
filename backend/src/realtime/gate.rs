@@ -68,7 +68,7 @@ fn unexpected_failure(state: &Arc<AppState>) -> Response {
     tokio::spawn(async move {
         let _ = sqlx::query(
             "INSERT INTO realtime_error_events (id, timestamp, error_code, error_type, details, created_at)
-             VALUES (?, ?, '4500', 'AUTH_SYSTEM_ERROR', NULL, ?)",
+             VALUES ($1, $2, '4500', 'AUTH_SYSTEM_ERROR', NULL, $3)",
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(crate::db::now_iso())
@@ -248,7 +248,7 @@ pub async fn authorize(
                 Some(v) => v,
                 None => {
                     let team: Result<Option<Option<i64>>, sqlx::Error> = sqlx::query_scalar(
-                        "SELECT team_id FROM conversations WHERE id = ?",
+                        "SELECT team_id FROM conversations WHERE id = $1",
                     )
                     .bind(cid)
                     .fetch_optional(&state.db)

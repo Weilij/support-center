@@ -50,7 +50,7 @@ async fn gather(
     // At most the most recent 1000 events of each kind (CRD 4454).
     let webhook: Vec<WebhookEvent> = sqlx::query_as(
         "SELECT id, event_type, severity, platform, source_ip, details, created_at
-         FROM webhook_security_events WHERE created_at >= ?
+         FROM webhook_security_events WHERE created_at >= $1
          ORDER BY created_at DESC LIMIT 1000",
     )
     .bind(&since)
@@ -58,7 +58,7 @@ async fn gather(
     .await?;
     let cors: Vec<CorsEvent> = sqlx::query_as(
         "SELECT id, outcome, origin, method, path, metadata, timestamp
-         FROM cors_events WHERE timestamp >= ?
+         FROM cors_events WHERE timestamp >= $1
          ORDER BY timestamp DESC LIMIT 1000",
     )
     .bind(&since)

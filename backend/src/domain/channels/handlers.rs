@@ -350,9 +350,9 @@ pub async fn update_channel(
 
     sqlx::query(
         "UPDATE channel_integrations
-         SET config = ?, credentials = ?, is_active = ?, is_verified = ?, verified_at = ?,
-             metadata = ?, updated_at = ?
-         WHERE id = ?",
+         SET config = $1, credentials = $2, is_active = $3, is_verified = $4, verified_at = $5,
+             metadata = $6, updated_at = $7
+         WHERE id = $8",
     )
     .bind(Value::Object(config).to_string())
     .bind(Value::Object(credentials).to_string())
@@ -383,7 +383,7 @@ pub async fn delete_channel(
     let row = store::find_by_id(&state.db, id).await?.ok_or_else(not_found)?;
     own_team_gate(&user, &row)?;
 
-    sqlx::query("UPDATE channel_integrations SET is_active = 0, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE channel_integrations SET is_active = 0, updated_at = $1 WHERE id = $2")
         .bind(now_iso())
         .bind(row.id)
         .execute(&state.db)
@@ -510,9 +510,9 @@ pub async fn verify_channel(
             // (CRD 2676, 2715).
             sqlx::query(
                 "UPDATE channel_integrations
-                 SET is_verified = 1, verified_at = ?, error_count = 0, last_error = NULL,
-                     updated_at = ?
-                 WHERE id = ?",
+                 SET is_verified = 1, verified_at = $1, error_count = 0, last_error = NULL,
+                     updated_at = $2
+                 WHERE id = $3",
             )
             .bind(&now)
             .bind(&now)
@@ -544,8 +544,8 @@ pub async fn verify_channel(
             );
             sqlx::query(
                 "UPDATE channel_integrations
-                 SET error_count = ?, last_error = ?, updated_at = ?
-                 WHERE id = ?",
+                 SET error_count = $1, last_error = $2, updated_at = $3
+                 WHERE id = $4",
             )
             .bind(attempts)
             .bind(record.to_string())

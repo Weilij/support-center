@@ -14,7 +14,7 @@ CREATE TABLE agent_skills (
     category TEXT NOT NULL,                -- communication|technical|product|language|platform|soft_skill
     level TEXT NOT NULL,                   -- beginner|intermediate|advanced|expert
     description TEXT,
-    certified INTEGER NOT NULL DEFAULT 0,
+    certified BIGINT NOT NULL DEFAULT 0,
     certified_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT,
@@ -31,7 +31,7 @@ CREATE TABLE agent_status (
 );
 
 CREATE TABLE agent_status_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     status TEXT NOT NULL,
     since TEXT NOT NULL,

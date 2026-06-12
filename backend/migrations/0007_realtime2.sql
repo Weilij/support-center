@@ -6,7 +6,7 @@
 
 CREATE TABLE realtime_user_state (
     user_id TEXT PRIMARY KEY,
-    online INTEGER NOT NULL DEFAULT 0,
+    online BIGINT NOT NULL DEFAULT 0,
     last_seen TEXT,
     subscriptions TEXT NOT NULL DEFAULT '[]',
     preferences TEXT,

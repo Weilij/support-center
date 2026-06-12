@@ -15,7 +15,7 @@ pub async fn run_due(state: &AppState) -> usize {
     let due: Vec<DueRow> = sqlx::query_as(
         "SELECT id, name, report_type, format, schedule_type, max_retries, run_count
          FROM scheduled_reports
-         WHERE deleted_at IS NULL AND is_active = 1 AND next_run_at <= ?",
+         WHERE deleted_at IS NULL AND is_active = 1 AND next_run_at <= $1",
     )
     .bind(now_iso())
     .fetch_all(&state.db)
@@ -27,7 +27,7 @@ pub async fn run_due(state: &AppState) -> usize {
         let run_id = uuid::Uuid::new_v4().to_string();
         let started = std::time::Instant::now();
         let _ = sqlx::query(
-            "INSERT INTO scheduled_report_runs (id, schedule_id, started_at, status) VALUES (?, ?, ?, 'running')",
+            "INSERT INTO scheduled_report_runs (id, schedule_id, started_at, status) VALUES ($1, $2, $3, 'running')",
         )
         .bind(&run_id)
         .bind(id)
@@ -53,7 +53,7 @@ pub async fn run_due(state: &AppState) -> usize {
             {
                 Ok(()) => {
                     let creator: String = sqlx::query_scalar(
-                        "SELECT created_by FROM scheduled_reports WHERE id = ?",
+                        "SELECT created_by FROM scheduled_reports WHERE id = $1",
                     )
                     .bind(id)
                     .fetch_one(&state.db)
@@ -62,7 +62,7 @@ pub async fn run_due(state: &AppState) -> usize {
                     let _ = sqlx::query(
                         "INSERT INTO reports (id, title, report_type, format, status, created_by,
                                               time_range, output_url, output_size, completed_at, created_at)
-                         VALUES (?, ?, ?, ?, 'completed', ?, 'last_24_hours', ?, ?, ?, ?)",
+                         VALUES ($1, $2, $3, $4, 'completed', $5, 'last_24_hours', $6, $7, $8, $9)",
                     )
                     .bind(&report_id)
                     .bind(&title)
@@ -86,7 +86,7 @@ pub async fn run_due(state: &AppState) -> usize {
         match outcome {
             Ok(report_id) => {
                 let _ = sqlx::query(
-                    "UPDATE scheduled_report_runs SET status = 'success', completed_at = ?, duration_ms = ?, report_id = ? WHERE id = ?",
+                    "UPDATE scheduled_report_runs SET status = 'success', completed_at = $1, duration_ms = $2, report_id = $3 WHERE id = $4",
                 )
                 .bind(now_iso())
                 .bind(started.elapsed().as_millis() as i64)
@@ -95,7 +95,7 @@ pub async fn run_due(state: &AppState) -> usize {
                 .execute(&state.db)
                 .await;
                 let _ = sqlx::query(
-                    "UPDATE scheduled_reports SET next_run_at = ?, last_run_at = ?, last_status = 'success', run_count = run_count + 1 WHERE id = ?",
+                    "UPDATE scheduled_reports SET next_run_at = $1, last_run_at = $2, last_status = 'success', run_count = run_count + 1 WHERE id = $3",
                 )
                 .bind(next_run(frequency.as_deref().unwrap_or("daily")))
                 .bind(now_iso())
@@ -105,7 +105,7 @@ pub async fn run_due(state: &AppState) -> usize {
             }
             Err(error) => {
                 let _ = sqlx::query(
-                    "UPDATE scheduled_report_runs SET status = 'failed', completed_at = ?, error_message = ? WHERE id = ?",
+                    "UPDATE scheduled_report_runs SET status = 'failed', completed_at = $1, error_message = $2 WHERE id = $3",
                 )
                 .bind(now_iso())
                 .bind(&error)
@@ -113,7 +113,7 @@ pub async fn run_due(state: &AppState) -> usize {
                 .execute(&state.db)
                 .await;
                 let failures: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM scheduled_report_runs WHERE schedule_id = ? AND status = 'failed'",
+                    "SELECT COUNT(*) FROM scheduled_report_runs WHERE schedule_id = $1 AND status = 'failed'",
                 )
                 .bind(id)
                 .fetch_one(&state.db)
@@ -122,7 +122,7 @@ pub async fn run_due(state: &AppState) -> usize {
                 if failures >= *max_retries {
                     // Retry ceiling exhausted: deactivate (CRD 4660).
                     let _ = sqlx::query(
-                        "UPDATE scheduled_reports SET is_active = 0, last_status = 'failed' WHERE id = ?",
+                        "UPDATE scheduled_reports SET is_active = 0, last_status = 'failed' WHERE id = $1",
                     )
                     .bind(id)
                     .execute(&state.db)
@@ -130,7 +130,7 @@ pub async fn run_due(state: &AppState) -> usize {
                 } else {
                     let retry_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
                     let _ = sqlx::query(
-                        "UPDATE scheduled_reports SET next_run_at = ?, last_status = 'failed' WHERE id = ?",
+                        "UPDATE scheduled_reports SET next_run_at = $1, last_status = 'failed' WHERE id = $2",
                     )
                     .bind(retry_at)
                     .bind(id)

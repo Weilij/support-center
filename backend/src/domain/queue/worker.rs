@@ -137,7 +137,7 @@ async fn process_outbound(state: &Arc<AppState>, body: &Value) -> Result<(), Str
         Ok(()) => {
             // 4. Best-effort delivered-state write + success broadcast (CRD 5168).
             let _ = sqlx::query(
-                "UPDATE messages SET delivery_status = 'delivered', updated_at = ? WHERE id = ?",
+                "UPDATE messages SET delivery_status = 'delivered', updated_at = $1 WHERE id = $2",
             )
             .bind(now_iso())
             .bind(message_id)
@@ -158,7 +158,7 @@ async fn process_outbound(state: &Arc<AppState>, body: &Value) -> Result<(), Str
         Err(reason) => {
             // 5. Failure broadcast with reason + retry counter (CRD 5169).
             let _ = sqlx::query(
-                "UPDATE messages SET delivery_status = 'failed', updated_at = ? WHERE id = ?",
+                "UPDATE messages SET delivery_status = 'failed', updated_at = $1 WHERE id = $2",
             )
             .bind(now_iso())
             .bind(message_id)
@@ -193,7 +193,7 @@ async fn process_media(state: &Arc<AppState>, body: &Value) -> Result<(), String
     // succeeded (duplicate records are avoided, CRD 3139-style).
     let key = format!("line/media/{platform_message_id}");
     let existing: Option<String> = sqlx::query_scalar(
-        "SELECT id FROM attachments WHERE message_id = ? AND storage_key = ?",
+        "SELECT id FROM attachments WHERE message_id = $1 AND storage_key = $2",
     )
     .bind(message_id)
     .bind(&key)
@@ -225,7 +225,7 @@ async fn process_media(state: &Arc<AppState>, body: &Value) -> Result<(), String
         "INSERT INTO attachments
             (id, message_id, conversation_id, file_name, content_type, file_size, storage_key,
              upload_status, platform, file_type, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'completed', 'line', ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'completed', 'line', $8, $9, $10)",
     )
     .bind(&attachment_id)
     .bind(message_id)

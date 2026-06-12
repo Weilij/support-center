@@ -426,7 +426,7 @@ async fn security_dashboard_metrics_events_summary() {
     for (kind, severity) in [("invalid_signature", "high"), ("invalid_signature", "high"), ("payload_too_large", "medium")] {
         sqlx::query(
             "INSERT INTO webhook_security_events (id, event_type, severity, platform, source_ip, created_at)
-             VALUES (?, ?, ?, 'line', '1.2.3.4', ?)",
+             VALUES ($1, $2, $3, 'line', '1.2.3.4', $4)",
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(kind)
@@ -438,7 +438,7 @@ async fn security_dashboard_metrics_events_summary() {
     }
     sqlx::query(
         "INSERT INTO cors_events (id, outcome, origin, method, path, timestamp)
-         VALUES ('ce-1', 'rejected', 'https://evil.example.com', 'GET', '/api/x', ?)",
+         VALUES ('ce-1', 'rejected', 'https://evil.example.com', 'GET', '/api/x', $1)",
     )
     .bind(chrono::Utc::now().to_rfc3339())
     .execute(&app.state.db)

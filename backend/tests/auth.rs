@@ -42,7 +42,7 @@ async fn login_failures_share_one_generic_message() {
 async fn disabled_account_cannot_sign_in() {
     let app = spawn_app().await;
     let id = app.seed_agent("off@test.dev", "pw123456", "agent").await;
-    sqlx::query("UPDATE agents SET is_active = 0 WHERE id = ?")
+    sqlx::query("UPDATE agents SET is_active = 0 WHERE id = $1")
         .bind(&id)
         .execute(&app.state.db)
         .await
@@ -89,7 +89,7 @@ async fn successful_login_returns_tokens_session_and_agent_view() {
 async fn must_change_policy_diverts_login_to_forced_change_flow() {
     let app = spawn_app().await;
     let id = app.seed_agent("mc@test.dev", "pw123456", "agent").await;
-    sqlx::query("UPDATE agents SET password_policy = 'must_change' WHERE id = ?")
+    sqlx::query("UPDATE agents SET password_policy = 'must_change' WHERE id = $1")
         .bind(&id)
         .execute(&app.state.db)
         .await
@@ -175,7 +175,7 @@ async fn register_reactivates_soft_deleted_account_in_place() {
     let old_id = app.seed_agent("back@test.dev", "oldpw1234", "agent").await;
     let team_id = app.seed_team("T1").await;
     app.add_membership(&old_id, team_id, "member", true).await;
-    sqlx::query("UPDATE agents SET deleted_at = ? WHERE id = ?")
+    sqlx::query("UPDATE agents SET deleted_at = $1 WHERE id = $2")
         .bind(chrono::Utc::now().to_rfc3339())
         .bind(&old_id)
         .execute(&app.state.db)
@@ -192,7 +192,7 @@ async fn register_reactivates_soft_deleted_account_in_place() {
     // Same record reactivated, not duplicated (CRD 149/153).
     assert_eq!(body["data"]["user"]["id"], old_id.as_str());
     let memberships: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM team_members WHERE agent_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM team_members WHERE agent_id = $1")
             .bind(&old_id)
             .fetch_one(&app.state.db)
             .await
@@ -601,7 +601,7 @@ async fn sessions_expire_and_are_deleted_on_logout() {
     let (token, _, session) = app.login("s@test.dev", "pw123456").await;
 
     // Session exists with a 24h expiry.
-    let expires: String = sqlx::query_scalar("SELECT expires_at FROM auth_sessions WHERE id = ?")
+    let expires: String = sqlx::query_scalar("SELECT expires_at FROM auth_sessions WHERE id = $1")
         .bind(&session)
         .fetch_one(&app.state.db)
         .await
@@ -609,7 +609,7 @@ async fn sessions_expire_and_are_deleted_on_logout() {
     assert!(expires > chrono::Utc::now().to_rfc3339());
 
     // Expired sessions stop resolving (logout then refuses with 401).
-    sqlx::query("UPDATE auth_sessions SET expires_at = '2000-01-01T00:00:00Z' WHERE id = ?")
+    sqlx::query("UPDATE auth_sessions SET expires_at = '2000-01-01T00:00:00Z' WHERE id = $1")
         .bind(&session)
         .execute(&app.state.db)
         .await

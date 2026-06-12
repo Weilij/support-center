@@ -285,7 +285,7 @@ async fn team_members(state: &Arc<AppState>, team_id: i64) -> Result<Vec<String>
     let rows: Vec<(String,)> = sqlx::query_as(
         "SELECT DISTINCT a.id FROM agents a
          JOIN team_members tm ON tm.agent_id = a.id
-         WHERE tm.team_id = ? AND a.is_active = 1",
+         WHERE tm.team_id = $1 AND a.is_active = 1",
     )
     .bind(team_id)
     .fetch_all(&state.db)

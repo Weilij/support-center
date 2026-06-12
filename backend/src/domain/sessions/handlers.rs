@@ -340,11 +340,11 @@ pub async fn list_sessions(
         binds.push(require_iso_date(d, "endDate")?);
     }
     if let Some(t) = q.topic.as_deref().map(sanitize).filter(|t| !t.is_empty()) {
-        clause.push_str(" AND topic LIKE ?");
+        clause.push_str(" AND topic ILIKE ?");
         binds.push(format!("%{t}%"));
     }
     if let Some(t) = q.tag.as_deref().map(sanitize).filter(|t| !t.is_empty()) {
-        clause.push_str(" AND COALESCE(tags, '') LIKE ?");
+        clause.push_str(" AND COALESCE(tags, '') ILIKE ?");
         binds.push(format!("%{t}%"));
     }
     let page = parse_range(q.page.as_deref(), 1, 1, 1000, "page")?;
@@ -358,6 +358,7 @@ pub async fn list_sessions(
          LIMIT ? OFFSET ?",
         store::SELECT
     );
+    let sql = crate::db::pg_params(&sql);
     let mut query = sqlx::query_as::<_, SessionRow>(&sql);
     for b in &binds {
         query = query.bind(b.clone());
@@ -400,7 +401,7 @@ pub async fn search_sessions(
     if term.chars().count() < 2 {
         return Err(bad("query is required and must be at least 2 characters"));
     }
-    let mut clause = String::from("WHERE (topic LIKE ? OR COALESCE(tags, '') LIKE ? OR id = ?)");
+    let mut clause = String::from("WHERE (topic ILIKE $1 OR COALESCE(tags, '') ILIKE $2 OR id = $3)");
     let like = format!("%{term}%");
     let mut binds = vec![like.clone(), like, term];
     if let Some(cid) = q.conversation_id.as_deref() {
@@ -417,6 +418,7 @@ pub async fn search_sessions(
         "{} {clause} ORDER BY COALESCE(last_activity_at, created_at) DESC LIMIT ?",
         store::SELECT
     );
+    let sql = crate::db::pg_params(&sql);
     let mut query = sqlx::query_as::<_, SessionRow>(&sql);
     for b in &binds {
         query = query.bind(b.clone());
@@ -524,7 +526,8 @@ pub async fn update_session(
     let now = crate::db::now_iso();
     let assignments =
         sets.iter().map(|(col, _)| format!("{col} = ?")).collect::<Vec<_>>().join(", ");
-    let sql = format!("UPDATE conversation_sessions SET {assignments}, updated_at = ? WHERE id = ?");
+    let sql = format!("UPDATE conversation_sessions SET {assignments}, updated_at = $1 WHERE id = $2");
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query(&sql);
     for (_, b) in &sets {
         q = match b {
@@ -549,7 +552,7 @@ pub async fn delete_session(
     let id = require_uuid(&raw_id, "session ID")?;
     require_admin(&user, "Only administrators can delete sessions")?;
     // Hard delete: the record is permanently removed (CRD 381, 474).
-    let affected = sqlx::query("DELETE FROM conversation_sessions WHERE id = ?")
+    let affected = sqlx::query("DELETE FROM conversation_sessions WHERE id = $1")
         .bind(&id)
         .execute(&state.db)
         .await?
@@ -577,8 +580,8 @@ pub async fn close_session(
     }
     let now = crate::db::now_iso();
     let affected = sqlx::query(
-        "UPDATE conversation_sessions SET is_active = 0, ended_at = ?, updated_at = ?
-         WHERE id = ? AND is_active = 1",
+        "UPDATE conversation_sessions SET is_active = 0, ended_at = $1, updated_at = $2
+         WHERE id = $3 AND is_active = 1",
     )
     .bind(&now)
     .bind(&now)
@@ -605,8 +608,8 @@ pub async fn reopen_session(
     let now = crate::db::now_iso();
     let affected = sqlx::query(
         "UPDATE conversation_sessions
-            SET is_active = 1, ended_at = NULL, last_activity_at = ?, updated_at = ?
-          WHERE id = ? AND is_active = 0",
+            SET is_active = 1, ended_at = NULL, last_activity_at = $1, updated_at = $2
+          WHERE id = $3 AND is_active = 0",
     )
     .bind(&now)
     .bind(&now)
@@ -644,7 +647,7 @@ pub async fn session_messages(
         q.page_size.as_deref().and_then(|v| v.parse::<i64>().ok()).unwrap_or(20).clamp(1, 100);
 
     let total: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM messages WHERE session_id = ? AND deleted_at IS NULL",
+        "SELECT COUNT(*) FROM messages WHERE session_id = $1 AND deleted_at IS NULL",
     )
     .bind(&id)
     .fetch_one(&state.db)
@@ -668,8 +671,8 @@ pub async fn session_messages(
     let rows: Vec<Row> = sqlx::query_as(
         "SELECT id, conversation_id, session_id, sender_type, customer_id, agent_id, content,
                 content_type, session_seq, platform_message_id, metadata, created_at
-         FROM messages WHERE session_id = ? AND deleted_at IS NULL
-         ORDER BY COALESCE(session_seq, 0), created_at, id LIMIT ? OFFSET ?",
+         FROM messages WHERE session_id = $1 AND deleted_at IS NULL
+         ORDER BY COALESCE(session_seq, 0), created_at, id LIMIT $2 OFFSET $3",
     )
     .bind(&id)
     .bind(page_size)
@@ -793,7 +796,7 @@ pub async fn update_topic(
     if !has_team_access(&state, &user, &session).await? {
         return Err(AppError::Forbidden("You do not have access to this session".into()));
     }
-    sqlx::query("UPDATE conversation_sessions SET topic = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE conversation_sessions SET topic = $1, updated_at = $2 WHERE id = $3")
         .bind(&topic)
         .bind(crate::db::now_iso())
         .bind(&id)
@@ -877,10 +880,11 @@ pub async fn activity_stats(
 
     let created_sql = format!(
         "SELECT substr(created_at, 1, {bucket_len}), COUNT(*),
-                COALESCE(SUM((julianday(COALESCE(ended_at, last_activity_at, created_at))
-                              - julianday(COALESCE(started_at, created_at))) * 1440.0), 0)
-         FROM conversation_sessions WHERE created_at >= ?{conv_clause} GROUP BY 1"
+                COALESCE(SUM(EXTRACT(EPOCH FROM (COALESCE(ended_at, last_activity_at, created_at)::timestamptz
+                              - COALESCE(started_at, created_at)::timestamptz)) / 60.0)::float8, 0)
+         FROM conversation_sessions WHERE created_at >= $1{conv_clause} GROUP BY 1"
     );
+    let created_sql = crate::db::pg_params(&created_sql);
     let mut query = sqlx::query_as::<_, (String, i64, f64)>(&created_sql).bind(&since);
     if let Some(c) = &cid {
         query = query.bind(c.clone());
@@ -893,8 +897,9 @@ pub async fn activity_stats(
 
     let ended_sql = format!(
         "SELECT substr(ended_at, 1, {bucket_len}), COUNT(*) FROM conversation_sessions
-         WHERE ended_at IS NOT NULL AND ended_at >= ?{conv_clause} GROUP BY 1"
+         WHERE ended_at IS NOT NULL AND ended_at >= $1{conv_clause} GROUP BY 1"
     );
+    let ended_sql = crate::db::pg_params(&ended_sql);
     let mut query = sqlx::query_as::<_, (String, i64)>(&ended_sql).bind(&since);
     if let Some(c) = &cid {
         query = query.bind(c.clone());
@@ -905,9 +910,10 @@ pub async fn activity_stats(
 
     let messages_sql = format!(
         "SELECT substr(created_at, 1, {bucket_len}), COUNT(*) FROM messages
-         WHERE session_id IS NOT NULL AND deleted_at IS NULL AND created_at >= ?{conv_clause}
+         WHERE session_id IS NOT NULL AND deleted_at IS NULL AND created_at >= $1{conv_clause}
          GROUP BY 1"
     );
+    let messages_sql = crate::db::pg_params(&messages_sql);
     let mut query = sqlx::query_as::<_, (String, i64)>(&messages_sql).bind(&since);
     if let Some(c) = &cid {
         query = query.bind(c.clone());
@@ -919,8 +925,9 @@ pub async fn activity_stats(
     // Hour-of-day activity for peak / least computation.
     let hours_sql = format!(
         "SELECT substr(created_at, 12, 2), COUNT(*) FROM conversation_sessions
-         WHERE created_at >= ?{conv_clause} GROUP BY 1"
+         WHERE created_at >= $1{conv_clause} GROUP BY 1"
     );
+    let hours_sql = crate::db::pg_params(&hours_sql);
     let mut query = sqlx::query_as::<_, (String, i64)>(&hours_sql).bind(&since);
     if let Some(c) = &cid {
         query = query.bind(c.clone());
@@ -1017,8 +1024,8 @@ pub async fn batch(
             "close" => {
                 let ended = end_time.clone().unwrap_or_else(|| now.clone());
                 Ok(sqlx::query(
-                    "UPDATE conversation_sessions SET is_active = 0, ended_at = ?, updated_at = ?
-                     WHERE id = ? AND is_active = 1",
+                    "UPDATE conversation_sessions SET is_active = 0, ended_at = $1, updated_at = $2
+                     WHERE id = $3 AND is_active = 1",
                 )
                 .bind(&ended)
                 .bind(&now)
@@ -1030,8 +1037,8 @@ pub async fn batch(
             }
             "reopen" => Ok(sqlx::query(
                 "UPDATE conversation_sessions
-                    SET is_active = 1, ended_at = NULL, last_activity_at = ?, updated_at = ?
-                  WHERE id = ? AND is_active = 0",
+                    SET is_active = 1, ended_at = NULL, last_activity_at = $1, updated_at = $2
+                  WHERE id = $3 AND is_active = 0",
             )
             .bind(&now)
             .bind(&now)
@@ -1041,7 +1048,7 @@ pub async fn batch(
             .rows_affected()
                 > 0),
             "update_priority" => Ok(sqlx::query(
-                "UPDATE conversation_sessions SET priority = ?, updated_at = ? WHERE id = ?",
+                "UPDATE conversation_sessions SET priority = $1, updated_at = $2 WHERE id = $3",
             )
             .bind(priority.as_deref())
             .bind(&now)
@@ -1070,7 +1077,7 @@ pub async fn batch(
                             current.retain(|t| !change.contains(t));
                         }
                         sqlx::query(
-                            "UPDATE conversation_sessions SET tags = ?, updated_at = ? WHERE id = ?",
+                            "UPDATE conversation_sessions SET tags = $1, updated_at = $2 WHERE id = $3",
                         )
                         .bind(json!(current).to_string())
                         .bind(&now)
@@ -1081,7 +1088,7 @@ pub async fn batch(
                     }
                 }
             }
-            "delete" => Ok(sqlx::query("DELETE FROM conversation_sessions WHERE id = ?")
+            "delete" => Ok(sqlx::query("DELETE FROM conversation_sessions WHERE id = $1")
                 .bind(sid)
                 .execute(&state.db)
                 .await?
@@ -1147,8 +1154,8 @@ pub async fn get_or_create(
         // (CRD 450, 478).
         if let Some(prior) = &current {
             sqlx::query(
-                "UPDATE conversation_sessions SET is_active = 0, ended_at = ?, updated_at = ?
-                 WHERE id = ? AND is_active = 1",
+                "UPDATE conversation_sessions SET is_active = 0, ended_at = $1, updated_at = $2
+                 WHERE id = $3 AND is_active = 1",
             )
             .bind(&now)
             .bind(&now)
@@ -1174,7 +1181,7 @@ pub async fn get_or_create(
     let existing = current.expect("continue decision implies an active session");
     let now = crate::db::now_iso();
     sqlx::query(
-        "UPDATE conversation_sessions SET last_activity_at = ?, updated_at = ? WHERE id = ?",
+        "UPDATE conversation_sessions SET last_activity_at = $1, updated_at = $2 WHERE id = $3",
     )
     .bind(&now)
     .bind(&now)

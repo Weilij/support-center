@@ -183,7 +183,7 @@ pub async fn create_message(
         Some(rid) => {
             let found: Option<String> = sqlx::query_scalar(
                 "SELECT id FROM messages
-                 WHERE id = ? AND conversation_id = ? AND deleted_at IS NULL",
+                 WHERE id = $1 AND conversation_id = $2 AND deleted_at IS NULL",
             )
             .bind(rid)
             .bind(&conversation_id)
@@ -201,7 +201,7 @@ pub async fn create_message(
         "INSERT INTO messages (id, conversation_id, sender_type, agent_id, content, content_type,
                                is_sent, sent_at, delivery_status, reply_to_id, metadata,
                                sender_name, created_at)
-         VALUES (?, ?, 'agent', ?, ?, ?, 1, ?, 'sent', ?, ?, ?, ?)",
+         VALUES ($1, $2, 'agent', $3, $4, $5, 1, $6, 'sent', $7, $8, $9, $10)",
     )
     .bind(&message_id)
     .bind(&conversation_id)
@@ -215,7 +215,7 @@ pub async fn create_message(
     .bind(&now)
     .execute(&mut *tx)
     .await?;
-    sqlx::query("UPDATE conversations SET last_message_at = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE conversations SET last_message_at = $1, updated_at = $2 WHERE id = $3")
         .bind(&now)
         .bind(&now)
         .bind(&conversation_id)
@@ -226,9 +226,10 @@ pub async fn create_message(
     if !attachment_ids.is_empty() {
         let placeholders = vec!["?"; attachment_ids.len()].join(", ");
         let sql = format!(
-            "UPDATE attachments SET message_id = ?
+            "UPDATE attachments SET message_id = $1
              WHERE id IN ({placeholders}) AND message_id IS NULL"
         );
+        let sql = crate::db::pg_params(&sql);
         let mut q = sqlx::query(&sql).bind(&message_id);
         for aid in &attachment_ids {
             q = q.bind(aid);
@@ -247,6 +248,7 @@ pub async fn create_message(
             "SELECT id FROM agents
              WHERE display_name IN ({placeholders}) AND deleted_at IS NULL AND is_active = 1"
         );
+        let sql = crate::db::pg_params(&sql);
         let mut q = sqlx::query_scalar::<_, String>(&sql);
         for name in &mention_names {
             q = q.bind(name);
@@ -258,7 +260,7 @@ pub async fn create_message(
         for target in &mentioned_ids {
             let _ = sqlx::query(
                 "INSERT INTO notifications (id, agent_id, type, title, content, data, created_at)
-                 VALUES (?, ?, 'mention', ?, ?, ?, ?)",
+                 VALUES ($1, $2, 'mention', $3, $4, $5, $6)",
             )
             .bind(uuid::Uuid::new_v4().to_string())
             .bind(target)
@@ -378,8 +380,8 @@ pub async fn update_message(
     };
     let now = crate::db::now_iso();
     sqlx::query(
-        "UPDATE messages SET content = ?, content_type = ?, metadata = ?, updated_at = ?
-         WHERE id = ?",
+        "UPDATE messages SET content = $1, content_type = $2, metadata = $3, updated_at = $4
+         WHERE id = $5",
     )
     .bind(&content)
     .bind(&message_type)
@@ -426,9 +428,9 @@ pub async fn recall_message(
 
     sqlx::query(
         "UPDATE messages
-            SET is_recalled = 1, recalled_at = ?, content = ?, delivery_status = 'recalled',
-                updated_at = ?
-          WHERE id = ?",
+            SET is_recalled = 1, recalled_at = $1, content = $2, delivery_status = 'recalled',
+                updated_at = $3
+          WHERE id = $4",
     )
     .bind(&now)
     .bind(RECALL_PLACEHOLDER)
@@ -482,7 +484,7 @@ pub async fn conversation_messages(
     Query(q): Query<ConversationQuery>,
 ) -> Result {
     let exists: Option<String> =
-        sqlx::query_scalar("SELECT id FROM conversations WHERE id = ? AND deleted_at IS NULL")
+        sqlx::query_scalar("SELECT id FROM conversations WHERE id = $1 AND deleted_at IS NULL")
             .bind(&conversation_id)
             .fetch_optional(&state.db)
             .await?;
@@ -510,6 +512,7 @@ pub async fn conversation_messages(
     }
 
     let count_sql = format!("SELECT COUNT(*) FROM messages m WHERE {clause}");
+    let count_sql = crate::db::pg_params(&count_sql);
     let mut cq = sqlx::query_scalar::<_, i64>(&count_sql);
     for b in &binds {
         cq = cq.bind(b);
@@ -517,9 +520,10 @@ pub async fn conversation_messages(
     let total = cq.fetch_one(&state.db).await?;
 
     let sql = format!(
-        "{} WHERE {clause} ORDER BY m.created_at DESC, m.id DESC LIMIT ? OFFSET ?",
+        "{} WHERE {clause} ORDER BY m.created_at DESC, m.id DESC LIMIT $1 OFFSET $2",
         store::MESSAGE_SELECT
     );
+    let sql = crate::db::pg_params(&sql);
     let mut mq = sqlx::query_as::<_, FullMessage>(&sql);
     for b in &binds {
         mq = mq.bind(b);
@@ -576,7 +580,7 @@ pub async fn search_messages(
     let mut clause = String::from("m.deleted_at IS NULL");
     let mut binds: Vec<String> = Vec::new();
     if let Some(term) = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        clause.push_str(" AND m.content LIKE ? ESCAPE '\\'");
+        clause.push_str(" AND m.content ILIKE ? ESCAPE '\\'");
         binds.push(format!("%{}%", store::like_escape(term)));
     }
     if let Some(cid) = q.conversation_id.as_deref().filter(|s| !s.is_empty()) {
@@ -606,6 +610,7 @@ pub async fn search_messages(
     }
 
     let count_sql = format!("SELECT COUNT(*) FROM messages m WHERE {clause}");
+    let count_sql = crate::db::pg_params(&count_sql);
     let mut cq = sqlx::query_scalar::<_, i64>(&count_sql);
     for b in &binds {
         cq = cq.bind(b);
@@ -613,9 +618,10 @@ pub async fn search_messages(
     let total = cq.fetch_one(&state.db).await?;
 
     let sql = format!(
-        "{} WHERE {clause} ORDER BY m.created_at DESC, m.id DESC LIMIT ? OFFSET ?",
+        "{} WHERE {clause} ORDER BY m.created_at DESC, m.id DESC LIMIT $1 OFFSET $2",
         store::MESSAGE_SELECT
     );
+    let sql = crate::db::pg_params(&sql);
     let mut mq = sqlx::query_as::<_, FullMessage>(&sql);
     for b in &binds {
         mq = mq.bind(b);
@@ -631,6 +637,7 @@ pub async fn search_messages(
                     created_at
              FROM attachments WHERE message_id IN ({placeholders})"
         );
+        let sql = crate::db::pg_params(&sql);
         let mut aq = sqlx::query_as::<_, store::AttachmentRow>(&sql);
         for r in &rows {
             aq = aq.bind(&r.id);
@@ -746,7 +753,7 @@ pub async fn export_customers(
 ) -> Result {
     let rows: Vec<(i64, Option<String>, String, String)> = sqlx::query_as(
         "SELECT id, display_name, platform, platform_user_id FROM customers
-         WHERE deleted_at IS NULL ORDER BY display_name LIMIT ?",
+         WHERE deleted_at IS NULL ORDER BY display_name LIMIT $1",
     )
     .bind(EXPORT_FILTER_CAP)
     .fetch_all(&state.db)
@@ -766,7 +773,7 @@ pub async fn export_agents(
 ) -> Result {
     let rows: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT id, display_name, role FROM agents
-         WHERE deleted_at IS NULL AND is_active = 1 ORDER BY display_name LIMIT ?",
+         WHERE deleted_at IS NULL AND is_active = 1 ORDER BY display_name LIMIT $1",
     )
     .bind(EXPORT_FILTER_CAP)
     .fetch_all(&state.db)
@@ -830,6 +837,7 @@ pub async fn export_count(
 ) -> Result {
     let (clause, binds) = export_clause(&q);
     let sql = format!("SELECT COUNT(*) FROM messages m WHERE {clause}");
+    let sql = crate::db::pg_params(&sql);
     let mut cq = sqlx::query_scalar::<_, i64>(&sql);
     for b in &binds {
         cq = cq.bind(b);
@@ -879,9 +887,10 @@ pub async fn export_messages(
 
     let (clause, binds) = export_clause(&q);
     let sql = format!(
-        "{} WHERE {clause} ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
+        "{} WHERE {clause} ORDER BY m.created_at DESC, m.id DESC LIMIT $1",
         store::MESSAGE_SELECT
     );
+    let sql = crate::db::pg_params(&sql);
     let mut mq = sqlx::query_as::<_, FullMessage>(&sql);
     for b in &binds {
         mq = mq.bind(b);
@@ -1026,6 +1035,7 @@ pub async fn bulk_create(
         let sql = format!(
             "SELECT id FROM conversations WHERE id IN ({placeholders}) AND deleted_at IS NULL"
         );
+        let sql = crate::db::pg_params(&sql);
         let mut q = sqlx::query_scalar::<_, String>(&sql);
         for id in &ids {
             q = q.bind(id.as_str());
@@ -1064,7 +1074,7 @@ pub async fn bulk_create(
             "INSERT INTO messages (id, conversation_id, sender_type, agent_id, content,
                                    content_type, is_sent, sent_at, delivery_status, metadata,
                                    sender_name, created_at)
-             VALUES (?, ?, 'agent', ?, ?, ?, 1, ?, 'sent', ?, ?, ?)",
+             VALUES ($1, $2, 'agent', $3, $4, $5, 1, $6, 'sent', $7, $8, $9)",
         )
         .bind(&message_id)
         .bind(conversation_id)
@@ -1086,7 +1096,7 @@ pub async fn bulk_create(
         }));
     }
     for conversation_id in &touched {
-        sqlx::query("UPDATE conversations SET last_message_at = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE conversations SET last_message_at = $1, updated_at = $2 WHERE id = $3")
             .bind(&now)
             .bind(&now)
             .bind(conversation_id)
@@ -1140,6 +1150,7 @@ pub async fn bulk_delete(
         "SELECT id, conversation_id, sender_type, agent_id, is_recalled, recall_deadline
          FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
     );
+    let sql = crate::db::pg_params(&sql);
     // (conversationId, senderType, agentId, isRecalled, recallDeadline)
     type RecallRow = (String, String, Option<String>, i64, Option<String>);
     let mut q = sqlx::query_as::<_, (String, String, String, Option<String>, i64, Option<String>)>(&sql);
@@ -1180,10 +1191,11 @@ pub async fn bulk_delete(
         let placeholders = vec!["?"; eligible.len()].join(", ");
         let sql = format!(
             "UPDATE messages
-                SET is_recalled = 1, recalled_at = ?, content = ?, delivery_status = 'recalled',
-                    updated_at = ?
+                SET is_recalled = 1, recalled_at = $1, content = $2, delivery_status = 'recalled',
+                    updated_at = $3
               WHERE id IN ({placeholders})"
         );
+        let sql = crate::db::pg_params(&sql);
         let mut q = sqlx::query(&sql).bind(&now).bind(RECALL_PLACEHOLDER).bind(&now);
         for (id, _) in &eligible {
             q = q.bind(id);
@@ -1295,7 +1307,7 @@ pub async fn upload_attachment(
         "INSERT INTO attachments (id, message_id, conversation_id, file_name, content_type,
                                   file_size, file_url, storage_key, upload_status, uploaded_by,
                                   created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9, $10)",
     )
     .bind(&attachment_id)
     .bind(&id)
@@ -1358,6 +1370,7 @@ pub async fn forward_message(
     let sql = format!(
         "SELECT id FROM conversations WHERE id IN ({placeholders}) AND deleted_at IS NULL"
     );
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query_scalar::<_, String>(&sql);
     for t in &targets {
         q = q.bind(t);
@@ -1394,7 +1407,7 @@ pub async fn forward_message(
             "INSERT INTO messages (id, conversation_id, sender_type, agent_id, content,
                                    content_type, is_sent, sent_at, delivery_status, metadata,
                                    sender_name, created_at)
-             VALUES (?, ?, 'agent', ?, ?, ?, 1, ?, 'sent', ?, ?, ?)",
+             VALUES ($1, $2, 'agent', $3, $4, $5, 1, $6, 'sent', $7, $8, $9)",
         )
         .bind(&message_id)
         .bind(target)
@@ -1421,9 +1434,10 @@ pub async fn forward_message(
     if !bumped.is_empty() {
         let placeholders = vec!["?"; bumped.len()].join(", ");
         let sql = format!(
-            "UPDATE conversations SET last_message_at = ?, updated_at = ?
+            "UPDATE conversations SET last_message_at = $1, updated_at = $2
              WHERE id IN ({placeholders})"
         );
+        let sql = crate::db::pg_params(&sql);
         let mut q = sqlx::query(&sql).bind(&now).bind(&now);
         for cid in &bumped {
             q = q.bind(*cid);
@@ -1498,7 +1512,7 @@ pub async fn set_tags(
     metadata.insert("tags".into(), json!(tags));
     metadata.insert("tagsUpdatedAt".into(), json!(now));
     metadata.insert("tagsUpdatedBy".into(), json!(user.id));
-    sqlx::query("UPDATE messages SET metadata = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE messages SET metadata = $1, updated_at = $2 WHERE id = $3")
         .bind(Value::Object(metadata).to_string())
         .bind(&now)
         .bind(&id)
@@ -1528,7 +1542,7 @@ pub async fn remove_tags(
     let now = crate::db::now_iso();
     metadata.insert("tagsRemovedAt".into(), json!(now));
     metadata.insert("tagsRemovedBy".into(), json!(user.id));
-    sqlx::query("UPDATE messages SET metadata = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE messages SET metadata = $1, updated_at = $2 WHERE id = $3")
         .bind(Value::Object(metadata).to_string())
         .bind(&now)
         .bind(&id)

@@ -118,7 +118,7 @@ async fn list_detail_download_delete_flow() {
     let resp = app.router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(resp.headers().get("content-disposition").unwrap().to_str().unwrap().contains("attachment"));
-    let downloads: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM report_downloads WHERE report_id = ?")
+    let downloads: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM report_downloads WHERE report_id = $1")
         .bind(&id)
         .fetch_one(&app.state.db)
         .await
@@ -270,7 +270,7 @@ async fn scheduled_reports_lifecycle_and_execution() {
     assert_eq!(status, StatusCode::OK);
 
     // Execution: make it due, run the pass, observe the generated report.
-    sqlx::query("UPDATE scheduled_reports SET next_run_at = '2000-01-01T00:00:00Z' WHERE id = ?")
+    sqlx::query("UPDATE scheduled_reports SET next_run_at = '2000-01-01T00:00:00Z' WHERE id = $1")
         .bind(&sched_id)
         .execute(&app.state.db)
         .await
@@ -278,7 +278,7 @@ async fn scheduled_reports_lifecycle_and_execution() {
     let processed = mcss_backend::domain::reports::scheduler::run_due(&app.state).await;
     assert_eq!(processed, 1);
     let (last_status, run_count): (Option<String>, i64) = sqlx::query_as(
-        "SELECT last_status, run_count FROM scheduled_reports WHERE id = ?",
+        "SELECT last_status, run_count FROM scheduled_reports WHERE id = $1",
     )
     .bind(&sched_id)
     .fetch_one(&app.state.db)
@@ -294,7 +294,7 @@ async fn scheduled_reports_lifecycle_and_execution() {
     .unwrap();
     assert_eq!(generated, 1, "date-stamped report generated over last-24h window");
     let runs: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM scheduled_report_runs WHERE schedule_id = ? AND status = 'success'",
+        "SELECT COUNT(*) FROM scheduled_report_runs WHERE schedule_id = $1 AND status = 'success'",
     )
     .bind(&sched_id)
     .fetch_one(&app.state.db)

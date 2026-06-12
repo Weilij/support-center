@@ -7,7 +7,7 @@
 //! failures both surface as `success: false` with a distinguishing `error`.
 
 use serde_json::{json, Value};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::domain::conversations::channels::{ChannelGateway, OutboundItem, StubGateway};
 use crate::state::AppState;
@@ -26,10 +26,10 @@ fn iso_in(seconds: i64) -> String {
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-async fn write_recall_log(db: &SqlitePool, message_id: &str, user_id: &str, action: &str) {
+async fn write_recall_log(db: &PgPool, message_id: &str, user_id: &str, action: &str) {
     let _ = sqlx::query(
         "INSERT INTO message_recall_logs (message_id, agent_id, action, created_at)
-         VALUES (?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4)",
     )
     .bind(message_id)
     .bind(user_id)
@@ -60,7 +60,7 @@ pub async fn schedule_delayed(state: &AppState, agent_id: &str, p: ScheduleParam
         });
     }
     let exists: Option<String> =
-        match sqlx::query_scalar("SELECT id FROM conversations WHERE id = ? AND deleted_at IS NULL")
+        match sqlx::query_scalar("SELECT id FROM conversations WHERE id = $1 AND deleted_at IS NULL")
             .bind(&p.conversation_id)
             .fetch_optional(&state.db)
             .await
@@ -88,7 +88,7 @@ pub async fn schedule_delayed(state: &AppState, agent_id: &str, p: ScheduleParam
         "INSERT INTO scheduled_messages
              (id, conversation_id, agent_id, content, content_type, scheduled_at, status,
               metadata, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8)",
     )
     .bind(&id)
     .bind(&p.conversation_id)
@@ -132,11 +132,11 @@ struct DelayedRow {
     metadata: Option<String>,
 }
 
-async fn mark_delayed_failed(db: &SqlitePool, row: &DelayedRow, reason: &str) {
+async fn mark_delayed_failed(db: &PgPool, row: &DelayedRow, reason: &str) {
     let mut metadata = super::store::metadata_map(&row.metadata);
     metadata.insert("failureReason".into(), json!(reason));
     let _ = sqlx::query(
-        "UPDATE scheduled_messages SET status = 'failed', metadata = ?, updated_at = ? WHERE id = ?",
+        "UPDATE scheduled_messages SET status = 'failed', metadata = $1, updated_at = $2 WHERE id = $3",
     )
     .bind(Value::Object(metadata).to_string())
     .bind(crate::db::now_iso())
@@ -148,7 +148,7 @@ async fn mark_delayed_failed(db: &SqlitePool, row: &DelayedRow, reason: &str) {
 pub async fn process_delayed(state: &AppState, delayed_id: &str) -> Value {
     let row: Option<DelayedRow> = match sqlx::query_as(
         "SELECT id, conversation_id, agent_id, content, content_type, scheduled_at, status, metadata
-         FROM scheduled_messages WHERE id = ?",
+         FROM scheduled_messages WHERE id = $1",
     )
     .bind(delayed_id)
     .fetch_optional(&state.db)
@@ -208,8 +208,8 @@ pub async fn process_delayed(state: &AppState, delayed_id: &str) -> Value {
                 "INSERT INTO messages (id, conversation_id, sender_type, agent_id, content,
                                        content_type, is_sent, sent_at, delivery_status,
                                        recall_deadline, sender_name, created_at)
-                 SELECT ?, ?, 'agent', ?, ?, ?, 1, ?, 'sent', ?, a.display_name, ?
-                 FROM agents a WHERE a.id = ?",
+                 SELECT $1, $2, 'agent', $3, $4, $5, 1, $6, 'sent', $7, a.display_name, $8
+                 FROM agents a WHERE a.id = $9",
             )
             .bind(&message_id)
             .bind(&row.conversation_id)
@@ -277,7 +277,7 @@ pub async fn process_delayed(state: &AppState, delayed_id: &str) -> Value {
     match result {
         Ok(payload) => {
             let updated = sqlx::query(
-                "UPDATE scheduled_messages SET status = 'sent', sent_at = ?, updated_at = ? WHERE id = ?",
+                "UPDATE scheduled_messages SET status = 'sent', sent_at = $1, updated_at = $2 WHERE id = $3",
             )
             .bind(&now)
             .bind(&now)
@@ -310,7 +310,7 @@ pub async fn cancel_delayed(
 ) -> Value {
     let row: Option<DelayedRow> = match sqlx::query_as(
         "SELECT id, conversation_id, agent_id, content, content_type, scheduled_at, status, metadata
-         FROM scheduled_messages WHERE id = ?",
+         FROM scheduled_messages WHERE id = $1",
     )
     .bind(delayed_id)
     .fetch_optional(&state.db)
@@ -346,8 +346,8 @@ pub async fn cancel_delayed(
     );
     let updated = sqlx::query(
         "UPDATE scheduled_messages
-            SET status = 'cancelled', cancelled_at = ?, metadata = ?, updated_at = ?
-          WHERE id = ? AND status = 'pending'",
+            SET status = 'cancelled', cancelled_at = $1, metadata = $2, updated_at = $3
+          WHERE id = $4 AND status = 'pending'",
     )
     .bind(&now)
     .bind(Value::Object(metadata).to_string())
@@ -378,7 +378,7 @@ pub async fn recall_sent_message(state: &AppState, message_id: &str, user_id: &s
              FROM messages m
              LEFT JOIN conversations c ON c.id = m.conversation_id
              LEFT JOIN customers cu ON cu.id = c.customer_id
-             WHERE m.id = ? AND m.deleted_at IS NULL",
+             WHERE m.id = $1 AND m.deleted_at IS NULL",
         )
         .bind(message_id)
         .fetch_optional(&state.db)
@@ -413,9 +413,9 @@ pub async fn recall_sent_message(state: &AppState, message_id: &str, user_id: &s
     // best-effort platform notification that never reverts the recall.
     let updated = sqlx::query(
         "UPDATE messages
-            SET is_recalled = 1, recalled_at = ?, content = ?, delivery_status = 'recalled',
-                updated_at = ?
-          WHERE id = ?",
+            SET is_recalled = 1, recalled_at = $1, content = $2, delivery_status = 'recalled',
+                updated_at = $3
+          WHERE id = $4",
     )
     .bind(&now)
     .bind(RECALL_PLACEHOLDER)
@@ -461,7 +461,7 @@ pub async fn recall_sent_message(state: &AppState, message_id: &str, user_id: &s
 pub async fn dispatch_due(state: &AppState) -> usize {
     let due: Vec<String> = sqlx::query_scalar(
         "SELECT id FROM scheduled_messages
-         WHERE status = 'pending' AND scheduled_at IS NOT NULL AND scheduled_at <= ?
+         WHERE status = 'pending' AND scheduled_at IS NOT NULL AND scheduled_at <= $1
          ORDER BY scheduled_at",
     )
     .bind(crate::db::now_iso())
@@ -477,11 +477,11 @@ pub async fn dispatch_due(state: &AppState) -> usize {
 
 /// Retire stale failed delayed items older than one day: failed -> archived
 /// (CRD 1014, 1028).
-pub async fn archive_stale_failed(db: &SqlitePool) -> Result<u64, sqlx::Error> {
+pub async fn archive_stale_failed(db: &PgPool) -> Result<u64, sqlx::Error> {
     let cutoff = iso_in(-24 * 3600);
     let res = sqlx::query(
-        "UPDATE scheduled_messages SET status = 'archived', updated_at = ?
-         WHERE status = 'failed' AND COALESCE(updated_at, created_at) < ?",
+        "UPDATE scheduled_messages SET status = 'archived', updated_at = $1
+         WHERE status = 'failed' AND COALESCE(updated_at, created_at) < $2",
     )
     .bind(crate::db::now_iso())
     .bind(cutoff)
@@ -499,7 +499,7 @@ pub const MAX_BUFFER_RETRIES: i64 = 3;
 
 /// Buffer a real-time message for an offline recipient.
 pub async fn buffer_message(
-    db: &SqlitePool,
+    db: &PgPool,
     recipient_id: &str,
     conversation_id: &str,
     message_id: &str,
@@ -509,7 +509,7 @@ pub async fn buffer_message(
     sqlx::query(
         "INSERT INTO offline_message_buffer
              (id, message_id, recipient_id, conversation_id, payload, buffered_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(&id)
     .bind(message_id)
@@ -539,7 +539,7 @@ pub struct BufferedEntry {
 /// Replay buffered messages on reconnect: undelivered by default, optionally
 /// including already-delivered ones (CRD 1038).
 pub async fn replay_buffered(
-    db: &SqlitePool,
+    db: &PgPool,
     recipient_id: &str,
     include_delivered: bool,
 ) -> Result<Vec<BufferedEntry>, sqlx::Error> {
@@ -547,24 +547,25 @@ pub async fn replay_buffered(
         "SELECT id, message_id, recipient_id, conversation_id, payload, buffered_at,
                 delivered, retry_count, expires_at
          FROM offline_message_buffer
-         WHERE recipient_id = ? AND expires_at > ? {}
+         WHERE recipient_id = $1 AND expires_at > $2 {}
          ORDER BY buffered_at, id",
         if include_delivered { "" } else { "AND delivered = 0" }
     );
-    sqlx::query_as(&sql).bind(recipient_id).bind(crate::db::now_iso()).fetch_all(db).await
+    sqlx::query_as(&crate::db::pg_params(&sql)).bind(recipient_id).bind(crate::db::now_iso()).fetch_all(db).await
 }
 
 /// Idempotent delivery marking for one or many entries (CRD 1038); a delivered
 /// entry is retained only briefly.
-pub async fn mark_delivered(db: &SqlitePool, ids: &[String]) -> Result<u64, sqlx::Error> {
+pub async fn mark_delivered(db: &PgPool, ids: &[String]) -> Result<u64, sqlx::Error> {
     if ids.is_empty() {
         return Ok(0);
     }
     let placeholders = vec!["?"; ids.len()].join(", ");
     let sql = format!(
-        "UPDATE offline_message_buffer SET delivered = 1, delivered_at = ?, expires_at = ?
+        "UPDATE offline_message_buffer SET delivered = 1, delivered_at = $1, expires_at = $2
          WHERE id IN ({placeholders}) AND delivered = 0"
     );
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query(&sql)
         .bind(crate::db::now_iso())
         .bind(iso_in(DELIVERED_RETENTION_SECS));
@@ -577,13 +578,13 @@ pub async fn mark_delivered(db: &SqlitePool, ids: &[String]) -> Result<u64, sqlx
 /// Bump the retry counter on undelivered entries; entries that exceed the
 /// retry maximum are dropped (CRD 1018). Returns (retried, dropped).
 pub async fn retry_undelivered(
-    db: &SqlitePool,
+    db: &PgPool,
     recipient_id: &str,
 ) -> Result<(u64, u64), sqlx::Error> {
     let now = crate::db::now_iso();
     let retried = sqlx::query(
         "UPDATE offline_message_buffer SET retry_count = retry_count + 1
-         WHERE recipient_id = ? AND delivered = 0 AND expires_at > ?",
+         WHERE recipient_id = $1 AND delivered = 0 AND expires_at > $2",
     )
     .bind(recipient_id)
     .bind(&now)
@@ -592,7 +593,7 @@ pub async fn retry_undelivered(
     .rows_affected();
     let dropped = sqlx::query(
         "DELETE FROM offline_message_buffer
-         WHERE recipient_id = ? AND delivered = 0 AND retry_count > ?",
+         WHERE recipient_id = $1 AND delivered = 0 AND retry_count > $2",
     )
     .bind(recipient_id)
     .bind(MAX_BUFFER_RETRIES)
@@ -604,14 +605,14 @@ pub async fn retry_undelivered(
 
 /// Per-recipient buffer statistics: total, delivered, pending, expired
 /// (CRD 1038).
-pub async fn buffer_stats(db: &SqlitePool, recipient_id: &str) -> Result<Value, sqlx::Error> {
+pub async fn buffer_stats(db: &PgPool, recipient_id: &str) -> Result<Value, sqlx::Error> {
     let now = crate::db::now_iso();
     let (total, delivered, pending, expired): (i64, i64, i64, i64) = sqlx::query_as(
         "SELECT COUNT(*),
-                COALESCE(SUM(CASE WHEN delivered = 1 THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN delivered = 0 AND expires_at > ? THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN expires_at <= ? THEN 1 ELSE 0 END), 0)
-         FROM offline_message_buffer WHERE recipient_id = ?",
+                COALESCE(SUM(CASE WHEN delivered = 1 THEN 1 ELSE 0 END), 0)::bigint,
+                COALESCE(SUM(CASE WHEN delivered = 0 AND expires_at > $1 THEN 1 ELSE 0 END), 0)::bigint,
+                COALESCE(SUM(CASE WHEN expires_at <= $2 THEN 1 ELSE 0 END), 0)::bigint
+         FROM offline_message_buffer WHERE recipient_id = $3",
     )
     .bind(&now)
     .bind(&now)
@@ -622,8 +623,8 @@ pub async fn buffer_stats(db: &SqlitePool, recipient_id: &str) -> Result<Value, 
 }
 
 /// Purge entries past their expiry (CRD 1018).
-pub async fn purge_expired(db: &SqlitePool) -> Result<u64, sqlx::Error> {
-    Ok(sqlx::query("DELETE FROM offline_message_buffer WHERE expires_at <= ?")
+pub async fn purge_expired(db: &PgPool) -> Result<u64, sqlx::Error> {
+    Ok(sqlx::query("DELETE FROM offline_message_buffer WHERE expires_at <= $1")
         .bind(crate::db::now_iso())
         .execute(db)
         .await?

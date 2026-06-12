@@ -236,7 +236,7 @@ pub async fn generate(
     }
     // Concurrent-generation cap (CRD 4689).
     let generating: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM reports WHERE created_by = ? AND status = 'generating' AND deleted_at IS NULL",
+        "SELECT COUNT(*) FROM reports WHERE created_by = $1 AND status = 'generating' AND deleted_at IS NULL",
     )
     .bind(&user.id)
     .fetch_one(&state.db)
@@ -252,7 +252,7 @@ pub async fn generate(
     sqlx::query(
         "INSERT INTO reports (id, title, description, report_type, format, status, created_by,
                               team_id, time_range, filters, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $11)",
     )
     .bind(&id)
     .bind(&title)
@@ -269,7 +269,7 @@ pub async fn generate(
     .await?;
 
     // pending -> generating -> completed | failed (CRD 4542).
-    sqlx::query("UPDATE reports SET status = 'generating', generated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE reports SET status = 'generating', generated_at = $1 WHERE id = $2")
         .bind(now_iso())
         .bind(&id)
         .execute(&state.db)
@@ -279,8 +279,8 @@ pub async fn generate(
     match crate::domain::files::store::put_object(&state.config.upload_dir, &key, content.as_bytes()).await {
         Ok(()) => {
             sqlx::query(
-                "UPDATE reports SET status = 'completed', completed_at = ?, output_url = ?,
-                        output_size = ?, duration_ms = ?, updated_at = ? WHERE id = ?",
+                "UPDATE reports SET status = 'completed', completed_at = $1, output_url = $2,
+                        output_size = $3, duration_ms = $4, updated_at = $5 WHERE id = $6",
             )
             .bind(now_iso())
             .bind(&key)
@@ -293,7 +293,7 @@ pub async fn generate(
         }
         Err(e) => {
             sqlx::query(
-                "UPDATE reports SET status = 'failed', failed_at = ?, error_message = ?, updated_at = ? WHERE id = ?",
+                "UPDATE reports SET status = 'failed', failed_at = $1, error_message = $2, updated_at = $3 WHERE id = $4",
             )
             .bind(now_iso())
             .bind(e.to_string())
@@ -305,7 +305,7 @@ pub async fn generate(
         }
     }
 
-    let row: ReportRow = sqlx::query_as(&format!("SELECT {COLUMNS} FROM reports WHERE id = ?"))
+    let row: ReportRow = sqlx::query_as(&crate::db::pg_params(&format!("SELECT {COLUMNS} FROM reports WHERE id = $1")))
         .bind(&id)
         .fetch_one(&state.db)
         .await?;
@@ -346,20 +346,20 @@ pub async fn list(
     let size = q.page_size.unwrap_or(20).clamp(1, 100);
     let total: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM reports WHERE deleted_at IS NULL
-           AND (? IS NULL OR report_type = ?) AND (? IS NULL OR status = ?)
-           AND (? IS NULL OR format = ?)",
+           AND ($1 IS NULL OR report_type = $2) AND ($3 IS NULL OR status = $4)
+           AND ($5 IS NULL OR format = $6)",
     )
     .bind(&q.kind).bind(&q.kind)
     .bind(&q.status).bind(&q.status)
     .bind(&q.format).bind(&q.format)
     .fetch_one(&state.db)
     .await?;
-    let rows: Vec<ReportRow> = sqlx::query_as(&format!(
+    let rows: Vec<ReportRow> = sqlx::query_as(&crate::db::pg_params(&format!(
         "SELECT {COLUMNS} FROM reports WHERE deleted_at IS NULL
-           AND (? IS NULL OR report_type = ?) AND (? IS NULL OR status = ?)
-           AND (? IS NULL OR format = ?)
-         ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
-    ))
+           AND ($1 IS NULL OR report_type = $2) AND ($3 IS NULL OR status = $4)
+           AND ($5 IS NULL OR format = $6)
+         ORDER BY created_at DESC, id DESC LIMIT $7 OFFSET $8"
+    )))
     .bind(&q.kind).bind(&q.kind)
     .bind(&q.status).bind(&q.status)
     .bind(&q.format).bind(&q.format)
@@ -368,8 +368,9 @@ pub async fn list(
     .fetch_all(&state.db)
     .await?;
     let (pending, completed, failed): (i64, i64, i64) = sqlx::query_as(
-        "SELECT COALESCE(SUM(status = 'pending'), 0), COALESCE(SUM(status = 'completed'), 0),
-                COALESCE(SUM(status = 'failed'), 0)
+        "SELECT COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0)::bigint,
+                COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0)::bigint,
+                COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0)::bigint
          FROM reports WHERE deleted_at IS NULL",
     )
     .fetch_one(&state.db)
@@ -389,9 +390,9 @@ async fn find_report(state: &AppState, id: &str) -> Result<ReportRow> {
     if !valid_report_id(id) {
         return Err(AppError::BadRequest("Invalid report identifier".into()));
     }
-    sqlx::query_as::<_, ReportRow>(&format!(
-        "SELECT {COLUMNS} FROM reports WHERE id = ? AND deleted_at IS NULL"
-    ))
+    sqlx::query_as::<_, ReportRow>(&crate::db::pg_params(&format!(
+        "SELECT {COLUMNS} FROM reports WHERE id = $1 AND deleted_at IS NULL"
+    )))
     .bind(id.strip_prefix("report_").unwrap_or(id))
     .fetch_optional(&state.db)
     .await?
@@ -405,7 +406,7 @@ pub async fn detail(
 ) -> Result {
     let row = find_report(&state, &id).await?;
     let downloads: Vec<(String, String)> = sqlx::query_as(
-        "SELECT downloaded_by, downloaded_at FROM report_downloads WHERE report_id = ?
+        "SELECT downloaded_by, downloaded_at FROM report_downloads WHERE report_id = $1
          ORDER BY downloaded_at DESC LIMIT 20",
     )
     .bind(&row.id)
@@ -448,7 +449,7 @@ pub async fn download(
     };
     sqlx::query(
         "INSERT INTO report_downloads (id, report_id, downloaded_by, downloaded_at, method, size)
-         VALUES (?, ?, ?, ?, 'manual', ?)",
+         VALUES ($1, $2, $3, $4, 'manual', $5)",
     )
     .bind(uuid::Uuid::new_v4().to_string())
     .bind(&row.id)
@@ -458,7 +459,7 @@ pub async fn download(
     .execute(&state.db)
     .await?;
     let _ = sqlx::query(
-        "UPDATE reports SET download_count = download_count + 1, last_downloaded_at = ? WHERE id = ?",
+        "UPDATE reports SET download_count = download_count + 1, last_downloaded_at = $1 WHERE id = $2",
     )
     .bind(now_iso())
     .bind(&row.id)
@@ -494,7 +495,7 @@ pub async fn delete_report(
     if let Some(key) = row.output_url.as_deref().filter(|k| !k.is_empty()) {
         crate::domain::files::store::delete_object(&state.config.upload_dir, key).await;
     }
-    sqlx::query("UPDATE reports SET deleted_at = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE reports SET deleted_at = $1, updated_at = $2 WHERE id = $3")
         .bind(now_iso())
         .bind(now_iso())
         .bind(&row.id)
@@ -514,26 +515,26 @@ pub async fn stats(
     }
     let since = (chrono::Utc::now() - chrono::Duration::days(30)).to_rfc3339();
     let total: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM reports WHERE deleted_at IS NULL AND created_at >= ?",
+        "SELECT COUNT(*) FROM reports WHERE deleted_at IS NULL AND created_at >= $1",
     )
     .bind(&since)
     .fetch_one(&state.db)
     .await?;
     let by_status: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT status, COUNT(*) FROM reports WHERE deleted_at IS NULL AND created_at >= ? GROUP BY status",
+        "SELECT status, COUNT(*) FROM reports WHERE deleted_at IS NULL AND created_at >= $1 GROUP BY status",
     )
     .bind(&since)
     .fetch_all(&state.db)
     .await?;
     let by_type: Vec<(Option<String>, i64, Option<f64>)> = sqlx::query_as(
-        "SELECT report_type, COUNT(*), AVG(output_size) FROM reports
-         WHERE deleted_at IS NULL AND created_at >= ? GROUP BY report_type ORDER BY 2 DESC",
+        "SELECT report_type, COUNT(*), AVG(output_size)::float8 FROM reports
+         WHERE deleted_at IS NULL AND created_at >= $1 GROUP BY report_type ORDER BY 2 DESC",
     )
     .bind(&since)
     .fetch_all(&state.db)
     .await?;
     let avg_time: f64 = sqlx::query_scalar(
-        "SELECT COALESCE(AVG(duration_ms), 0) FROM reports WHERE deleted_at IS NULL AND created_at >= ?",
+        "SELECT COALESCE(AVG(duration_ms)::float8, 0) FROM reports WHERE deleted_at IS NULL AND created_at >= $1",
     )
     .bind(&since)
     .fetch_one(&state.db)
@@ -604,7 +605,7 @@ pub async fn batch(
             Err(e) => Err(e.to_string()),
             Ok(row) => match action {
                 "delete" => {
-                    let _ = sqlx::query("UPDATE reports SET deleted_at = ? WHERE id = ?")
+                    let _ = sqlx::query("UPDATE reports SET deleted_at = $1 WHERE id = $2")
                         .bind(now_iso())
                         .bind(&row.id)
                         .execute(&state.db)
@@ -791,7 +792,7 @@ pub async fn create_scheduled(
         "INSERT INTO scheduled_reports
             (id, name, description, report_type, format, parameters, schedule_type,
              schedule_config, is_active, created_by, recipients, next_run_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9, $10, $11, $12)",
     )
     .bind(&id)
     .bind(&name)
@@ -829,7 +830,7 @@ pub async fn list_scheduled(
     let rows: Vec<SchedRow> = sqlx::query_as(
         "SELECT id, name, report_type, format, schedule_type, schedule_config, is_active,
                 created_by, next_run_at, last_run_at
-         FROM scheduled_reports WHERE deleted_at IS NULL AND (? IS NULL OR created_by = ?)
+         FROM scheduled_reports WHERE deleted_at IS NULL AND ($1 IS NULL OR created_by = $2)
          ORDER BY next_run_at ASC",
     )
     .bind(&creator)
@@ -861,7 +862,7 @@ pub async fn update_scheduled(
         return Err(AppError::BadRequest("Invalid scheduled-report identifier".into()));
     }
     let creator: Option<String> = sqlx::query_scalar(
-        "SELECT created_by FROM scheduled_reports WHERE id = ? AND deleted_at IS NULL",
+        "SELECT created_by FROM scheduled_reports WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(&id)
     .fetch_optional(&state.db)
@@ -875,9 +876,9 @@ pub async fn update_scheduled(
     let (name, kind, format, frequency) = validate_scheduled(&body)?;
     sqlx::query(
         "UPDATE scheduled_reports
-            SET name = ?, report_type = ?, format = ?, schedule_type = ?, schedule_config = ?,
-                next_run_at = ?, updated_at = ?
-          WHERE id = ?",
+            SET name = $1, report_type = $2, format = $3, schedule_type = $4, schedule_config = $5,
+                next_run_at = $6, updated_at = $7
+          WHERE id = $8",
     )
     .bind(&name)
     .bind(&kind)
@@ -901,7 +902,7 @@ pub async fn delete_scheduled(
         return Err(AppError::BadRequest("Invalid scheduled-report identifier".into()));
     }
     let creator: Option<String> = sqlx::query_scalar(
-        "SELECT created_by FROM scheduled_reports WHERE id = ? AND deleted_at IS NULL",
+        "SELECT created_by FROM scheduled_reports WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(&id)
     .fetch_optional(&state.db)
@@ -913,7 +914,7 @@ pub async fn delete_scheduled(
         return Err(AppError::Forbidden("Only the creator may delete this schedule".into()));
     }
     sqlx::query(
-        "UPDATE scheduled_reports SET deleted_at = ?, is_active = 0, updated_at = ? WHERE id = ?",
+        "UPDATE scheduled_reports SET deleted_at = $1, is_active = 0, updated_at = $2 WHERE id = $3",
     )
     .bind(now_iso())
     .bind(now_iso())

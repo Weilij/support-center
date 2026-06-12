@@ -4,7 +4,7 @@
 //! work (real-time broadcast, latest-message refresh, activity log).
 
 use serde_json::{json, Map, Value};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -23,13 +23,13 @@ pub const SYSTEM_AGENT_ID: &str = "system";
 pub const DEFAULT_WELCOME: &str =
     "สวัสดีค่ะ ขอบคุณที่เพิ่มเราเป็นเพื่อน หากมีคำถามสามารถพิมพ์สอบถามได้เลยค่ะ";
 
-async fn ensure_system_agent(db: &SqlitePool) {
+async fn ensure_system_agent(db: &PgPool) {
     let now = now_iso();
     let _ = sqlx::query(
-        "INSERT OR IGNORE INTO agents
+        "INSERT INTO agents
             (id, email, password_hash, display_name, role, is_active, password_policy,
              deleted_at, created_at)
-         VALUES (?, 'system@system.local', '', 'System', 'agent', 0, 'unchangeable', ?, ?)",
+         VALUES ($1, 'system@system.local', '', 'System', 'agent', 0, 'unchangeable', $2, $3) ON CONFLICT DO NOTHING",
     )
     .bind(SYSTEM_AGENT_ID)
     .bind(&now)
@@ -81,13 +81,13 @@ struct CustomerRow {
 }
 
 async fn find_customer(
-    db: &SqlitePool,
+    db: &PgPool,
     platform: &str,
     user_id: &str,
 ) -> Result<Option<CustomerRow>, String> {
     sqlx::query_as(
         "SELECT id, display_name, source_team_id FROM customers
-         WHERE platform = ? AND platform_user_id = ? AND deleted_at IS NULL",
+         WHERE platform = $1 AND platform_user_id = $2 AND deleted_at IS NULL",
     )
     .bind(platform)
     .bind(user_id)
@@ -97,7 +97,7 @@ async fn find_customer(
 }
 
 async fn find_or_create_customer(
-    db: &SqlitePool,
+    db: &PgPool,
     platform: &str,
     user_id: &str,
     display_name: &str,
@@ -105,31 +105,31 @@ async fn find_or_create_customer(
     if let Some(c) = find_customer(db, platform, user_id).await? {
         return Ok(c);
     }
-    let id = sqlx::query(
+    let id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO customers (platform, platform_user_id, display_name, created_at)
-         VALUES (?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4) RETURNING id",
     )
     .bind(platform)
     .bind(user_id)
     .bind(display_name)
     .bind(now_iso())
-    .execute(db)
+    .fetch_one(db)
     .await
     .map_err(|e| e.to_string())?
-    .last_insert_rowid();
+    ;
     Ok(CustomerRow { id, display_name: Some(display_name.into()), source_team_id: None })
 }
 
 /// Most recent customer-to-team routing assignment wins (CRD 2845-2846).
 async fn routed_team(
-    db: &SqlitePool,
+    db: &PgPool,
     platform: &str,
     user_id: &str,
 ) -> Result<Option<i64>, String> {
     let _ = platform; // assignments are keyed by platform user id alone (CRD 5747)
     sqlx::query_scalar(
         "SELECT team_id FROM customer_team_assignments
-         WHERE platform_user_id = ?
+         WHERE platform_user_id = $1
          ORDER BY assigned_at DESC, id DESC LIMIT 1",
     )
     .bind(user_id)
@@ -141,13 +141,13 @@ async fn routed_team(
 /// Find the customer's open (non-closed) conversation or create a new active
 /// one; backfills a missing team assignment but never removes one (CRD 2849).
 async fn find_or_create_open_conversation(
-    db: &SqlitePool,
+    db: &PgPool,
     customer_id: i64,
     team_id: Option<i64>,
 ) -> Result<(String, Option<i64>), String> {
     let existing: Option<(String, Option<i64>)> = sqlx::query_as(
         "SELECT id, team_id FROM conversations
-         WHERE customer_id = ? AND status != 'closed' AND deleted_at IS NULL
+         WHERE customer_id = $1 AND status != 'closed' AND deleted_at IS NULL
          ORDER BY created_at DESC LIMIT 1",
     )
     .bind(customer_id)
@@ -158,7 +158,7 @@ async fn find_or_create_open_conversation(
     if let Some((id, existing_team)) = existing {
         if existing_team.is_none() {
             if let Some(t) = team_id {
-                sqlx::query("UPDATE conversations SET team_id = ?, updated_at = ? WHERE id = ?")
+                sqlx::query("UPDATE conversations SET team_id = $1, updated_at = $2 WHERE id = $3")
                     .bind(t)
                     .bind(now_iso())
                     .bind(&id)
@@ -174,7 +174,7 @@ async fn find_or_create_open_conversation(
     let id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO conversations (id, customer_id, team_id, status, priority, created_at)
-         VALUES (?, ?, ?, 'active', 'normal', ?)",
+         VALUES ($1, $2, $3, 'active', 'normal', $4)",
     )
     .bind(&id)
     .bind(customer_id)
@@ -188,10 +188,10 @@ async fn find_or_create_open_conversation(
 
 /// Successful inbound messages increment the matching enabled connection's
 /// received counter and last-message timestamp (CRD 2722).
-async fn bump_received(db: &SqlitePool, team_id: i64, platform: &str, now: &str) {
+async fn bump_received(db: &PgPool, team_id: i64, platform: &str, now: &str) {
     let row: Option<(i64, Option<String>)> = sqlx::query_as(
         "SELECT id, stats FROM channel_integrations
-         WHERE team_id = ? AND platform = ? AND is_active = 1 LIMIT 1",
+         WHERE team_id = $1 AND platform = $2 AND is_active = 1 LIMIT 1",
     )
     .bind(team_id)
     .bind(platform)
@@ -207,7 +207,7 @@ async fn bump_received(db: &SqlitePool, team_id: i64, platform: &str, now: &str)
     let received = parsed.get("messagesReceived").and_then(Value::as_i64).unwrap_or(0);
     parsed["messagesReceived"] = json!(received + 1);
     parsed["lastMessageAt"] = json!(now);
-    let _ = sqlx::query("UPDATE channel_integrations SET stats = ?, updated_at = ? WHERE id = ?")
+    let _ = sqlx::query("UPDATE channel_integrations SET stats = $1, updated_at = $2 WHERE id = $3")
         .bind(parsed.to_string())
         .bind(now)
         .bind(id)
@@ -228,7 +228,7 @@ pub async fn ingest_message(
     // skipped entirely, with no customer/conversation side effects (CRD 2766).
     if let Some(mid) = inbound.platform_message_id {
         let seen: Option<String> =
-            sqlx::query_scalar("SELECT id FROM messages WHERE platform_message_id = ?")
+            sqlx::query_scalar("SELECT id FROM messages WHERE platform_message_id = $1")
                 .bind(mid)
                 .fetch_optional(&state.db)
                 .await
@@ -284,7 +284,7 @@ pub async fn ingest_message(
             (id, conversation_id, sender_type, customer_id, content, content_type,
              platform_message_id, is_sent, sent_at, delivery_status, metadata, sender_name,
              created_at)
-         VALUES (?, ?, 'customer', ?, ?, ?, ?, 1, ?, 'delivered', ?, ?, ?)",
+         VALUES ($1, $2, 'customer', $3, $4, $5, $6, 1, $7, 'delivered', $8, $9, $10)",
     )
     .bind(&message_id)
     .bind(&conversation_id)
@@ -305,7 +305,7 @@ pub async fn ingest_message(
         // advance on a pure redelivery (CRD 2791).
         if let Some(mid) = inbound.platform_message_id {
             let existing: Option<String> =
-                sqlx::query_scalar("SELECT id FROM messages WHERE platform_message_id = ?")
+                sqlx::query_scalar("SELECT id FROM messages WHERE platform_message_id = $1")
                     .bind(mid)
                     .fetch_optional(&state.db)
                     .await
@@ -320,7 +320,7 @@ pub async fn ingest_message(
     // The most-recent-activity marker advances only when a row was actually
     // inserted (CRD 2791).
     let _ = sqlx::query(
-        "UPDATE conversations SET last_message_at = ?, updated_at = ? WHERE id = ?",
+        "UPDATE conversations SET last_message_at = $1, updated_at = $2 WHERE id = $3",
     )
     .bind(&now)
     .bind(&now)
@@ -491,7 +491,7 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
         None => match tracking_token {
             Some(token) => {
                 let resolved: Option<i64> = sqlx::query_scalar(
-                    "SELECT team_id FROM qr_codes WHERE token = ? AND is_active = 1 LIMIT 1",
+                    "SELECT team_id FROM qr_codes WHERE token = $1 AND is_active = 1 LIMIT 1",
                 )
                 .bind(token)
                 .fetch_optional(&state.db)
@@ -511,9 +511,10 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
         meta["assignedViaTracking"] = json!(true);
     }
     let _ = sqlx::query(
-        "UPDATE customers SET display_name = ?, metadata = json_patch(COALESCE(metadata, '{}'), ?),
-                updated_at = ?
-         WHERE id = ?",
+        "UPDATE customers SET display_name = $1,
+                metadata = (COALESCE(metadata, '{}')::jsonb || $2::jsonb)::text,
+                updated_at = $3
+         WHERE id = $4",
     )
     .bind(&display_name)
     .bind(meta.to_string())
@@ -525,9 +526,11 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
     if routed_via_tracking {
         if let Some(t) = team_id {
             let _ = sqlx::query(
-                "INSERT OR REPLACE INTO customer_team_assignments
+                "INSERT INTO customer_team_assignments
                     (id, platform_user_id, team_id, source, assigned_at)
-                 VALUES (?, ?, ?, 'inbound', ?)",
+                 VALUES ($1, $2, $3, 'inbound', $4)
+                 ON CONFLICT (platform_user_id, team_id)
+                 DO UPDATE SET source = 'inbound', assigned_at = EXCLUDED.assigned_at",
             )
             .bind(uuid::Uuid::new_v4().to_string())
             .bind(user_id)
@@ -552,7 +555,7 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
     // (CRD 2822, 2857).
     if let (Some(t), Some(cid)) = (team_id, conversation_id.as_ref()) {
         let team_name: Option<String> =
-            sqlx::query_scalar("SELECT name FROM teams WHERE id = ?")
+            sqlx::query_scalar("SELECT name FROM teams WHERE id = $1")
                 .bind(t)
                 .fetch_optional(&state.db)
                 .await
@@ -600,7 +603,7 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
             "INSERT INTO messages
                 (id, conversation_id, sender_type, content, content_type, is_sent, sent_at,
                  delivery_status, sender_name, created_at)
-             VALUES (?, ?, 'system', ?, 'text', 1, ?, 'delivered', 'System', ?)",
+             VALUES ($1, $2, 'system', $3, 'text', 1, $4, 'delivered', 'System', $5)",
         )
         .bind(&welcome_id)
         .bind(cid)
@@ -611,7 +614,7 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
         .await;
         if inserted.is_ok() {
             let _ = sqlx::query(
-                "UPDATE conversations SET last_message_at = ?, updated_at = ? WHERE id = ?",
+                "UPDATE conversations SET last_message_at = $1, updated_at = $2 WHERE id = $3",
             )
             .bind(&now)
             .bind(&now)
@@ -657,7 +660,7 @@ pub async fn handle_line_unfollow(state: &Arc<AppState>, event: &Value) -> Resul
     };
 
     let now = now_iso();
-    sqlx::query("UPDATE customers SET updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE customers SET updated_at = $1 WHERE id = $2")
         .bind(&now)
         .bind(customer.id)
         .execute(&state.db)

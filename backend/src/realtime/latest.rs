@@ -136,7 +136,7 @@ async fn derive(state: &AppState, conversation_id: &str) -> Result<Option<Value>
     let row: Option<LatestRow> = sqlx::query_as(
         "SELECT id, content, created_at, sender_type, agent_id, customer_id, content_type
          FROM messages
-         WHERE conversation_id = ? AND deleted_at IS NULL
+         WHERE conversation_id = $1 AND deleted_at IS NULL
          ORDER BY created_at DESC, id DESC LIMIT 1",
     )
     .bind(conversation_id)
@@ -240,7 +240,7 @@ pub async fn warm_up(state: &AppState, limit: Option<i64>) -> usize {
         "SELECT id FROM conversations
          WHERE deleted_at IS NULL
          ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC
-         LIMIT ?",
+         LIMIT $1",
     )
     .bind(limit)
     .fetch_all(&state.db)

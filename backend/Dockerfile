@@ -12,8 +12,7 @@ RUN useradd --system --create-home mcss \
 USER mcss
 WORKDIR /home/mcss
 COPY --from=builder /app/target/release/mcss-backend /usr/local/bin/mcss-backend
-ENV DATABASE_URL=sqlite:///home/mcss/data/mcss.db?mode=rwc \
-    UPLOAD_DIR=/home/mcss/data/uploads \
+ENV UPLOAD_DIR=/home/mcss/data/uploads \
     PORT=3000
 EXPOSE 3000
 CMD ["mcss-backend"]

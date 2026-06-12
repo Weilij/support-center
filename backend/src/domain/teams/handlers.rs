@@ -39,7 +39,7 @@ fn parse_json<T>(body: JsonBody<T>) -> Result<T> {
 
 /// Refreshed member count for realtime member-change events (CRD 2149).
 async fn live_member_count(state: &AppState, team_id: i64) -> i64 {
-    sqlx::query_scalar("SELECT COUNT(*) FROM team_members WHERE team_id = ?")
+    sqlx::query_scalar("SELECT COUNT(*) FROM team_members WHERE team_id = $1")
         .bind(team_id)
         .fetch_one(&state.db)
         .await
@@ -133,7 +133,7 @@ fn string_array(v: Option<&Value>, field: &str) -> Result<Vec<String>> {
 
 async fn team_exists(state: &AppState, id: i64) -> Result<bool> {
     let found: Option<i64> =
-        sqlx::query_scalar("SELECT id FROM teams WHERE id = ? AND deleted_at IS NULL")
+        sqlx::query_scalar("SELECT id FROM teams WHERE id = $1 AND deleted_at IS NULL")
             .bind(id)
             .fetch_optional(&state.db)
             .await?;
@@ -142,7 +142,7 @@ async fn team_exists(state: &AppState, id: i64) -> Result<bool> {
 
 async fn agent_exists(state: &AppState, id: &str) -> Result<bool> {
     let found: Option<String> =
-        sqlx::query_scalar("SELECT id FROM agents WHERE id = ? AND deleted_at IS NULL")
+        sqlx::query_scalar("SELECT id FROM agents WHERE id = $1 AND deleted_at IS NULL")
             .bind(id)
             .fetch_optional(&state.db)
             .await?;
@@ -225,6 +225,7 @@ pub async fn list_teams(
     let count_sql = format!(
         "SELECT COUNT(*) FROM teams t WHERE t.deleted_at IS NULL {filter}"
     );
+    let count_sql = crate::db::pg_params(&count_sql);
     let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
     if let Some(p) = &pattern {
         count_q = count_q.bind(p.clone()).bind(p.clone());
@@ -232,6 +233,7 @@ pub async fn list_teams(
     let total = count_q.fetch_one(&state.db).await?;
 
     let list_sql = store::team_select(&filter, "ORDER BY t.created_at DESC, t.id DESC LIMIT ? OFFSET ?");
+    let list_sql = crate::db::pg_params(&list_sql);
     let mut list_q = sqlx::query_as::<_, TeamWithCounts>(&list_sql);
     if let Some(p) = &pattern {
         list_q = list_q.bind(p.clone()).bind(p.clone());
@@ -284,7 +286,7 @@ pub async fn create_team(
     }
     // QR-code value uniqueness IS enforced when provided (CRD 1844).
     if let Some(qr) = body.qr_code.as_deref().filter(|s| !s.is_empty()) {
-        let used: Option<i64> = sqlx::query_scalar("SELECT id FROM teams WHERE qr_code = ?")
+        let used: Option<i64> = sqlx::query_scalar("SELECT id FROM teams WHERE qr_code = $1")
             .bind(qr)
             .fetch_optional(&state.db)
             .await?;
@@ -295,9 +297,9 @@ pub async fn create_team(
 
     let now = now_iso();
     let is_active = body.is_active.unwrap_or(true);
-    let team_id = sqlx::query(
+    let team_id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO teams (name, description, is_active, qr_code, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
     )
     .bind(&name)
     .bind(&body.description)
@@ -305,9 +307,9 @@ pub async fn create_team(
     .bind(&body.qr_code)
     .bind(&now)
     .bind(&now)
-    .execute(&state.db)
+    .fetch_one(&state.db)
     .await?
-    .last_insert_rowid();
+    ;
 
     // Reversible create audit entry (CRD 1840).
     log_activity(
@@ -328,7 +330,7 @@ pub async fn create_team(
         .await
         .ok();
     if let Some(qr) = &join_qr {
-        let _ = sqlx::query("UPDATE teams SET qr_code_image = ? WHERE id = ?")
+        let _ = sqlx::query("UPDATE teams SET qr_code_image = $1 WHERE id = $2")
             .bind(&qr.image_url)
             .bind(team_id)
             .execute(&state.db)
@@ -379,7 +381,7 @@ pub async fn update_team(
     if let Some(name) = body.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         old.insert("name".into(), json!(current.name));
         new.insert("name".into(), json!(name));
-        sqlx::query("UPDATE teams SET name = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE teams SET name = $1, updated_at = $2 WHERE id = $3")
             .bind(name)
             .bind(&now)
             .bind(id)
@@ -389,7 +391,7 @@ pub async fn update_team(
     if let Some(description) = &body.description {
         old.insert("description".into(), json!(current.description));
         new.insert("description".into(), json!(description));
-        sqlx::query("UPDATE teams SET description = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE teams SET description = $1, updated_at = $2 WHERE id = $3")
             .bind(description)
             .bind(&now)
             .bind(id)
@@ -399,7 +401,7 @@ pub async fn update_team(
     if let Some(active) = body.is_active {
         old.insert("isActive".into(), json!(current.is_active != 0));
         new.insert("isActive".into(), json!(active));
-        sqlx::query("UPDATE teams SET is_active = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE teams SET is_active = $1, updated_at = $2 WHERE id = $3")
             .bind(active as i64)
             .bind(&now)
             .bind(id)
@@ -449,7 +451,7 @@ pub async fn delete_team(
 
     // Soft delete plus reversible delete audit entry (CRD 1857).
     let now = now_iso();
-    sqlx::query("UPDATE teams SET deleted_at = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE teams SET deleted_at = $1, updated_at = $2 WHERE id = $3")
         .bind(&now)
         .bind(&now)
         .bind(id)
@@ -486,7 +488,7 @@ pub async fn search_teams(
          AND (LOWER(t.name) LIKE ? OR LOWER(COALESCE(t.description,'')) LIKE ?)",
         "ORDER BY t.created_at DESC, t.id DESC LIMIT 20",
     );
-    let rows: Vec<TeamWithCounts> = sqlx::query_as(&sql)
+    let rows: Vec<TeamWithCounts> = sqlx::query_as(&crate::db::pg_params(&sql))
         .bind(&pattern)
         .bind(&pattern)
         .fetch_all(&state.db)
@@ -515,7 +517,7 @@ async fn build_team_stats(
 ) -> Result<Value> {
     let conversations: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM conversations
-         WHERE team_id = ? AND deleted_at IS NULL AND created_at >= ? AND created_at <= ?",
+         WHERE team_id = $1 AND deleted_at IS NULL AND created_at >= $2 AND created_at <= $3",
     )
     .bind(team.id)
     .bind(from)
@@ -525,8 +527,8 @@ async fn build_team_stats(
     let messages: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM messages m
          JOIN conversations c ON c.id = m.conversation_id AND c.deleted_at IS NULL
-         WHERE c.team_id = ? AND m.deleted_at IS NULL
-           AND m.created_at >= ? AND m.created_at <= ?",
+         WHERE c.team_id = $1 AND m.deleted_at IS NULL
+           AND m.created_at >= $2 AND m.created_at <= $3",
     )
     .bind(team.id)
     .bind(from)
@@ -588,7 +590,7 @@ pub async fn all_team_stats(
     let (from, to) = default_period(&q);
     let include_members = q.include_members.as_deref() == Some("true");
     let sql = store::team_select("AND t.is_active = 1", "ORDER BY t.id");
-    let teams: Vec<TeamWithCounts> = sqlx::query_as(&sql).fetch_all(&state.db).await?;
+    let teams: Vec<TeamWithCounts> = sqlx::query_as(&crate::db::pg_params(&sql)).fetch_all(&state.db).await?;
     let mut out = Vec::with_capacity(teams.len());
     for team in &teams {
         out.push(build_team_stats(&state, team, &from, &to, include_members).await?);
@@ -631,7 +633,7 @@ pub async fn transfer_agents(
             }));
             continue;
         };
-        sqlx::query("DELETE FROM team_members WHERE agent_id = ? AND team_id = ?")
+        sqlx::query("DELETE FROM team_members WHERE agent_id = $1 AND team_id = $2")
             .bind(agent_id)
             .bind(from)
             .execute(&state.db)
@@ -639,9 +641,9 @@ pub async fn transfer_agents(
         // Primary-team flag and in-team role are preserved across the move (CRD 1885).
         sqlx::query(
             "INSERT INTO team_members (agent_id, team_id, role, is_primary, joined_at)
-             VALUES (?, ?, ?, ?, ?)
+             VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT(agent_id, team_id)
-             DO UPDATE SET is_primary = MAX(is_primary, excluded.is_primary)",
+             DO UPDATE SET is_primary = GREATEST(team_members.is_primary, EXCLUDED.is_primary)",
         )
         .bind(agent_id)
         .bind(to)
@@ -695,7 +697,7 @@ async fn team_member_list(state: &AppState, team_id: i64) -> Result<Value> {
                 a.created_at, a.updated_at, m.role AS team_role, m.is_primary, m.joined_at
          FROM team_members m
          JOIN agents a ON a.id = m.agent_id AND a.deleted_at IS NULL
-         WHERE m.team_id = ?
+         WHERE m.team_id = $1
          ORDER BY a.display_name",
     )
     .bind(team_id)
@@ -765,7 +767,7 @@ pub async fn add_member(
             let now = now_iso();
             sqlx::query(
                 "INSERT INTO team_members (agent_id, team_id, role, is_primary, joined_at)
-                 VALUES (?, ?, 'member', ?, ?)",
+                 VALUES ($1, $2, 'member', $3, $4)",
             )
             .bind(&agent_id)
             .bind(id)
@@ -828,7 +830,7 @@ pub async fn batch_add_members(
         // New batch memberships are NOT primary (CRD 1905).
         sqlx::query(
             "INSERT INTO team_members (agent_id, team_id, role, is_primary, joined_at)
-             VALUES (?, ?, ?, 0, ?)",
+             VALUES ($1, $2, $3, 0, $4)",
         )
         .bind(agent_id)
         .bind(id)
@@ -897,7 +899,7 @@ pub async fn update_team_member(
         if !GLOBAL_ROLES.contains(&role) {
             return Err(AppError::BadRequest("role must be one of: admin, agent".into()));
         }
-        sqlx::query("UPDATE agents SET role = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE agents SET role = $1, updated_at = $2 WHERE id = $3")
             .bind(role)
             .bind(&now)
             .bind(&agent_id)
@@ -905,7 +907,7 @@ pub async fn update_team_member(
             .await?;
     }
     if let Some(active) = body.is_active {
-        sqlx::query("UPDATE agents SET is_active = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE agents SET is_active = $1, updated_at = $2 WHERE id = $3")
             .bind(active as i64)
             .bind(&now)
             .bind(&agent_id)
@@ -937,7 +939,7 @@ pub async fn remove_team_member(
         ));
     };
 
-    sqlx::query("DELETE FROM team_members WHERE agent_id = ? AND team_id = ?")
+    sqlx::query("DELETE FROM team_members WHERE agent_id = $1 AND team_id = $2")
         .bind(&agent_id)
         .bind(id)
         .execute(&state.db)
@@ -992,7 +994,7 @@ pub async fn bulk_remove_members(
             continue;
         }
         // The bulk path does not perform primary-team promotion (CRD 1927).
-        sqlx::query("DELETE FROM team_members WHERE agent_id = ? AND team_id = ?")
+        sqlx::query("DELETE FROM team_members WHERE agent_id = $1 AND team_id = $2")
             .bind(agent_id)
             .bind(id)
             .execute(&state.db)
@@ -1061,10 +1063,10 @@ pub async fn list_all_members(
     Extension(user): Extension<AuthUser>,
 ) -> Result {
     require_admin(&user)?;
-    let members: Vec<MemberRow> = sqlx::query_as(&format!(
+    let members: Vec<MemberRow> = sqlx::query_as(&crate::db::pg_params(&format!(
         "SELECT {} FROM agents WHERE deleted_at IS NULL ORDER BY created_at DESC, id DESC",
         store::MEMBER_COLUMNS
-    ))
+    )))
     .fetch_all(&state.db)
     .await?;
     let team_map = memberships_with_names(&state).await?;
@@ -1103,7 +1105,7 @@ pub async fn check_email(
     }
     let found: Option<Row> = sqlx::query_as(
         "SELECT id, display_name, role, is_active, last_login_at, created_at, deleted_at
-         FROM agents WHERE email = ?
+         FROM agents WHERE email = $1
          ORDER BY (deleted_at IS NULL) DESC, created_at DESC LIMIT 1",
     )
     .bind(&email)
@@ -1115,7 +1117,7 @@ pub async fn check_email(
     };
     let primary_team_name: Option<String> = sqlx::query_scalar(
         "SELECT t.name FROM team_members m JOIN teams t ON t.id = m.team_id
-         WHERE m.agent_id = ? AND m.is_primary = 1 LIMIT 1",
+         WHERE m.agent_id = $1 AND m.is_primary = 1 LIMIT 1",
     )
     .bind(&row.id)
     .fetch_optional(&state.db)
@@ -1175,13 +1177,13 @@ pub async fn create_member(
     // A soft-deleted same-email account is reactivated; its prior team memberships
     // are cleared (CRD 1949).
     let member_id = if let Some(old) = find_deleted_agent_by_email(&state.db, &email).await? {
-        sqlx::query("DELETE FROM team_members WHERE agent_id = ?")
+        sqlx::query("DELETE FROM team_members WHERE agent_id = $1")
             .bind(&old.id)
             .execute(&state.db)
             .await?;
         sqlx::query(
-            "UPDATE agents SET password_hash = ?, display_name = ?, role = ?, is_active = ?,
-             password_policy = 'changeable', deleted_at = NULL, updated_at = ? WHERE id = ?",
+            "UPDATE agents SET password_hash = $1, display_name = $2, role = $3, is_active = $4,
+             password_policy = 'changeable', deleted_at = NULL, updated_at = $5 WHERE id = $6",
         )
         .bind(&hash)
         .bind(&display_name)
@@ -1196,7 +1198,7 @@ pub async fn create_member(
         let id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
             "INSERT INTO agents (id, email, password_hash, display_name, role, is_active, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(&id)
         .bind(&email)
@@ -1216,7 +1218,7 @@ pub async fn create_member(
         }
         sqlx::query(
             "INSERT INTO team_members (agent_id, team_id, role, is_primary, joined_at)
-             VALUES (?, ?, 'member', 1, ?)",
+             VALUES ($1, $2, 'member', 1, $3)",
         )
         .bind(&member_id)
         .bind(team_id)
@@ -1263,7 +1265,7 @@ pub async fn set_member_status(
         .await?
         .ok_or_else(|| AppError::NotFound("Member not found".into()))?;
 
-    sqlx::query("UPDATE agents SET is_active = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE agents SET is_active = $1, updated_at = $2 WHERE id = $3")
         .bind(is_active as i64)
         .bind(now_iso())
         .bind(&member_id)
@@ -1307,7 +1309,7 @@ pub async fn set_member_role(
         .await?
         .ok_or_else(|| AppError::NotFound("Member not found".into()))?;
 
-    sqlx::query("UPDATE agents SET role = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE agents SET role = $1, updated_at = $2 WHERE id = $3")
         .bind(role)
         .bind(now_iso())
         .bind(&member_id)
@@ -1350,7 +1352,7 @@ async fn apply_member_updates(
             if find_active_agent_by_email(&state.db, &email).await?.is_some() {
                 return Err(AppError::Conflict("Email already in use by another member".into()));
             }
-            sqlx::query("UPDATE agents SET email = ?, updated_at = ? WHERE id = ?")
+            sqlx::query("UPDATE agents SET email = $1, updated_at = $2 WHERE id = $3")
                 .bind(&email)
                 .bind(&now)
                 .bind(&member.id)
@@ -1363,7 +1365,7 @@ async fn apply_member_updates(
     if let Some(name) = updates.get("displayName").and_then(Value::as_str) {
         let name = name.trim().to_string();
         if !name.is_empty() && name != member.display_name {
-            sqlx::query("UPDATE agents SET display_name = ?, updated_at = ? WHERE id = ?")
+            sqlx::query("UPDATE agents SET display_name = $1, updated_at = $2 WHERE id = $3")
                 .bind(&name)
                 .bind(&now)
                 .bind(&member.id)
@@ -1378,7 +1380,7 @@ async fn apply_member_updates(
             return Err(AppError::BadRequest("role must be one of: admin, agent".into()));
         }
         if role != member.role {
-            sqlx::query("UPDATE agents SET role = ?, updated_at = ? WHERE id = ?")
+            sqlx::query("UPDATE agents SET role = $1, updated_at = $2 WHERE id = $3")
                 .bind(role)
                 .bind(&now)
                 .bind(&member.id)
@@ -1390,7 +1392,7 @@ async fn apply_member_updates(
     }
     if let Some(active) = updates.get("isActive").and_then(Value::as_bool) {
         if active != (member.is_active != 0) {
-            sqlx::query("UPDATE agents SET is_active = ?, updated_at = ? WHERE id = ?")
+            sqlx::query("UPDATE agents SET is_active = $1, updated_at = $2 WHERE id = $3")
                 .bind(active as i64)
                 .bind(&now)
                 .bind(&member.id)
@@ -1686,8 +1688,8 @@ pub async fn batch_edit_members(
                 continue;
             }
             let res = sqlx::query(
-                "INSERT OR IGNORE INTO team_members (agent_id, team_id, role, is_primary, joined_at)
-                 VALUES (?, ?, 'member', 0, ?)",
+                "INSERT INTO team_members (agent_id, team_id, role, is_primary, joined_at)
+                 VALUES ($1, $2, 'member', 0, $3) ON CONFLICT DO NOTHING",
             )
             .bind(&member_id)
             .bind(team_id)
@@ -1699,7 +1701,7 @@ pub async fn batch_edit_members(
             }
         }
         for team_id in remove {
-            let res = sqlx::query("DELETE FROM team_members WHERE agent_id = ? AND team_id = ?")
+            let res = sqlx::query("DELETE FROM team_members WHERE agent_id = $1 AND team_id = $2")
                 .bind(&member_id)
                 .bind(team_id)
                 .execute(&state.db)
@@ -1780,8 +1782,8 @@ pub async fn undo_batch_edit(
         let profile = &entry["profile"];
         let now = now_iso();
         sqlx::query(
-            "UPDATE agents SET display_name = ?, email = ?, role = ?, updated_at = ?
-             WHERE id = ? AND deleted_at IS NULL",
+            "UPDATE agents SET display_name = $1, email = $2, role = $3, updated_at = $4
+             WHERE id = $5 AND deleted_at IS NULL",
         )
         .bind(profile.get("displayName").and_then(Value::as_str).unwrap_or(""))
         .bind(profile.get("email").and_then(Value::as_str).unwrap_or(""))
@@ -1790,14 +1792,14 @@ pub async fn undo_batch_edit(
         .bind(&member_id)
         .execute(&state.db)
         .await?;
-        sqlx::query("DELETE FROM team_members WHERE agent_id = ?")
+        sqlx::query("DELETE FROM team_members WHERE agent_id = $1")
             .bind(&member_id)
             .execute(&state.db)
             .await?;
         for m in entry.get("memberships").and_then(Value::as_array).into_iter().flatten() {
             sqlx::query(
-                "INSERT OR IGNORE INTO team_members (agent_id, team_id, role, is_primary, joined_at)
-                 VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO team_members (agent_id, team_id, role, is_primary, joined_at)
+                 VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
             )
             .bind(&member_id)
             .bind(m.get("teamId").and_then(Value::as_i64))
@@ -1844,7 +1846,7 @@ pub async fn agent_teams(
                 t.name AS team_name, t.description, t.is_active AS team_active
          FROM team_members m
          JOIN teams t ON t.id = m.team_id AND t.deleted_at IS NULL
-         WHERE m.agent_id = ?
+         WHERE m.agent_id = $1
          ORDER BY m.is_primary DESC, m.team_id",
     )
     .bind(&agent_id)
@@ -1871,16 +1873,16 @@ pub async fn team_members_detail(
     Path(raw_team_id): Path<String>,
 ) -> Result {
     let team_id = parse_team_id(&raw_team_id)?;
-    let members: Vec<MemberRow> = sqlx::query_as(&format!(
+    let members: Vec<MemberRow> = sqlx::query_as(&crate::db::pg_params(&format!(
         "SELECT {} FROM agents a WHERE a.deleted_at IS NULL
-         AND EXISTS (SELECT 1 FROM team_members m WHERE m.agent_id = a.id AND m.team_id = ?)
+         AND EXISTS (SELECT 1 FROM team_members m WHERE m.agent_id = a.id AND m.team_id = $1)
          ORDER BY a.display_name",
         store::MEMBER_COLUMNS
             .split(',')
             .map(|c| format!("a.{}", c.trim()))
             .collect::<Vec<_>>()
             .join(", ")
-    ))
+    )))
     .bind(team_id)
     .fetch_all(&state.db)
     .await?;
@@ -1934,7 +1936,7 @@ pub async fn join_team(
     let now = now_iso();
     sqlx::query(
         "INSERT INTO team_members (agent_id, team_id, role, is_primary, joined_at)
-         VALUES (?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(&agent_id)
     .bind(team_id)
@@ -2020,7 +2022,7 @@ pub async fn join_multiple(
         // New memberships are not primary (CRD 2052).
         sqlx::query(
             "INSERT INTO team_members (agent_id, team_id, role, is_primary, joined_at)
-             VALUES (?, ?, ?, 0, ?)",
+             VALUES ($1, $2, $3, 0, $4)",
         )
         .bind(&agent_id)
         .bind(team_id)
@@ -2058,7 +2060,7 @@ pub async fn leave_team(
     let team_id = parse_team_id(&raw_team_id)?;
     require_team_rank(&user, team_id, "lead")?;
     let team_name: String =
-        sqlx::query_scalar("SELECT name FROM teams WHERE id = ? AND deleted_at IS NULL")
+        sqlx::query_scalar("SELECT name FROM teams WHERE id = $1 AND deleted_at IS NULL")
             .bind(team_id)
             .fetch_optional(&state.db)
             .await?
@@ -2067,7 +2069,7 @@ pub async fn leave_team(
         .await?
         .ok_or_else(|| AppError::NotFound("Agent is not a member of this team".into()))?;
 
-    sqlx::query("DELETE FROM team_members WHERE agent_id = ? AND team_id = ?")
+    sqlx::query("DELETE FROM team_members WHERE agent_id = $1 AND team_id = $2")
         .bind(&agent_id)
         .bind(team_id)
         .execute(&state.db)
@@ -2077,7 +2079,7 @@ pub async fn leave_team(
 
     // Conversations assigned to this team that the removed agent can no longer access.
     let conversation_ids: Vec<String> = sqlx::query_scalar(
-        "SELECT id FROM conversations WHERE team_id = ? AND deleted_at IS NULL",
+        "SELECT id FROM conversations WHERE team_id = $1 AND deleted_at IS NULL",
     )
     .bind(team_id)
     .fetch_all(&state.db)
@@ -2087,7 +2089,7 @@ pub async fn leave_team(
     let now = now_iso();
     sqlx::query(
         "INSERT INTO notifications (id, agent_id, type, title, content, data, created_at)
-         VALUES (?, ?, 'team_removal', ?, ?, ?, ?)",
+         VALUES ($1, $2, 'team_removal', $3, $4, $5, $6)",
     )
     .bind(uuid::Uuid::new_v4().to_string())
     .bind(&agent_id)
@@ -2190,7 +2192,7 @@ pub async fn update_membership_role(
                 "roleInTeam must be one of: member, lead, supervisor".into(),
             ));
         }
-        sqlx::query("UPDATE team_members SET role = ? WHERE agent_id = ? AND team_id = ?")
+        sqlx::query("UPDATE team_members SET role = $1 WHERE agent_id = $2 AND team_id = $3")
             .bind(role)
             .bind(&agent_id)
             .bind(team_id)
@@ -2201,7 +2203,7 @@ pub async fn update_membership_role(
         if primary {
             store::clear_primary(&state.db, &agent_id).await?;
         }
-        sqlx::query("UPDATE team_members SET is_primary = ? WHERE agent_id = ? AND team_id = ?")
+        sqlx::query("UPDATE team_members SET is_primary = $1 WHERE agent_id = $2 AND team_id = $3")
             .bind(primary as i64)
             .bind(&agent_id)
             .bind(team_id)
@@ -2240,7 +2242,7 @@ pub async fn set_primary_team(
         return Err(AppError::Internal("Agent is not a member of this team".into()));
     }
     store::clear_primary(&state.db, &agent_id).await?;
-    sqlx::query("UPDATE team_members SET is_primary = 1 WHERE agent_id = ? AND team_id = ?")
+    sqlx::query("UPDATE team_members SET is_primary = 1 WHERE agent_id = $1 AND team_id = $2")
         .bind(&agent_id)
         .bind(team_id)
         .execute(&state.db)
@@ -2298,7 +2300,7 @@ pub async fn list_qr_codes(
     let rows: Vec<QrRow> = sqlx::query_as(
         "SELECT id, team_id, token, url, image_url, campaign, description, scan_count,
                 max_scans, is_active, expires_at, created_at
-         FROM qr_codes WHERE team_id = ? ORDER BY created_at DESC, id",
+         FROM qr_codes WHERE team_id = $1 ORDER BY created_at DESC, id",
     )
     .bind(id)
     .fetch_all(&state.db)
@@ -2312,7 +2314,7 @@ async fn resolve_team_qr(
     team_id: i64,
 ) -> Result<Option<(String, Option<String>, bool)>> {
     let cached: Option<Option<String>> =
-        sqlx::query_scalar("SELECT qr_code_image FROM teams WHERE id = ? AND deleted_at IS NULL")
+        sqlx::query_scalar("SELECT qr_code_image FROM teams WHERE id = $1 AND deleted_at IS NULL")
             .bind(team_id)
             .fetch_optional(&state.db)
             .await?;
@@ -2321,7 +2323,7 @@ async fn resolve_team_qr(
     let latest: Option<QrRow> = sqlx::query_as(
         "SELECT id, team_id, token, url, image_url, campaign, description, scan_count,
                 max_scans, is_active, expires_at, created_at
-         FROM qr_codes WHERE team_id = ? AND is_active = 1
+         FROM qr_codes WHERE team_id = $1 AND is_active = 1
          ORDER BY created_at DESC, id DESC LIMIT 1",
     )
     .bind(team_id)
@@ -2337,7 +2339,7 @@ async fn resolve_team_qr(
     let db = state.db.clone();
     let img = image.clone();
     tokio::spawn(async move {
-        let _ = sqlx::query("UPDATE teams SET qr_code_image = ? WHERE id = ?")
+        let _ = sqlx::query("UPDATE teams SET qr_code_image = $1 WHERE id = $2")
             .bind(img)
             .bind(team_id)
             .execute(&db)
@@ -2393,7 +2395,7 @@ pub async fn deactivate_qr(
         return Err(AppError::BadRequest("QR code id is required".into()));
     }
     let res = sqlx::query(
-        "UPDATE qr_codes SET is_active = 0, updated_at = ? WHERE id = ? AND team_id = ?",
+        "UPDATE qr_codes SET is_active = 0, updated_at = $1 WHERE id = $2 AND team_id = $3",
     )
     .bind(now_iso())
     .bind(&qr_id)
@@ -2457,7 +2459,7 @@ pub async fn liff_qr_stats(
         .await?
         .ok_or_else(|| AppError::NotFound("No LIFF QR code found for this team".into()))?;
     let assignments: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM customer_team_assignments WHERE liff_link_id = ?",
+        "SELECT COUNT(*) FROM customer_team_assignments WHERE liff_link_id = $1",
     )
     .bind(&liff.id)
     .fetch_one(&state.db)

@@ -2,7 +2,7 @@
 //! per-operator skill inventory, and the presence/availability system.
 
 use serde_json::{json, Value};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::db::now_iso;
 
@@ -41,8 +41,8 @@ pub const OPERATOR_SELECT: &str =
      LEFT JOIN teams t ON t.id = tm.team_id
      WHERE a.deleted_at IS NULL";
 
-pub async fn find_operator(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<OperatorRow>> {
-    sqlx::query_as(&format!("{OPERATOR_SELECT} AND a.id = ?"))
+pub async fn find_operator(pool: &PgPool, id: &str) -> sqlx::Result<Option<OperatorRow>> {
+    sqlx::query_as(&crate::db::pg_params(&format!("{OPERATOR_SELECT} AND a.id = ?")))
         .bind(id)
         .fetch_optional(pool)
         .await
@@ -98,11 +98,11 @@ pub fn skill_view(s: &SkillRow) -> Value {
     })
 }
 
-pub async fn skills_of(pool: &SqlitePool, agent_id: &str) -> sqlx::Result<Vec<SkillRow>> {
+pub async fn skills_of(pool: &PgPool, agent_id: &str) -> sqlx::Result<Vec<SkillRow>> {
     sqlx::query_as(
         "SELECT id, agent_id, name, category, level, description, certified, certified_at,
                 created_at, updated_at
-         FROM agent_skills WHERE agent_id = ? ORDER BY created_at, id",
+         FROM agent_skills WHERE agent_id = $1 ORDER BY created_at, id",
     )
     .bind(agent_id)
     .fetch_all(pool)
@@ -110,14 +110,14 @@ pub async fn skills_of(pool: &SqlitePool, agent_id: &str) -> sqlx::Result<Vec<Sk
 }
 
 pub async fn find_skill(
-    pool: &SqlitePool,
+    pool: &PgPool,
     agent_id: &str,
     skill_id: &str,
 ) -> sqlx::Result<Option<SkillRow>> {
     sqlx::query_as(
         "SELECT id, agent_id, name, category, level, description, certified, certified_at,
                 created_at, updated_at
-         FROM agent_skills WHERE agent_id = ? AND id = ?",
+         FROM agent_skills WHERE agent_id = $1 AND id = $2",
     )
     .bind(agent_id)
     .bind(skill_id)
@@ -147,7 +147,7 @@ pub fn status_view(s: &StatusRow) -> Value {
 /// Replaces the operator's presence and prepends a history entry, trimming history to
 /// the most recent `HISTORY_CAP` entries (CRD 2260-2263).
 pub async fn set_status(
-    pool: &SqlitePool,
+    pool: &PgPool,
     agent_id: &str,
     status: &str,
     available_until: Option<&str>,
@@ -156,7 +156,7 @@ pub async fn set_status(
     let now = now_iso();
     sqlx::query(
         "INSERT INTO agent_status (agent_id, status, since, available_until, note, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+         VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT(agent_id) DO UPDATE SET status = excluded.status, since = excluded.since,
              available_until = excluded.available_until, note = excluded.note,
              updated_at = excluded.updated_at",
@@ -171,7 +171,7 @@ pub async fn set_status(
     .await?;
     sqlx::query(
         "INSERT INTO agent_status_history (agent_id, status, since, available_until, note, recorded_at)
-         VALUES (?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(agent_id)
     .bind(status)
@@ -182,8 +182,8 @@ pub async fn set_status(
     .execute(pool)
     .await?;
     sqlx::query(
-        "DELETE FROM agent_status_history WHERE agent_id = ? AND id NOT IN
-         (SELECT id FROM agent_status_history WHERE agent_id = ? ORDER BY id DESC LIMIT ?)",
+        "DELETE FROM agent_status_history WHERE agent_id = $1 AND id NOT IN
+         (SELECT id FROM agent_status_history WHERE agent_id = $2 ORDER BY id DESC LIMIT $3)",
     )
     .bind(agent_id)
     .bind(agent_id)
@@ -201,9 +201,9 @@ pub async fn set_status(
 /// Current presence with passive auto-expiry: a past availability-until forces a
 /// transition to offline (annotated as auto-expired) recorded in history (CRD 2251, 2315).
 /// Operators with no record are reported as a default offline presence (not persisted).
-pub async fn status_with_expiry(pool: &SqlitePool, agent_id: &str) -> sqlx::Result<StatusRow> {
+pub async fn status_with_expiry(pool: &PgPool, agent_id: &str) -> sqlx::Result<StatusRow> {
     let row: Option<StatusRow> = sqlx::query_as(
-        "SELECT status, since, available_until, note FROM agent_status WHERE agent_id = ?",
+        "SELECT status, since, available_until, note FROM agent_status WHERE agent_id = $1",
     )
     .bind(agent_id)
     .fetch_optional(pool)

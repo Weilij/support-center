@@ -321,7 +321,7 @@ async fn add_customer_tags_is_idempotent_per_tag() {
 
     // Reversible audit entries were recorded (one per added association).
     let audits: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM activity_logs WHERE action = 'tag assign' AND agent_id = ?",
+        "SELECT COUNT(*) FROM activity_logs WHERE action = 'tag assign' AND agent_id = $1",
     )
     .bind(&ctx.agent_id)
     .fetch_one(&ctx.app.state.db)
@@ -403,7 +403,7 @@ async fn remove_customer_tags_detaches_and_is_noop_for_absent() {
     assert!(body["message"].as_str().unwrap().contains('2'));
 
     let remaining: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM customer_tags WHERE customer_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM customer_tags WHERE customer_id = $1")
             .bind(customer)
             .fetch_one(&ctx.app.state.db)
             .await
@@ -473,7 +473,7 @@ async fn replace_customer_tags_sets_exact_set_and_clears_with_empty() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["totalTags"], 2);
     let attached: Vec<i64> = sqlx::query_scalar(
-        "SELECT tag_id FROM customer_tags WHERE customer_id = ? ORDER BY tag_id",
+        "SELECT tag_id FROM customer_tags WHERE customer_id = $1 ORDER BY tag_id",
     )
     .bind(customer)
     .fetch_all(&ctx.app.state.db)
@@ -494,7 +494,7 @@ async fn replace_customer_tags_sets_exact_set_and_clears_with_empty() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["totalTags"], 0);
     let remaining: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM customer_tags WHERE customer_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM customer_tags WHERE customer_id = $1")
             .bind(customer)
             .fetch_one(&ctx.app.state.db)
             .await

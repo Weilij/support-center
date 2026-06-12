@@ -150,9 +150,9 @@ pub async fn create_tag(
     }
 
     let now = crate::db::now_iso();
-    let id = sqlx::query(
+    let id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO tags (name, color, description, team_id, is_active, created_by, created_at, updated_at)
-         VALUES (?, ?, ?, NULL, 1, ?, ?, ?)",
+         VALUES ($1, $2, $3, NULL, 1, $4, $5, $6) RETURNING id",
     )
     .bind(&name)
     .bind(&color)
@@ -160,9 +160,9 @@ pub async fn create_tag(
     .bind(&user.id)
     .bind(&now)
     .bind(&now)
-    .execute(&state.db)
+    .fetch_one(&state.db)
     .await?
-    .last_insert_rowid();
+    ;
 
     // Reversible audit entry capturing prior absence and the new state (CRD 1489).
     log_activity(
@@ -333,7 +333,8 @@ pub async fn update_tag(
     let now = crate::db::now_iso();
     let assignments =
         sets.iter().map(|(col, _)| format!("{col} = ?")).collect::<Vec<_>>().join(", ");
-    let sql = format!("UPDATE tags SET {assignments}, updated_at = ? WHERE id = ?");
+    let sql = format!("UPDATE tags SET {assignments}, updated_at = $1 WHERE id = $2");
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query(&sql);
     for (_, b) in &sets {
         q = match b {
@@ -372,7 +373,7 @@ pub async fn delete_tag(
         .ok_or_else(|| AppError::NotFound("Tag not found".into()))?;
 
     let now = crate::db::now_iso();
-    sqlx::query("UPDATE tags SET is_active = 0, deleted_at = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE tags SET is_active = 0, deleted_at = $1, updated_at = $2 WHERE id = $3")
         .bind(&now)
         .bind(&now)
         .bind(id)
@@ -443,8 +444,9 @@ pub async fn bulk_operation(
     match op {
         "activate" | "deactivate" => {
             let sql = format!(
-                "UPDATE tags SET is_active = ?, updated_at = ? WHERE id IN ({placeholders})"
+                "UPDATE tags SET is_active = $1, updated_at = $2 WHERE id IN ({placeholders})"
             );
+            let sql = crate::db::pg_params(&sql);
             let mut q = sqlx::query(&sql).bind((op == "activate") as i64).bind(&now);
             for id in &ids {
                 q = q.bind(id);
@@ -464,7 +466,8 @@ pub async fn bulk_operation(
                 })?
                 .to_string();
             let sql =
-                format!("UPDATE tags SET color = ?, updated_at = ? WHERE id IN ({placeholders})");
+                format!("UPDATE tags SET color = $1, updated_at = $2 WHERE id IN ({placeholders})");
+            let sql = crate::db::pg_params(&sql);
             let mut q = sqlx::query(&sql).bind(color).bind(&now);
             for id in &ids {
                 q = q.bind(id);
@@ -496,7 +499,7 @@ pub async fn tag_stats(
 ) -> Result {
     let id = parse_tag_id(&raw_id)?;
     let tag: Option<(i64, String, String)> =
-        sqlx::query_as("SELECT id, name, color FROM tags WHERE id = ?")
+        sqlx::query_as("SELECT id, name, color FROM tags WHERE id = $1")
             .bind(id)
             .fetch_optional(&state.db)
             .await?;
@@ -508,7 +511,7 @@ pub async fn tag_stats(
                 COUNT(DISTINCT CASE WHEN c.platform = 'facebook' THEN c.id END)
          FROM customer_tags ct
          JOIN customers c ON c.id = ct.customer_id AND c.deleted_at IS NULL
-         WHERE ct.tag_id = ?",
+         WHERE ct.tag_id = $1",
     )
     .bind(id)
     .fetch_one(&state.db)
@@ -521,7 +524,7 @@ pub async fn tag_stats(
          FROM customer_tags ct
          JOIN customers c ON c.id = ct.customer_id AND c.deleted_at IS NULL
          JOIN conversations cv ON cv.customer_id = c.id AND cv.deleted_at IS NULL
-         WHERE ct.tag_id = ?",
+         WHERE ct.tag_id = $1",
     )
     .bind(id)
     .fetch_one(&state.db)
@@ -532,7 +535,7 @@ pub async fn tag_stats(
 
     let trend: Vec<(String, i64)> = sqlx::query_as(
         "SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS assignments
-         FROM customer_tags WHERE tag_id = ? AND created_at >= ?
+         FROM customer_tags WHERE tag_id = $1 AND created_at >= $2
          GROUP BY day ORDER BY day DESC LIMIT 30",
     )
     .bind(id)
@@ -544,7 +547,7 @@ pub async fn tag_stats(
         "SELECT COALESCE(a.display_name, ct.assigned_by, 'Unknown') AS name, COUNT(*) AS assignments
          FROM customer_tags ct
          LEFT JOIN agents a ON a.id = ct.assigned_by
-         WHERE ct.tag_id = ? AND ct.created_at >= ?
+         WHERE ct.tag_id = $1 AND ct.created_at >= $2
          GROUP BY name ORDER BY assignments DESC LIMIT 10",
     )
     .bind(id)
@@ -581,7 +584,7 @@ pub struct PageLimitQuery {
 /// The label must be active and non-deleted to be found here (CRD 1538).
 async fn require_active_tag(state: &AppState, id: i64) -> Result<()> {
     let found: Option<i64> = sqlx::query_scalar(
-        "SELECT id FROM tags WHERE id = ? AND is_active = 1 AND deleted_at IS NULL",
+        "SELECT id FROM tags WHERE id = $1 AND is_active = 1 AND deleted_at IS NULL",
     )
     .bind(id)
     .fetch_optional(&state.db)
@@ -603,7 +606,7 @@ pub async fn tag_customers(
     let total: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM customer_tags ct
          JOIN customers c ON c.id = ct.customer_id AND c.deleted_at IS NULL
-         WHERE ct.tag_id = ?",
+         WHERE ct.tag_id = $1",
     )
     .bind(id)
     .fetch_one(&state.db)
@@ -627,8 +630,8 @@ pub async fn tag_customers(
                 c.email, c.phone, c.created_at, ct.created_at AS assigned_at, ct.assigned_by
          FROM customer_tags ct
          JOIN customers c ON c.id = ct.customer_id AND c.deleted_at IS NULL
-         WHERE ct.tag_id = ?
-         ORDER BY ct.created_at DESC, ct.id DESC LIMIT ? OFFSET ?",
+         WHERE ct.tag_id = $1
+         ORDER BY ct.created_at DESC, ct.id DESC LIMIT $2 OFFSET $3",
     )
     .bind(id)
     .bind(limit)
@@ -680,7 +683,7 @@ pub async fn tag_conversations(
          FROM customer_tags ct
          JOIN customers c ON c.id = ct.customer_id AND c.deleted_at IS NULL
          JOIN conversations cv ON cv.customer_id = c.id AND cv.deleted_at IS NULL
-         WHERE ct.tag_id = ?",
+         WHERE ct.tag_id = $1",
     )
     .bind(id)
     .fetch_one(&state.db)
@@ -706,8 +709,8 @@ pub async fn tag_conversations(
          FROM customer_tags ct
          JOIN customers c ON c.id = ct.customer_id AND c.deleted_at IS NULL
          JOIN conversations cv ON cv.customer_id = c.id AND cv.deleted_at IS NULL
-         WHERE ct.tag_id = ?
-         ORDER BY ct.created_at DESC, cv.id LIMIT ? OFFSET ?",
+         WHERE ct.tag_id = $1
+         ORDER BY ct.created_at DESC, cv.id LIMIT $2 OFFSET $3",
     )
     .bind(id)
     .bind(limit)
@@ -744,7 +747,7 @@ pub async fn tag_conversations(
 
 async fn require_conversation(state: &AppState, id: &str) -> Result<()> {
     let found: Option<String> =
-        sqlx::query_scalar("SELECT id FROM conversations WHERE id = ? AND deleted_at IS NULL")
+        sqlx::query_scalar("SELECT id FROM conversations WHERE id = $1 AND deleted_at IS NULL")
             .bind(id)
             .fetch_optional(&state.db)
             .await?;
@@ -791,7 +794,7 @@ pub async fn conversation_tags(
         "SELECT t.id, t.name, t.color, t.description, vt.assigned_by, vt.created_at AS assigned_at
          FROM conversation_tags vt
          JOIN tags t ON t.id = vt.tag_id AND t.is_active = 1 AND t.deleted_at IS NULL
-         WHERE vt.conversation_id = ?
+         WHERE vt.conversation_id = $1
          ORDER BY vt.created_at DESC, vt.id DESC",
     )
     .bind(&id)
@@ -830,8 +833,8 @@ pub async fn add_conversation_tags(
         // Pre-existing identical associations are ignored (CRD 1606); the SELECT guard
         // also skips identifiers that do not reference an existing tag.
         sqlx::query(
-            "INSERT OR IGNORE INTO conversation_tags (conversation_id, tag_id, assigned_by, created_at)
-             SELECT ?, id, ?, ? FROM tags WHERE id = ?",
+            "INSERT INTO conversation_tags (conversation_id, tag_id, assigned_by, created_at)
+             SELECT $1, id, $2, $3 FROM tags WHERE id = $4 ON CONFLICT DO NOTHING",
         )
         .bind(&id)
         .bind(&user.id)
@@ -871,8 +874,9 @@ pub async fn remove_conversation_tags(
 
     let placeholders = vec!["?"; ids.len()].join(", ");
     let sql = format!(
-        "DELETE FROM conversation_tags WHERE conversation_id = ? AND tag_id IN ({placeholders})"
+        "DELETE FROM conversation_tags WHERE conversation_id = $1 AND tag_id IN ({placeholders})"
     );
+    let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query(&sql).bind(&id);
     for tag_id in &ids {
         q = q.bind(tag_id);

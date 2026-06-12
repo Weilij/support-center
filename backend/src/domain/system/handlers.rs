@@ -17,7 +17,7 @@ use crate::state::AppState;
 type Result<T = Response> = std::result::Result<T, AppError>;
 
 async fn db_ok(state: &AppState) -> bool {
-    sqlx::query_scalar::<_, i64>("SELECT 1").fetch_one(&state.db).await.is_ok()
+    sqlx::query_scalar::<_, i64>("SELECT 1::bigint").fetch_one(&state.db).await.is_ok()
 }
 
 // ---------------------------------------------------------------- /api/system
@@ -90,17 +90,17 @@ pub async fn stats(
         sqlx::query_scalar("SELECT COUNT(*) FROM conversations WHERE deleted_at IS NULL")
             .fetch_one(&state.db).await.unwrap_or(0);
     let today_messages: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE created_at >= ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE created_at >= $1")
             .bind(&day_start).fetch_one(&state.db).await.unwrap_or(0);
     let resolved_today: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM conversations WHERE status = 'closed' AND closed_at >= ?",
+        "SELECT COUNT(*) FROM conversations WHERE status = 'closed' AND closed_at >= $1",
     )
     .bind(&day_start).fetch_one(&state.db).await.unwrap_or(0);
     let active_agents: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE last_active_at >= ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE last_active_at >= $1")
             .bind(&five_min).fetch_one(&state.db).await.unwrap_or(0);
     let (good, total_fb): (i64, i64) = sqlx::query_as(
-        "SELECT COALESCE(SUM(rating >= 4), 0), COUNT(*) FROM customer_feedback WHERE created_at >= ?",
+        "SELECT COALESCE(SUM(CASE WHEN rating >= 4 THEN 1 ELSE 0 END), 0)::bigint, COUNT(*) FROM customer_feedback WHERE created_at >= $1",
     )
     .bind(&month_ago).fetch_one(&state.db).await.unwrap_or((0, 0));
     let satisfaction = if total_fb > 0 { good as f64 * 100.0 / total_fb as f64 } else { 0.0 };
@@ -131,7 +131,7 @@ pub async fn message_replies(
     Path(message_id): Path<String>,
 ) -> Result {
     let rows: Vec<(String, Option<String>, String)> = sqlx::query_as(
-        "SELECT id, content, sender_type FROM messages WHERE reply_to_id = ? AND deleted_at IS NULL",
+        "SELECT id, content, sender_type FROM messages WHERE reply_to_id = $1 AND deleted_at IS NULL",
     )
     .bind(&message_id).fetch_all(&state.db).await?;
     let replies: Vec<Value> = rows
@@ -150,7 +150,7 @@ pub async fn message_tree(
 ) -> Result {
     let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT id, content, reply_to_id FROM messages
-         WHERE conversation_id = ? AND deleted_at IS NULL ORDER BY created_at",
+         WHERE conversation_id = $1 AND deleted_at IS NULL ORDER BY created_at",
     )
     .bind(&conversation_id).fetch_all(&state.db).await?;
     let mut tree: Map<String, Value> = Map::new();
@@ -179,7 +179,7 @@ pub async fn conversation_sessions(
     Path(conversation_id): Path<String>,
 ) -> Result {
     let (total, active): (i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*), COALESCE(SUM(is_active), 0) FROM conversation_sessions WHERE conversation_id = ?",
+        "SELECT COUNT(*), COALESCE(SUM(is_active), 0)::bigint FROM conversation_sessions WHERE conversation_id = $1",
     )
     .bind(&conversation_id).fetch_one(&state.db).await.unwrap_or((0, 0));
     Ok(envelope::ok(json!({
@@ -346,7 +346,7 @@ pub async fn update_settings(
     flatten("settings", &body, &mut flat);
     for (key, value) in &flat {
         sqlx::query(
-            "INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)
+            "INSERT INTO system_settings (key, value, updated_at) VALUES ($1, $2, $3)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
         )
         .bind(key).bind(value).bind(now_iso()).execute(&state.db).await?;
@@ -371,7 +371,7 @@ pub async fn metrics(
     Extension(_user): Extension<AuthUser>,
 ) -> Result {
     let hour_ago = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
-    let active: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE last_active_at >= ?")
+    let active: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE last_active_at >= $1")
         .bind(&hour_ago).fetch_one(&state.db).await.unwrap_or(0);
     let conversations: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM conversations WHERE deleted_at IS NULL")
@@ -657,7 +657,7 @@ pub async fn submit_feedback(
         return Err(AppError::BadRequest("rating must be between 1 and 5".into()));
     }
     let exists: Option<String> =
-        sqlx::query_scalar("SELECT id FROM conversations WHERE id = ? AND deleted_at IS NULL")
+        sqlx::query_scalar("SELECT id FROM conversations WHERE id = $1 AND deleted_at IS NULL")
             .bind(conversation).fetch_optional(&state.db).await?;
     if exists.is_none() {
         return Err(AppError::NotFound("Conversation not found".into()));
@@ -666,7 +666,7 @@ pub async fn submit_feedback(
     sqlx::query(
         "INSERT INTO customer_feedback
             (id, conversation_id, customer_id, agent_id, rating, comment, feedback_type, metadata, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(&id)
     .bind(conversation)
@@ -707,7 +707,7 @@ pub async fn feedback_stats(
     .map(|t| t.to_rfc3339());
     let rows: Vec<(i64, i64)> = sqlx::query_as(
         "SELECT rating, COUNT(*) FROM customer_feedback
-         WHERE (? IS NULL OR created_at >= ?) GROUP BY rating",
+         WHERE ($1 IS NULL OR created_at >= $2) GROUP BY rating",
     )
     .bind(&since).bind(&since).fetch_all(&state.db).await?;
     let total: i64 = rows.iter().map(|(_, c)| c).sum();
@@ -737,7 +737,7 @@ pub async fn feedback_for_conversation(
          FROM customer_feedback f
          LEFT JOIN customers c ON c.id = f.customer_id
          LEFT JOIN agents a ON a.id = f.agent_id
-         WHERE f.conversation_id = ? ORDER BY f.created_at DESC",
+         WHERE f.conversation_id = $1 ORDER BY f.created_at DESC",
     )
     .bind(&conversation_id).fetch_all(&state.db).await?;
     let items: Vec<Value> = rows
@@ -765,7 +765,7 @@ pub async fn feedback_list(
          FROM customer_feedback f
          LEFT JOIN customers c ON c.id = f.customer_id
          LEFT JOIN agents a ON a.id = f.agent_id
-         ORDER BY f.created_at DESC LIMIT ? OFFSET ?",
+         ORDER BY f.created_at DESC LIMIT $1 OFFSET $2",
     )
     .bind(size).bind((page - 1) * size).fetch_all(&state.db).await?;
     let items: Vec<Value> = rows

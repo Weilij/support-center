@@ -8,7 +8,7 @@ behavioral specification in [`Rust_CRD.md`](Rust_CRD.md).
 
 | Component | Stack | Path |
 |---|---|---|
-| Backend API | Rust · axum 0.8 · sqlx/SQLite · JWT · argon2 · AES-256-GCM | `backend/` |
+| Backend API | Rust · axum 0.8 · sqlx/PostgreSQL · JWT · argon2 · AES-256-GCM | `backend/` |
 | Frontend SPA | Vite · React 18 · TypeScript | `frontend/` |
 | Installer | Rust (standalone binary) | `backend/src/bin/installer.rs` |
 
@@ -29,8 +29,13 @@ destination, plus the installer setup wizard at `/install`.
 
 ## Running
 
+Requires a running PostgreSQL server. The backend connects to
+`DATABASE_URL` (default `postgres://localhost/mcss`) and applies its
+migrations automatically:
+
 ```bash
-# Backend (port 3000; creates data/mcss.db)
+createdb mcss                     # once
+# Backend (port 3000)
 cd backend && cargo run
 # Frontend dev server (proxies /api to :3000)
 cd frontend && npm install && npm run dev
@@ -38,7 +43,7 @@ cd frontend && npm install && npm run dev
 cd backend && cargo run --bin installer
 ```
 
-Key environment variables (see `backend/src/config.rs`): `JWT_SECRET`,
+Key environment variables (see `backend/src/config.rs`): `DATABASE_URL`, `JWT_SECRET`,
 `ENCRYPTION_KEY` (32-byte hex, enables credential encryption at rest),
 `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `FACEBOOK_APP_SECRET`,
 `FACEBOOK_VERIFY_TOKEN`, `LIFF_ID`, `FRONTEND_URL`, `BACKEND_URL`.
@@ -58,14 +63,18 @@ Frontend unit tests: `cd frontend && npm test` (vitest).
 ### Docker
 
 ```bash
-echo 'JWT_SECRET=change-me' > .env
-docker compose up --build   # frontend on :8080, backend internal
+printf 'JWT_SECRET=change-me\nPOSTGRES_PASSWORD=change-me-too\n' > .env
+docker compose up --build   # frontend on :8080, backend + postgres internal
 ```
 
 Runtime-verified: both images build, the backend reports healthy through
 the nginx proxy, and the SPA (including fallback routes) serves on :8080.
 
 ## Testing
+
+Backend tests create a throwaway PostgreSQL database per test
+(`mcss_test_*`) via `TEST_DATABASE_ADMIN_URL`
+(default `postgres://localhost/postgres`):
 
 ```bash
 cd backend && cargo test          # 545 tests (integration + installer)

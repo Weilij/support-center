@@ -180,7 +180,7 @@ async fn line_text_message_creates_customer_conversation_and_message() {
     assert_eq!(name, "LINE User");
 
     let (conv_id, status_s): (String, String) =
-        sqlx::query_as("SELECT id, status FROM conversations WHERE customer_id = ?")
+        sqlx::query_as("SELECT id, status FROM conversations WHERE customer_id = $1")
             .bind(cust_id)
             .fetch_one(&app.state.db)
             .await
@@ -188,7 +188,7 @@ async fn line_text_message_creates_customer_conversation_and_message() {
     assert_eq!(status_s, "active");
 
     let (content, sender_type, delivery): (String, String, String) = sqlx::query_as(
-        "SELECT content, sender_type, delivery_status FROM messages WHERE conversation_id = ? AND platform_message_id = 'mid-1'",
+        "SELECT content, sender_type, delivery_status FROM messages WHERE conversation_id = $1 AND platform_message_id = 'mid-1'",
     )
     .bind(&conv_id)
     .fetch_one(&app.state.db)
@@ -321,7 +321,7 @@ async fn follow_with_routing_creates_team_conversation_and_welcome() {
     let team = app.seed_team("Routing").await;
     sqlx::query(
         "INSERT INTO customer_team_assignments (id, platform_user_id, team_id, source, assigned_at)
-         VALUES ('a1', 'U-follow', ?, 'scan', ?)",
+         VALUES ('a1', 'U-follow', $1, 'scan', $2)",
     )
     .bind(team)
     .bind(chrono::Utc::now().to_rfc3339())
@@ -347,7 +347,7 @@ async fn follow_with_routing_creates_team_conversation_and_welcome() {
     assert!(meta.get("lastFollowedAt").is_some(), "follow metadata recorded: {meta}");
 
     let (conv_team, conv_status): (Option<i64>, String) =
-        sqlx::query_as("SELECT team_id, status FROM conversations WHERE customer_id = ?")
+        sqlx::query_as("SELECT team_id, status FROM conversations WHERE customer_id = $1")
             .bind(cust_id)
             .fetch_one(&app.state.db)
             .await
@@ -358,8 +358,8 @@ async fn follow_with_routing_creates_team_conversation_and_welcome() {
     // Default welcome stored as a system-authored message so the conversation
     // is not empty (CRD 2822).
     let (sender_type, count): (String, i64) = sqlx::query_as(
-        "SELECT sender_type, COUNT(*) FROM messages m JOIN conversations c ON c.id = m.conversation_id
-         WHERE c.customer_id = ?",
+        "SELECT MAX(m.sender_type), COUNT(*) FROM messages m JOIN conversations c ON c.id = m.conversation_id
+         WHERE c.customer_id = $1",
     )
     .bind(cust_id)
     .fetch_one(&app.state.db)
@@ -402,7 +402,7 @@ async fn unfollow_touches_existing_customer_and_ignores_unknown() {
     assert_eq!(status, StatusCode::OK);
 
     let updated: Option<String> =
-        sqlx::query_scalar("SELECT updated_at FROM customers WHERE id = ?")
+        sqlx::query_scalar("SELECT updated_at FROM customers WHERE id = $1")
             .bind(cust)
             .fetch_one(&app.state.db)
             .await

@@ -1,13 +1,31 @@
 services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: mcss
+      POSTGRES_USER: mcss
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - mcss-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mcss -d mcss"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   backend:
     build: ./backend
     environment:
+      DATABASE_URL: postgres://mcss:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db/mcss
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       ENVIRONMENT: ${ENVIRONMENT:-production}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
       BACKEND_URL: ${BACKEND_URL:-http://localhost:8080}
     volumes:
       - mcss-data:/home/mcss/data
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/3000' || exit 1"]
       interval: 10s
@@ -25,3 +43,4 @@ services:
 
 volumes:
   mcss-data:
+  mcss-pgdata:

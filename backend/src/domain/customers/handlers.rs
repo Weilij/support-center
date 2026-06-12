@@ -63,7 +63,7 @@ pub async fn list_customers(
     } else if let Some(team) = user.primary_team_id {
         sqlx::query_as(
             "SELECT * FROM customers
-             WHERE deleted_at IS NULL AND (source_team_id IS NULL OR source_team_id = ?)
+             WHERE deleted_at IS NULL AND (source_team_id IS NULL OR source_team_id = $1)
              ORDER BY created_at DESC",
         )
         .bind(team)
@@ -186,7 +186,7 @@ pub async fn available_tags(
         .filter(|s| !s.is_empty())
         .map(|s| format!("%{}%", escape_like(s)));
     let search_sql = if pattern.is_some() {
-        " AND (t.name LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\')"
+        " AND (t.name ILIKE ? ESCAPE '\\' OR t.description ILIKE ? ESCAPE '\\')"
     } else {
         ""
     };
@@ -194,6 +194,7 @@ pub async fn available_tags(
     let base = format!("t.is_active = 1 AND t.deleted_at IS NULL{scope_sql}{search_sql}");
 
     let count_sql = format!("SELECT COUNT(*) FROM tags t WHERE {base}");
+    let count_sql = crate::db::pg_params(&count_sql);
     let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
     if let Some(team) = team_bind {
         count_q = count_q.bind(team);
@@ -206,8 +207,9 @@ pub async fn available_tags(
     let rows_sql = format!(
         "SELECT t.id, t.name, t.color, t.description, t.team_id, t.is_active, t.created_by, \
          t.created_at, t.updated_at, {TAG_COUNT_COLUMNS} \
-         FROM tags t WHERE {base} ORDER BY t.name ASC LIMIT ? OFFSET ?"
+         FROM tags t WHERE {base} ORDER BY t.name ASC LIMIT $1 OFFSET $2"
     );
+    let rows_sql = crate::db::pg_params(&rows_sql);
     let mut rows_q = sqlx::query_as::<_, TagWithCounts>(&rows_sql);
     if let Some(team) = team_bind {
         rows_q = rows_q.bind(team);
@@ -279,7 +281,7 @@ pub async fn get_customer_tags(
                 ct.created_at AS assigned_at, ct.assigned_by
          FROM customer_tags ct
          JOIN tags t ON t.id = ct.tag_id AND t.is_active = 1 AND t.deleted_at IS NULL
-         WHERE ct.customer_id = ?
+         WHERE ct.customer_id = $1
          ORDER BY ct.created_at DESC, ct.id DESC",
     )
     .bind(id)
@@ -349,8 +351,9 @@ pub async fn add_customer_tags(
 
     let placeholders = vec!["?"; ids.len()].join(", ");
     let existing_sql = format!(
-        "SELECT tag_id FROM customer_tags WHERE customer_id = ? AND tag_id IN ({placeholders})"
+        "SELECT tag_id FROM customer_tags WHERE customer_id = $1 AND tag_id IN ({placeholders})"
     );
+    let existing_sql = crate::db::pg_params(&existing_sql);
     let mut existing_q = sqlx::query_scalar::<_, i64>(&existing_sql).bind(id);
     for tag_id in &ids {
         existing_q = existing_q.bind(tag_id);
@@ -366,7 +369,7 @@ pub async fn add_customer_tags(
         let mut tx = state.db.begin().await?;
         for tag_id in &to_add {
             sqlx::query(
-                "INSERT INTO customer_tags (customer_id, tag_id, assigned_by, created_at) VALUES (?, ?, ?, ?)",
+                "INSERT INTO customer_tags (customer_id, tag_id, assigned_by, created_at) VALUES ($1, $2, $3, $4)",
             )
             .bind(id)
             .bind(tag_id)
@@ -376,7 +379,7 @@ pub async fn add_customer_tags(
             .await?;
             sqlx::query(
                 "INSERT INTO activity_logs (agent_id, agent_name, agent_role, action, resource_type, resource_id, details, created_at)
-                 VALUES (?, ?, ?, 'tag assign', 'customer_tag', ?, ?, ?)",
+                 VALUES ($1, $2, $3, 'tag assign', 'customer_tag', $4, $5, $6)",
             )
             .bind(&user.id)
             .bind(&user.display_name)
@@ -432,8 +435,9 @@ pub async fn remove_customer_tags(
     let placeholders = vec!["?"; ids.len()].join(", ");
     let existing_sql = format!(
         "SELECT tag_id, assigned_by, created_at FROM customer_tags
-         WHERE customer_id = ? AND tag_id IN ({placeholders})"
+         WHERE customer_id = $1 AND tag_id IN ({placeholders})"
     );
+    let existing_sql = crate::db::pg_params(&existing_sql);
     let mut existing_q =
         sqlx::query_as::<_, (i64, Option<String>, String)>(&existing_sql).bind(id);
     for tag_id in &ids {
@@ -444,8 +448,9 @@ pub async fn remove_customer_tags(
     let now = crate::db::now_iso();
     let mut tx = state.db.begin().await?;
     let delete_sql = format!(
-        "DELETE FROM customer_tags WHERE customer_id = ? AND tag_id IN ({placeholders})"
+        "DELETE FROM customer_tags WHERE customer_id = $1 AND tag_id IN ({placeholders})"
     );
+    let delete_sql = crate::db::pg_params(&delete_sql);
     let mut delete_q = sqlx::query(&delete_sql).bind(id);
     for tag_id in &ids {
         delete_q = delete_q.bind(tag_id);
@@ -455,7 +460,7 @@ pub async fn remove_customer_tags(
     for (tag_id, assigned_by, assigned_at) in &existing {
         sqlx::query(
             "INSERT INTO activity_logs (agent_id, agent_name, agent_role, action, resource_type, resource_id, details, created_at)
-             VALUES (?, ?, ?, 'tag unassign', 'customer_tag', ?, ?, ?)",
+             VALUES ($1, $2, $3, 'tag unassign', 'customer_tag', $4, $5, $6)",
         )
         .bind(&user.id)
         .bind(&user.display_name)
@@ -520,13 +525,13 @@ pub async fn replace_customer_tags(
 
     let now = crate::db::now_iso();
     let mut tx = state.db.begin().await?;
-    sqlx::query("DELETE FROM customer_tags WHERE customer_id = ?")
+    sqlx::query("DELETE FROM customer_tags WHERE customer_id = $1")
         .bind(id)
         .execute(&mut *tx)
         .await?;
     for tag_id in &ids {
         sqlx::query(
-            "INSERT INTO customer_tags (customer_id, tag_id, assigned_by, created_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO customer_tags (customer_id, tag_id, assigned_by, created_at) VALUES ($1, $2, $3, $4)",
         )
         .bind(id)
         .bind(tag_id)
@@ -543,6 +548,7 @@ pub async fn replace_customer_tags(
     } else {
         let placeholders = vec!["?"; ids.len()].join(", ");
         let sql = format!("SELECT name FROM tags WHERE id IN ({placeholders})");
+        let sql = crate::db::pg_params(&sql);
         let mut q = sqlx::query_scalar::<_, String>(&sql);
         for tag_id in &ids {
             q = q.bind(tag_id);

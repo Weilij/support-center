@@ -239,7 +239,7 @@ async fn public_download_forces_attachment_and_fixes_extension() {
     let id = body["data"]["id"].as_str().unwrap().to_string();
 
     // Strip the stored filename's extension to exercise the append rule.
-    sqlx::query("UPDATE attachments SET file_name = 'report' WHERE id = ?")
+    sqlx::query("UPDATE attachments SET file_name = 'report' WHERE id = $1")
         .bind(&id)
         .execute(&app.state.db)
         .await

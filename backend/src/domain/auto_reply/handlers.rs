@@ -5,7 +5,7 @@ use axum::response::Response;
 use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::sync::Arc;
 
 use crate::db::now_iso;
@@ -55,12 +55,12 @@ fn page_params(q: &ScopeQuery) -> (i64, i64) {
     (page, size)
 }
 
-async fn rule_view(db: &SqlitePool, rule_id: i64) -> Result<Value> {
+async fn rule_view(db: &PgPool, rule_id: i64) -> Result<Value> {
     let row: Option<RuleRow> =
         sqlx::query_as(
             "SELECT id, team_id, name, trigger_type, priority, is_active, allow_fallback,
                     created_by, created_at, updated_at, deleted_at
-             FROM auto_reply_rules WHERE id = ?",
+             FROM auto_reply_rules WHERE id = $1",
         )
         .bind(rule_id)
         .fetch_optional(db)
@@ -71,14 +71,14 @@ async fn rule_view(db: &SqlitePool, rule_id: i64) -> Result<Value> {
     };
     let conditions: Vec<(i64, String, Option<String>, i64, String)> = sqlx::query_as(
         "SELECT id, condition_type, value, case_sensitive, match_mode
-         FROM auto_reply_conditions WHERE rule_id = ? ORDER BY id",
+         FROM auto_reply_conditions WHERE rule_id = $1 ORDER BY id",
     )
     .bind(id)
     .fetch_all(db)
     .await?;
     let actions: Vec<(i64, String, Option<String>, i64)> = sqlx::query_as(
         "SELECT id, action_type, content, sort_order FROM auto_reply_actions
-         WHERE rule_id = ? ORDER BY sort_order, id",
+         WHERE rule_id = $1 ORDER BY sort_order, id",
     )
     .bind(id)
     .fetch_all(db)
@@ -122,7 +122,7 @@ pub async fn list_rules(
     let (page, size) = page_params(&q);
     let total: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM auto_reply_rules
-         WHERE deleted_at IS NULL AND ((? IS NULL AND team_id IS NULL) OR team_id = ?)",
+         WHERE deleted_at IS NULL AND (($1 IS NULL AND team_id IS NULL) OR team_id = $2)",
     )
     .bind(team)
     .bind(team)
@@ -130,8 +130,8 @@ pub async fn list_rules(
     .await?;
     let ids: Vec<(i64,)> = sqlx::query_as(
         "SELECT id FROM auto_reply_rules
-         WHERE deleted_at IS NULL AND ((? IS NULL AND team_id IS NULL) OR team_id = ?)
-         ORDER BY priority ASC, id ASC LIMIT ? OFFSET ?",
+         WHERE deleted_at IS NULL AND (($1 IS NULL AND team_id IS NULL) OR team_id = $2)
+         ORDER BY priority ASC, id ASC LIMIT $3 OFFSET $4",
     )
     .bind(team)
     .bind(team)
@@ -184,11 +184,11 @@ fn validate_actions(actions: &[Value]) -> Result<()> {
     Ok(())
 }
 
-async fn insert_conditions(db: &SqlitePool, rule_id: i64, conditions: &[Value]) -> Result<()> {
+async fn insert_conditions(db: &PgPool, rule_id: i64, conditions: &[Value]) -> Result<()> {
     for c in conditions {
         sqlx::query(
             "INSERT INTO auto_reply_conditions (rule_id, condition_type, value, case_sensitive, match_mode)
-             VALUES (?, ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(rule_id)
         .bind(c.get("conditionType").or_else(|| c.get("type")).and_then(Value::as_str).unwrap_or("contains"))
@@ -201,7 +201,7 @@ async fn insert_conditions(db: &SqlitePool, rule_id: i64, conditions: &[Value]) 
     Ok(())
 }
 
-async fn insert_actions(db: &SqlitePool, rule_id: i64, actions: &[Value]) -> Result<()> {
+async fn insert_actions(db: &PgPool, rule_id: i64, actions: &[Value]) -> Result<()> {
     for (idx, a) in actions.iter().enumerate() {
         let content = match a.get("content") {
             Some(Value::String(s)) => s.clone(),
@@ -210,7 +210,7 @@ async fn insert_actions(db: &SqlitePool, rule_id: i64, actions: &[Value]) -> Res
         };
         sqlx::query(
             "INSERT INTO auto_reply_actions (rule_id, action_type, content, sort_order)
-             VALUES (?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4)",
         )
         .bind(rule_id)
         .bind(a.get("actionType").or_else(|| a.get("type")).and_then(Value::as_str).unwrap_or("text"))
@@ -254,10 +254,10 @@ pub async fn create_rule(
     }
 
     let now = now_iso();
-    let rule_id = sqlx::query(
+    let rule_id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO auto_reply_rules
             (team_id, name, trigger_type, priority, is_active, allow_fallback, created_by, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
     )
     .bind(team)
     .bind(&name)
@@ -267,9 +267,9 @@ pub async fn create_rule(
     .bind(body.allow_push_fallback.unwrap_or(false) as i64)
     .bind(&user.id)
     .bind(&now)
-    .execute(&state.db)
+    .fetch_one(&state.db)
     .await?
-    .last_insert_rowid();
+    ;
 
     if let Some(conditions) = &body.conditions {
         insert_conditions(&state.db, rule_id, conditions).await?;
@@ -291,7 +291,7 @@ pub async fn update_rule(
 ) -> Result {
     let rule_id: i64 = id.parse().map_err(|_| AppError::BadRequest("Invalid rule ID".into()))?;
     let existing: Option<(Option<i64>,)> = sqlx::query_as(
-        "SELECT team_id FROM auto_reply_rules WHERE id = ? AND deleted_at IS NULL",
+        "SELECT team_id FROM auto_reply_rules WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(rule_id)
     .fetch_optional(&state.db)
@@ -301,35 +301,35 @@ pub async fn update_rule(
     };
 
     if let Some(name) = &body.name {
-        sqlx::query("UPDATE auto_reply_rules SET name = ? WHERE id = ?")
+        sqlx::query("UPDATE auto_reply_rules SET name = $1 WHERE id = $2")
             .bind(name.trim())
             .bind(rule_id)
             .execute(&state.db)
             .await?;
     }
     if let Some(trigger) = &body.trigger_type {
-        sqlx::query("UPDATE auto_reply_rules SET trigger_type = ? WHERE id = ?")
+        sqlx::query("UPDATE auto_reply_rules SET trigger_type = $1 WHERE id = $2")
             .bind(trigger)
             .bind(rule_id)
             .execute(&state.db)
             .await?;
     }
     if let Some(priority) = body.priority {
-        sqlx::query("UPDATE auto_reply_rules SET priority = ? WHERE id = ?")
+        sqlx::query("UPDATE auto_reply_rules SET priority = $1 WHERE id = $2")
             .bind(priority)
             .bind(rule_id)
             .execute(&state.db)
             .await?;
     }
     if let Some(active) = body.is_active {
-        sqlx::query("UPDATE auto_reply_rules SET is_active = ? WHERE id = ?")
+        sqlx::query("UPDATE auto_reply_rules SET is_active = $1 WHERE id = $2")
             .bind(active as i64)
             .bind(rule_id)
             .execute(&state.db)
             .await?;
     }
     if let Some(fallback) = body.allow_push_fallback {
-        sqlx::query("UPDATE auto_reply_rules SET allow_fallback = ? WHERE id = ?")
+        sqlx::query("UPDATE auto_reply_rules SET allow_fallback = $1 WHERE id = $2")
             .bind(fallback as i64)
             .bind(rule_id)
             .execute(&state.db)
@@ -337,20 +337,20 @@ pub async fn update_rule(
     }
     // A supplied array is a wholesale replace, not a merge (CRD 1364/1368).
     if let Some(conditions) = &body.conditions {
-        sqlx::query("DELETE FROM auto_reply_conditions WHERE rule_id = ?")
+        sqlx::query("DELETE FROM auto_reply_conditions WHERE rule_id = $1")
             .bind(rule_id)
             .execute(&state.db)
             .await?;
         insert_conditions(&state.db, rule_id, conditions).await?;
     }
     if let Some(actions) = &body.actions {
-        sqlx::query("DELETE FROM auto_reply_actions WHERE rule_id = ?")
+        sqlx::query("DELETE FROM auto_reply_actions WHERE rule_id = $1")
             .bind(rule_id)
             .execute(&state.db)
             .await?;
         insert_actions(&state.db, rule_id, actions).await?;
     }
-    sqlx::query("UPDATE auto_reply_rules SET updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE auto_reply_rules SET updated_at = $1 WHERE id = $2")
         .bind(now_iso())
         .bind(rule_id)
         .execute(&state.db)
@@ -368,7 +368,7 @@ pub async fn delete_rule(
 ) -> Result {
     let rule_id: i64 = id.parse().map_err(|_| AppError::BadRequest("Invalid rule ID".into()))?;
     let existing: Option<(Option<i64>,)> = sqlx::query_as(
-        "SELECT team_id FROM auto_reply_rules WHERE id = ? AND deleted_at IS NULL",
+        "SELECT team_id FROM auto_reply_rules WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(rule_id)
     .fetch_optional(&state.db)
@@ -377,7 +377,7 @@ pub async fn delete_rule(
         return Err(AppError::NotFound("Rule not found".into()));
     };
     sqlx::query(
-        "UPDATE auto_reply_rules SET deleted_at = ?, is_active = 0, updated_at = ? WHERE id = ?",
+        "UPDATE auto_reply_rules SET deleted_at = $1, is_active = 0, updated_at = $2 WHERE id = $3",
     )
     .bind(now_iso())
     .bind(now_iso())
@@ -400,7 +400,7 @@ pub async fn get_schedules(
     let rows: Vec<ScheduleRow> =
         sqlx::query_as(
             "SELECT id, team_id, day_of_week, start_time, end_time, timezone, is_active
-             FROM auto_reply_business_hours WHERE team_id = ? ORDER BY day_of_week",
+             FROM auto_reply_business_hours WHERE team_id = $1 ORDER BY day_of_week",
         )
         .bind(team)
         .fetch_all(&state.db)
@@ -465,7 +465,7 @@ pub async fn replace_schedules(
     }
 
     // Wholesale replace per team (CRD 1392/1396).
-    sqlx::query("DELETE FROM auto_reply_business_hours WHERE team_id = ?")
+    sqlx::query("DELETE FROM auto_reply_business_hours WHERE team_id = $1")
         .bind(team)
         .execute(&state.db)
         .await?;
@@ -473,7 +473,7 @@ pub async fn replace_schedules(
         sqlx::query(
             "INSERT INTO auto_reply_business_hours
                 (team_id, day_of_week, start_time, end_time, timezone, is_active)
-             VALUES (?, ?, ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(team)
         .bind(entry.get("dayOfWeek").and_then(Value::as_i64))
@@ -523,11 +523,11 @@ pub async fn list_logs(
     // Logs whose rule is owned by the team OR is global (CRD 1402).
     let base_where = "FROM auto_reply_logs l
          LEFT JOIN auto_reply_rules r ON r.id = l.rule_id
-         WHERE (r.team_id = ? OR r.team_id IS NULL)
-           AND (? IS NULL OR l.rule_id = ?)
-           AND (? IS NULL OR l.platform = ?)
-           AND (? IS NULL OR l.created_at >= ?)";
-    let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) {base_where}"))
+         WHERE (r.team_id = $1 OR r.team_id IS NULL)
+           AND ($2 IS NULL OR l.rule_id = $3)
+           AND ($4 IS NULL OR l.platform = $5)
+           AND ($6 IS NULL OR l.created_at >= $7)";
+    let total: i64 = sqlx::query_scalar(&crate::db::pg_params(&format!("SELECT COUNT(*) {base_where}")))
         .bind(team)
         .bind(rule_filter)
         .bind(rule_filter)
@@ -541,7 +541,7 @@ pub async fn list_logs(
     let today_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM auto_reply_logs l
          LEFT JOIN auto_reply_rules r ON r.id = l.rule_id
-         WHERE (r.team_id = ? OR r.team_id IS NULL) AND l.created_at >= ?",
+         WHERE (r.team_id = $1 OR r.team_id IS NULL) AND l.created_at >= $2",
     )
     .bind(team)
     .bind(&today_start)
@@ -549,11 +549,11 @@ pub async fn list_logs(
     .await?;
 
     let rows: Vec<LogRow> =
-        sqlx::query_as(&format!(
+        sqlx::query_as(&crate::db::pg_params(&format!(
             "SELECT l.id, l.rule_id, r.name, l.conversation_id, l.customer_id, l.trigger_content,
                     l.response_content, l.matched_condition, l.platform, l.delivery_method, l.created_at
-             {base_where} ORDER BY l.created_at DESC, l.id DESC LIMIT ? OFFSET ?"
-        ))
+             {base_where} ORDER BY l.created_at DESC, l.id DESC LIMIT $1 OFFSET $2"
+        )))
         .bind(team)
         .bind(rule_filter)
         .bind(rule_filter)

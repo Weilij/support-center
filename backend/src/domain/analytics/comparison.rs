@@ -75,14 +75,14 @@ async fn metric_value(
     let s = start.to_rfc3339();
     let e = end.to_rfc3339();
     let sql = match metric {
-        "total_conversations" => "SELECT COUNT(*) FROM conversations WHERE deleted_at IS NULL AND created_at >= ?1 AND created_at <= ?2 AND (?3 IS NULL OR team_id = ?3)",
-        "active_conversations" => "SELECT COUNT(*) FROM conversations WHERE deleted_at IS NULL AND status != 'closed' AND created_at >= ?1 AND created_at <= ?2 AND (?3 IS NULL OR team_id = ?3)",
-        "closed_conversations" => "SELECT COUNT(*) FROM conversations WHERE deleted_at IS NULL AND status = 'closed' AND created_at >= ?1 AND created_at <= ?2 AND (?3 IS NULL OR team_id = ?3)",
-        "total_messages" => "SELECT COUNT(*) FROM messages WHERE deleted_at IS NULL AND created_at >= ?1 AND created_at <= ?2 AND (?3 IS NULL OR ?3 = ?3)",
-        "customer_messages" => "SELECT COUNT(*) FROM messages WHERE deleted_at IS NULL AND sender_type = 'customer' AND created_at >= ?1 AND created_at <= ?2 AND (?3 IS NULL OR ?3 = ?3)",
-        "agent_messages" => "SELECT COUNT(*) FROM messages WHERE deleted_at IS NULL AND sender_type = 'agent' AND created_at >= ?1 AND created_at <= ?2 AND (?3 IS NULL OR ?3 = ?3)",
-        "active_users" => "SELECT COUNT(*) FROM agents WHERE deleted_at IS NULL AND is_active = 1 AND last_active_at >= ?1 AND last_active_at <= ?2 AND (?3 IS NULL OR ?3 = ?3)",
-        "total_activities" => "SELECT COUNT(*) FROM activity_logs WHERE created_at >= ?1 AND created_at <= ?2 AND (?3 IS NULL OR ?3 = ?3)",
+        "total_conversations" => "SELECT COUNT(*) FROM conversations WHERE deleted_at IS NULL AND created_at >= $1 AND created_at <= $2 AND ($3 IS NULL OR team_id = $3)",
+        "active_conversations" => "SELECT COUNT(*) FROM conversations WHERE deleted_at IS NULL AND status != 'closed' AND created_at >= $1 AND created_at <= $2 AND ($3 IS NULL OR team_id = $3)",
+        "closed_conversations" => "SELECT COUNT(*) FROM conversations WHERE deleted_at IS NULL AND status = 'closed' AND created_at >= $1 AND created_at <= $2 AND ($3 IS NULL OR team_id = $3)",
+        "total_messages" => "SELECT COUNT(*) FROM messages WHERE deleted_at IS NULL AND created_at >= $1 AND created_at <= $2 AND ($3 IS NULL OR $3 = $3)",
+        "customer_messages" => "SELECT COUNT(*) FROM messages WHERE deleted_at IS NULL AND sender_type = 'customer' AND created_at >= $1 AND created_at <= $2 AND ($3 IS NULL OR $3 = $3)",
+        "agent_messages" => "SELECT COUNT(*) FROM messages WHERE deleted_at IS NULL AND sender_type = 'agent' AND created_at >= $1 AND created_at <= $2 AND ($3 IS NULL OR $3 = $3)",
+        "active_users" => "SELECT COUNT(*) FROM agents WHERE deleted_at IS NULL AND is_active = 1 AND last_active_at >= $1 AND last_active_at <= $2 AND ($3 IS NULL OR $3 = $3)",
+        "total_activities" => "SELECT COUNT(*) FROM activity_logs WHERE created_at >= $1 AND created_at <= $2 AND ($3 IS NULL OR $3 = $3)",
         // Unknown / unavailable metrics report 0 (CRD 4298, 4300).
         _ => return 0.0,
     };

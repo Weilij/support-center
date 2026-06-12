@@ -33,7 +33,7 @@ async fn setup() -> Ctx {
 }
 
 async fn restore_state_of(app: &common::TestApp, id: i64) -> Option<String> {
-    sqlx::query_scalar("SELECT restore_state FROM activity_logs WHERE id = ?")
+    sqlx::query_scalar("SELECT restore_state FROM activity_logs WHERE id = $1")
         .bind(id)
         .fetch_one(&app.state.db)
         .await
@@ -538,7 +538,7 @@ async fn restore_reverts_tag_update_and_links_audit_entries() {
     assert!(new_id > id);
 
     // The resource returned to its prior state.
-    let name: String = sqlx::query_scalar("SELECT name FROM tags WHERE id = ?")
+    let name: String = sqlx::query_scalar("SELECT name FROM tags WHERE id = $1")
         .bind(tag)
         .fetch_one(&ctx.app.state.db)
         .await
@@ -649,7 +649,7 @@ async fn restore_in_progress_is_rejected_with_retry_hint() {
     let ctx = setup().await;
     let tag = ctx.app.seed_tag("new-name", &ctx.agent_id).await;
     let id = seed_reversible_tag_update(&ctx, tag, &ctx.agent_id).await;
-    sqlx::query("UPDATE activity_logs SET restore_state = 'in_progress' WHERE id = ?")
+    sqlx::query("UPDATE activity_logs SET restore_state = 'in_progress' WHERE id = $1")
         .bind(id)
         .execute(&ctx.app.state.db)
         .await
@@ -807,7 +807,7 @@ async fn restore_conflict_reported_then_forced() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let name: String = sqlx::query_scalar("SELECT name FROM tags WHERE id = ?")
+    let name: String = sqlx::query_scalar("SELECT name FROM tags WHERE id = $1")
         .bind(tag)
         .fetch_one(&ctx.app.state.db)
         .await
@@ -843,7 +843,7 @@ async fn restore_conversation_transfer_returns_prior_team() {
         .request("POST", &format!("/api/activities/{id}/restore"), Some(&ctx.admin_token), None)
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let current: Option<i64> = sqlx::query_scalar("SELECT team_id FROM conversations WHERE id = ?")
+    let current: Option<i64> = sqlx::query_scalar("SELECT team_id FROM conversations WHERE id = $1")
         .bind(&conv)
         .fetch_one(&ctx.app.state.db)
         .await
@@ -907,7 +907,7 @@ async fn restore_tag_create_soft_deletes_record() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let (deleted_at, active): (Option<String>, i64) =
-        sqlx::query_as("SELECT deleted_at, is_active FROM tags WHERE id = ?")
+        sqlx::query_as("SELECT deleted_at, is_active FROM tags WHERE id = $1")
             .bind(tag)
             .fetch_one(&ctx.app.state.db)
             .await
@@ -921,7 +921,7 @@ async fn restore_tag_delete_undeletes_record() {
     let ctx = setup().await;
     let tag = ctx.app.seed_tag_full("gone-tag", &ctx.agent_id, None, false).await;
     let deleted_ts = iso_ago_minutes(5);
-    sqlx::query("UPDATE tags SET deleted_at = ? WHERE id = ?")
+    sqlx::query("UPDATE tags SET deleted_at = $1 WHERE id = $2")
         .bind(&deleted_ts)
         .bind(tag)
         .execute(&ctx.app.state.db)
@@ -948,7 +948,7 @@ async fn restore_tag_delete_undeletes_record() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let (deleted_at, active): (Option<String>, i64) =
-        sqlx::query_as("SELECT deleted_at, is_active FROM tags WHERE id = ?")
+        sqlx::query_as("SELECT deleted_at, is_active FROM tags WHERE id = $1")
             .bind(tag)
             .fetch_one(&ctx.app.state.db)
             .await
@@ -980,7 +980,7 @@ async fn restore_tag_assign_removes_association() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM customer_tags WHERE customer_id = ? AND tag_id = ?",
+        "SELECT COUNT(*) FROM customer_tags WHERE customer_id = $1 AND tag_id = $2",
     )
     .bind(customer)
     .bind(tag)
@@ -1039,7 +1039,7 @@ async fn restore_tag_unassign_re_adds_association() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM customer_tags WHERE customer_id = ? AND tag_id = ?",
+        "SELECT COUNT(*) FROM customer_tags WHERE customer_id = $1 AND tag_id = $2",
     )
     .bind(customer)
     .bind(tag)
@@ -1112,7 +1112,7 @@ async fn restore_reinstates_removed_team_membership() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let row: Option<(String, i64)> = sqlx::query_as(
-        "SELECT role, is_primary FROM team_members WHERE agent_id = ? AND team_id = ?",
+        "SELECT role, is_primary FROM team_members WHERE agent_id = $1 AND team_id = $2",
     )
     .bind(&ctx.agent_id)
     .bind(team)

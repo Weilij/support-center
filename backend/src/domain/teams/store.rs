@@ -1,7 +1,7 @@
 //! Teams domain persistence helpers (CRD §3.2, lines 1792-2154).
 
 use serde_json::{json, Value};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::config::Config;
 use crate::db::now_iso;
@@ -44,10 +44,10 @@ pub fn team_select(filter: &str, tail: &str) -> String {
 }
 
 pub async fn team_with_counts(
-    pool: &SqlitePool,
+    pool: &PgPool,
     id: i64,
 ) -> sqlx::Result<Option<TeamWithCounts>> {
-    sqlx::query_as(&team_select("AND t.id = ?", ""))
+    sqlx::query_as(&crate::db::pg_params(&team_select("AND t.id = ?", "")))
         .bind(id)
         .fetch_optional(pool)
         .await
@@ -87,10 +87,10 @@ pub struct MemberRow {
 pub const MEMBER_COLUMNS: &str = "id, email, display_name, role, is_active, password_policy,
     last_active_at, last_login_at, created_at, updated_at";
 
-pub async fn find_member(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<MemberRow>> {
-    sqlx::query_as(&format!(
-        "SELECT {MEMBER_COLUMNS} FROM agents WHERE id = ? AND deleted_at IS NULL"
-    ))
+pub async fn find_member(pool: &PgPool, id: &str) -> sqlx::Result<Option<MemberRow>> {
+    sqlx::query_as(&crate::db::pg_params(&format!(
+        "SELECT {MEMBER_COLUMNS} FROM agents WHERE id = $1 AND deleted_at IS NULL"
+    )))
     .bind(id)
     .fetch_optional(pool)
     .await
@@ -123,13 +123,13 @@ pub struct MembershipRow {
 }
 
 pub async fn find_membership(
-    pool: &SqlitePool,
+    pool: &PgPool,
     agent_id: &str,
     team_id: i64,
 ) -> sqlx::Result<Option<MembershipRow>> {
     sqlx::query_as(
         "SELECT agent_id, team_id, role, is_primary, joined_at FROM team_members
-         WHERE agent_id = ? AND team_id = ?",
+         WHERE agent_id = $1 AND team_id = $2",
     )
     .bind(agent_id)
     .bind(team_id)
@@ -138,12 +138,12 @@ pub async fn find_membership(
 }
 
 pub async fn memberships_of(
-    pool: &SqlitePool,
+    pool: &PgPool,
     agent_id: &str,
 ) -> sqlx::Result<Vec<MembershipRow>> {
     sqlx::query_as(
         "SELECT agent_id, team_id, role, is_primary, joined_at FROM team_members
-         WHERE agent_id = ? ORDER BY is_primary DESC, team_id",
+         WHERE agent_id = $1 ORDER BY is_primary DESC, team_id",
     )
     .bind(agent_id)
     .fetch_all(pool)
@@ -162,8 +162,8 @@ pub fn membership_view(m: &MembershipRow) -> Value {
 
 /// Clears every primary flag the agent holds so that exactly one team can then be
 /// marked primary (CRD 2045, 2145).
-pub async fn clear_primary(pool: &SqlitePool, agent_id: &str) -> sqlx::Result<()> {
-    sqlx::query("UPDATE team_members SET is_primary = 0 WHERE agent_id = ?")
+pub async fn clear_primary(pool: &PgPool, agent_id: &str) -> sqlx::Result<()> {
+    sqlx::query("UPDATE team_members SET is_primary = 0 WHERE agent_id = $1")
         .bind(agent_id)
         .execute(pool)
         .await?;
@@ -173,11 +173,11 @@ pub async fn clear_primary(pool: &SqlitePool, agent_id: &str) -> sqlx::Result<()
 /// When the agent has memberships but no primary one, promotes one remaining membership
 /// to primary (CRD 1920, 2135, 2145). Returns the promoted team id, if any.
 pub async fn promote_primary_if_needed(
-    pool: &SqlitePool,
+    pool: &PgPool,
     agent_id: &str,
 ) -> sqlx::Result<Option<i64>> {
     let has_primary: Option<i64> = sqlx::query_scalar(
-        "SELECT team_id FROM team_members WHERE agent_id = ? AND is_primary = 1 LIMIT 1",
+        "SELECT team_id FROM team_members WHERE agent_id = $1 AND is_primary = 1 LIMIT 1",
     )
     .bind(agent_id)
     .fetch_optional(pool)
@@ -186,13 +186,13 @@ pub async fn promote_primary_if_needed(
         return Ok(None);
     }
     let next: Option<i64> = sqlx::query_scalar(
-        "SELECT team_id FROM team_members WHERE agent_id = ? ORDER BY joined_at, id LIMIT 1",
+        "SELECT team_id FROM team_members WHERE agent_id = $1 ORDER BY joined_at, id LIMIT 1",
     )
     .bind(agent_id)
     .fetch_optional(pool)
     .await?;
     if let Some(team_id) = next {
-        sqlx::query("UPDATE team_members SET is_primary = 1 WHERE agent_id = ? AND team_id = ?")
+        sqlx::query("UPDATE team_members SET is_primary = 1 WHERE agent_id = $1 AND team_id = $2")
             .bind(agent_id)
             .bind(team_id)
             .execute(pool)
@@ -205,17 +205,17 @@ pub async fn promote_primary_if_needed(
 /// Replaces the agent's memberships with a single primary membership in `team_id`
 /// (profile team-change and bulk transfer semantics, CRD 2187, 2285, 2304).
 pub async fn replace_memberships(
-    pool: &SqlitePool,
+    pool: &PgPool,
     agent_id: &str,
     team_id: i64,
 ) -> sqlx::Result<()> {
-    sqlx::query("DELETE FROM team_members WHERE agent_id = ?")
+    sqlx::query("DELETE FROM team_members WHERE agent_id = $1")
         .bind(agent_id)
         .execute(pool)
         .await?;
     sqlx::query(
         "INSERT INTO team_members (agent_id, team_id, role, is_primary, joined_at)
-         VALUES (?, ?, 'member', 1, ?)",
+         VALUES ($1, $2, 'member', 1, $3)",
     )
     .bind(agent_id)
     .bind(team_id)
@@ -230,15 +230,15 @@ pub async fn replace_memberships(
 /// Irreversible account deletion with reference cleanup (CRD 1978, 2294): related
 /// records are deleted, nulled, or reassigned to the placeholder identity so history
 /// survives with authorship anonymized.
-pub async fn purge_member(pool: &SqlitePool, member_id: &str) -> sqlx::Result<()> {
+pub async fn purge_member(pool: &PgPool, member_id: &str) -> sqlx::Result<()> {
     let now = now_iso();
     // Ensure the placeholder sentinel exists (soft-deleted, inactive).
     sqlx::query(
-        "INSERT OR IGNORE INTO agents
+        "INSERT INTO agents
             (id, email, password_hash, display_name, role, is_active, password_policy,
              deleted_at, created_at)
-         VALUES (?, 'deleted-user@system.local', '', 'Deleted User', 'agent', 0,
-                 'unchangeable', ?, ?)",
+         VALUES ($1, 'deleted-user@system.local', '', 'Deleted User', 'agent', 0,
+                 'unchangeable', $2, $3) ON CONFLICT DO NOTHING",
     )
     .bind(PLACEHOLDER_AGENT_ID)
     .bind(&now)
@@ -249,16 +249,16 @@ pub async fn purge_member(pool: &SqlitePool, member_id: &str) -> sqlx::Result<()
     let mut tx = pool.begin().await?;
 
     // Deleted outright: notifications and pending scheduled outbound messages.
-    sqlx::query("DELETE FROM notifications WHERE agent_id = ?")
+    sqlx::query("DELETE FROM notifications WHERE agent_id = $1")
         .bind(member_id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("DELETE FROM scheduled_messages WHERE agent_id = ? AND status = 'pending'")
+    sqlx::query("DELETE FROM scheduled_messages WHERE agent_id = $1 AND status = 'pending'")
         .bind(member_id)
         .execute(&mut *tx)
         .await?;
     // Non-pending scheduled records are kept, anonymized.
-    sqlx::query("UPDATE scheduled_messages SET agent_id = ? WHERE agent_id = ?")
+    sqlx::query("UPDATE scheduled_messages SET agent_id = $1 WHERE agent_id = $2")
         .bind(PLACEHOLDER_AGENT_ID)
         .bind(member_id)
         .execute(&mut *tx)
@@ -266,26 +266,26 @@ pub async fn purge_member(pool: &SqlitePool, member_id: &str) -> sqlx::Result<()
 
     // Nulled references (sender_name snapshots keep history readable).
     for sql in [
-        "UPDATE messages SET agent_id = NULL WHERE agent_id = ?",
-        "UPDATE attachments SET uploaded_by = NULL WHERE uploaded_by = ?",
-        "UPDATE customer_tags SET assigned_by = NULL WHERE assigned_by = ?",
-        "UPDATE conversation_tags SET assigned_by = NULL WHERE assigned_by = ?",
-        "UPDATE channel_integrations SET configured_by = NULL WHERE configured_by = ?",
-        "UPDATE customer_feedback SET agent_id = NULL WHERE agent_id = ?",
+        "UPDATE messages SET agent_id = NULL WHERE agent_id = $1",
+        "UPDATE attachments SET uploaded_by = NULL WHERE uploaded_by = $1",
+        "UPDATE customer_tags SET assigned_by = NULL WHERE assigned_by = $1",
+        "UPDATE conversation_tags SET assigned_by = NULL WHERE assigned_by = $1",
+        "UPDATE channel_integrations SET configured_by = NULL WHERE configured_by = $1",
+        "UPDATE customer_feedback SET agent_id = NULL WHERE agent_id = $1",
     ] {
         sqlx::query(sql).bind(member_id).execute(&mut *tx).await?;
     }
 
     // Reassigned to the placeholder identity (NOT NULL / RESTRICT references).
     for sql in [
-        "UPDATE message_recall_logs SET agent_id = ? WHERE agent_id = ?",
-        "UPDATE conversation_transfers SET transferred_by = ? WHERE transferred_by = ?",
-        "UPDATE activity_logs SET agent_id = ? WHERE agent_id = ?",
-        "UPDATE tags SET created_by = ? WHERE created_by = ?",
-        "UPDATE reports SET created_by = ? WHERE created_by = ?",
-        "UPDATE scheduled_reports SET created_by = ? WHERE created_by = ?",
-        "UPDATE report_downloads SET downloaded_by = ? WHERE downloaded_by = ?",
-        "UPDATE report_templates SET created_by = ? WHERE created_by = ?",
+        "UPDATE message_recall_logs SET agent_id = $1 WHERE agent_id = $2",
+        "UPDATE conversation_transfers SET transferred_by = $1 WHERE transferred_by = $2",
+        "UPDATE activity_logs SET agent_id = $1 WHERE agent_id = $2",
+        "UPDATE tags SET created_by = $1 WHERE created_by = $2",
+        "UPDATE reports SET created_by = $1 WHERE created_by = $2",
+        "UPDATE scheduled_reports SET created_by = $1 WHERE created_by = $2",
+        "UPDATE report_downloads SET downloaded_by = $1 WHERE downloaded_by = $2",
+        "UPDATE report_templates SET created_by = $1 WHERE created_by = $2",
     ] {
         sqlx::query(sql)
             .bind(PLACEHOLDER_AGENT_ID)
@@ -295,17 +295,17 @@ pub async fn purge_member(pool: &SqlitePool, member_id: &str) -> sqlx::Result<()
     }
 
     // Session/refresh credentials become unusable once the row is gone; tidy them up.
-    sqlx::query("DELETE FROM auth_sessions WHERE agent_id = ?")
+    sqlx::query("DELETE FROM auth_sessions WHERE agent_id = $1")
         .bind(member_id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("DELETE FROM refresh_tokens WHERE agent_id = ?")
+    sqlx::query("DELETE FROM refresh_tokens WHERE agent_id = $1")
         .bind(member_id)
         .execute(&mut *tx)
         .await?;
 
     // Team memberships, reminders, skills, and presence rows cascade with the account.
-    sqlx::query("DELETE FROM agents WHERE id = ?")
+    sqlx::query("DELETE FROM agents WHERE id = $1")
         .bind(member_id)
         .execute(&mut *tx)
         .await?;
@@ -367,7 +367,7 @@ pub fn qr_view(q: &QrRow) -> Value {
 
 /// Creates a scan-to-join QR record for the team and returns it (CRD 1840, 2081).
 pub async fn create_join_qr(
-    pool: &SqlitePool,
+    pool: &PgPool,
     config: &Config,
     team_id: i64,
     campaign: Option<&str>,
@@ -383,7 +383,7 @@ pub async fn create_join_qr(
     sqlx::query(
         "INSERT INTO qr_codes (id, team_id, token, url, image_url, campaign, description,
                                max_scans, is_active, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9, $10)",
     )
     .bind(&id)
     .bind(team_id)
@@ -425,10 +425,10 @@ pub struct LiffRow {
     pub updated_at: Option<String>,
 }
 
-pub async fn find_liff(pool: &SqlitePool, team_id: i64) -> sqlx::Result<Option<LiffRow>> {
+pub async fn find_liff(pool: &PgPool, team_id: i64) -> sqlx::Result<Option<LiffRow>> {
     sqlx::query_as(
         "SELECT id, team_id, url, image_url, scan_count, is_active, created_at, updated_at
-         FROM team_liff_links WHERE team_id = ?",
+         FROM team_liff_links WHERE team_id = $1",
     )
     .bind(team_id)
     .fetch_optional(pool)
@@ -436,13 +436,13 @@ pub async fn find_liff(pool: &SqlitePool, team_id: i64) -> sqlx::Result<Option<L
 }
 
 /// (Re)generates the team's LIFF deep-link QR; the scan count survives regeneration.
-pub async fn upsert_liff(pool: &SqlitePool, team_id: i64) -> sqlx::Result<LiffRow> {
+pub async fn upsert_liff(pool: &PgPool, team_id: i64) -> sqlx::Result<LiffRow> {
     let url = liff_url(team_id);
     let image_url = qr_image_url(&format!("liff-{team_id}"));
     let now = now_iso();
     sqlx::query(
         "INSERT INTO team_liff_links (id, team_id, url, image_url, is_active, created_at)
-         VALUES (?, ?, ?, ?, 1, ?)
+         VALUES ($1, $2, $3, $4, 1, $5)
          ON CONFLICT(team_id) DO UPDATE SET url = excluded.url, image_url = excluded.image_url,
              is_active = 1, updated_at = excluded.created_at",
     )

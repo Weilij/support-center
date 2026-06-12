@@ -34,7 +34,7 @@ async fn check_send_permission(
     conversation_id: &str,
 ) -> Result<()> {
     let team: Option<Option<i64>> = sqlx::query_scalar(
-        "SELECT team_id FROM conversations WHERE id = ? AND deleted_at IS NULL",
+        "SELECT team_id FROM conversations WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(conversation_id)
     .fetch_optional(&state.db)
@@ -248,7 +248,7 @@ pub async fn v2_status(
         .ok_or_else(|| AppError::BadRequest("conversationId is required".into()))?;
 
     let row: Option<(String, Option<String>)> = sqlx::query_as(
-        "SELECT status, scheduled_at FROM scheduled_messages WHERE id = ? AND conversation_id = ?",
+        "SELECT status, scheduled_at FROM scheduled_messages WHERE id = $1 AND conversation_id = $2",
     )
     .bind(&message_id)
     .bind(&conversation_id)
@@ -287,7 +287,7 @@ pub async fn v2_pending(
         .ok_or_else(|| AppError::BadRequest("conversationId is required".into()))?;
     let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT id, content, scheduled_at FROM scheduled_messages
-         WHERE conversation_id = ? AND status = 'pending' ORDER BY scheduled_at ASC",
+         WHERE conversation_id = $1 AND status = 'pending' ORDER BY scheduled_at ASC",
     )
     .bind(&conversation_id)
     .fetch_all(&state.db)
@@ -326,7 +326,7 @@ pub async fn v2_failed(
     let rows: Vec<FailedRow> =
         sqlx::query_as(
             "SELECT id, content, metadata, updated_at, scheduled_at FROM scheduled_messages
-             WHERE conversation_id = ? AND status = 'failed'
+             WHERE conversation_id = $1 AND status = 'failed'
              ORDER BY updated_at DESC, id DESC",
         )
         .bind(&conversation_id)
@@ -365,7 +365,7 @@ pub async fn v2_metrics(
         .filter(|c| !c.is_empty())
         .ok_or_else(|| AppError::BadRequest("conversationId is required".into()))?;
     let counts: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT status, COUNT(*) FROM scheduled_messages WHERE conversation_id = ? GROUP BY status",
+        "SELECT status, COUNT(*) FROM scheduled_messages WHERE conversation_id = $1 GROUP BY status",
     )
     .bind(&conversation_id)
     .fetch_all(&state.db)
@@ -377,7 +377,7 @@ pub async fn v2_metrics(
     let processed = sent + failed;
     let next_fire: Option<String> = sqlx::query_scalar(
         "SELECT MIN(scheduled_at) FROM scheduled_messages
-         WHERE conversation_id = ? AND status = 'pending'",
+         WHERE conversation_id = $1 AND status = 'pending'",
     )
     .bind(&conversation_id)
     .fetch_one(&state.db)
@@ -521,7 +521,7 @@ pub async fn legacy_recall(
     }
     let row: Option<(String, Option<String>, String, Option<String>)> = sqlx::query_as(
         "SELECT agent_id, scheduled_at, conversation_id, content
-         FROM scheduled_messages WHERE id = ?",
+         FROM scheduled_messages WHERE id = $1",
     )
     .bind(&message_id)
     .fetch_optional(&state.db)
@@ -599,7 +599,7 @@ pub async fn legacy_pending(
         return Err(AppError::BadRequest("Invalid pagination parameters".into()));
     }
     let total: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM scheduled_messages WHERE agent_id = ? AND status = 'pending'",
+        "SELECT COUNT(*) FROM scheduled_messages WHERE agent_id = $1 AND status = 'pending'",
     )
     .bind(&user.id)
     .fetch_one(&state.db)
@@ -611,8 +611,8 @@ pub async fn legacy_pending(
          FROM scheduled_messages sm
          LEFT JOIN conversations c ON c.id = sm.conversation_id
          LEFT JOIN customers cu ON cu.id = c.customer_id
-         WHERE sm.agent_id = ? AND sm.status = 'pending'
-         ORDER BY sm.scheduled_at ASC LIMIT ? OFFSET ?",
+         WHERE sm.agent_id = $1 AND sm.status = 'pending'
+         ORDER BY sm.scheduled_at ASC LIMIT $2 OFFSET $3",
     )
     .bind(&user.id)
     .bind(size)
@@ -668,7 +668,7 @@ pub async fn legacy_reschedule(
     let row: Option<RescheduleRow> =
         sqlx::query_as(
             "SELECT agent_id, status, conversation_id, content, content_type, metadata
-             FROM scheduled_messages WHERE id = ?",
+             FROM scheduled_messages WHERE id = $1",
         )
         .bind(&message_id)
         .fetch_optional(&state.db)
@@ -697,8 +697,8 @@ pub async fn legacy_reschedule(
     meta.insert("rescheduledBy".into(), json!(user.id));
     meta.insert("rescheduledDelaySeconds".into(), json!(delay));
     sqlx::query(
-        "UPDATE scheduled_messages SET scheduled_at = ?, metadata = ?, updated_at = ?
-         WHERE id = ? AND status = 'pending'",
+        "UPDATE scheduled_messages SET scheduled_at = $1, metadata = $2, updated_at = $3
+         WHERE id = $4 AND status = 'pending'",
     )
     .bind(&new_fire)
     .bind(Value::Object(meta).to_string())

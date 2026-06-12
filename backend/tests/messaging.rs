@@ -40,7 +40,7 @@ async fn seed_agent_message(
         "INSERT INTO messages (id, conversation_id, sender_type, agent_id, content, content_type,
                                is_sent, sent_at, delivery_status, is_recalled, recall_deadline,
                                sender_name, created_at)
-         VALUES (?, ?, 'agent', ?, ?, 'text', 1, ?, 'sent', ?, ?, 'seed agent', ?)",
+         VALUES ($1, $2, 'agent', $3, $4, 'text', 1, $5, 'sent', $6, $7, 'seed agent', $8)",
     )
     .bind(&id)
     .bind(conversation_id)
@@ -57,7 +57,7 @@ async fn seed_agent_message(
 }
 
 async fn set_message_metadata(app: &TestApp, message_id: &str, metadata: Value) {
-    sqlx::query("UPDATE messages SET metadata = ? WHERE id = ?")
+    sqlx::query("UPDATE messages SET metadata = $1 WHERE id = $2")
         .bind(metadata.to_string())
         .bind(message_id)
         .execute(&app.state.db)
@@ -173,7 +173,7 @@ async fn create_message_persists_and_bumps_conversation() {
     // Sent state, sender snapshot, conversation recency bump.
     let (status, name, last_msg): (String, String, Option<String>) = sqlx::query_as(
         "SELECT m.delivery_status, m.sender_name, c.last_message_at
-         FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE m.id = ?",
+         FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE m.id = $1",
     )
     .bind(data["id"].as_str().unwrap())
     .fetch_one(&app.state.db)
@@ -185,7 +185,7 @@ async fn create_message_persists_and_bumps_conversation() {
 
     // Audit activity entry (CRD 855).
     let logged: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM activity_logs WHERE action = 'message send' AND resource_id = ?",
+        "SELECT COUNT(*) FROM activity_logs WHERE action = 'message send' AND resource_id = $1",
     )
     .bind(data["id"].as_str().unwrap())
     .fetch_one(&app.state.db)
@@ -239,7 +239,7 @@ async fn create_message_rejects_missing_or_deleted_conversation() {
 
     // Soft-deleted conversation is treated as missing.
     let deleted = app.seed_conversation(cust, None, "active").await;
-    sqlx::query("UPDATE conversations SET deleted_at = ? WHERE id = ?")
+    sqlx::query("UPDATE conversations SET deleted_at = $1 WHERE id = $2")
         .bind(chrono::Utc::now().to_rfc3339())
         .bind(&deleted)
         .execute(&app.state.db)
@@ -340,7 +340,7 @@ async fn create_message_links_attachments_and_detects_mentions() {
     let (token, _, _, conv) = fixture(&app).await;
     // A single-word display name so the @-token matches.
     let bob_id = app.seed_agent("bob@test.dev", "Secret123!", "agent").await;
-    sqlx::query("UPDATE agents SET display_name = 'bob' WHERE id = ?")
+    sqlx::query("UPDATE agents SET display_name = 'bob' WHERE id = $1")
         .bind(&bob_id)
         .execute(&app.state.db)
         .await
@@ -351,7 +351,7 @@ async fn create_message_links_attachments_and_detects_mentions() {
     sqlx::query(
         "INSERT INTO attachments (id, message_id, conversation_id, file_name, content_type,
                                   file_size, file_url, storage_key, created_at)
-         VALUES (?, NULL, ?, 'a.png', 'image/png', 10, '/uploads/a.png', 'a.png', ?)",
+         VALUES ($1, NULL, $2, 'a.png', 'image/png', 10, '/uploads/a.png', 'a.png', $3)",
     )
     .bind(&attachment_id)
     .bind(&conv)
@@ -379,7 +379,7 @@ async fn create_message_links_attachments_and_detects_mentions() {
 
     // Mention notification dispatched to bob.
     let notified: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND type = 'mention'",
+        "SELECT COUNT(*) FROM notifications WHERE agent_id = $1 AND type = 'mention'",
     )
     .bind(&bob_id)
     .fetch_one(&app.state.db)
@@ -433,7 +433,7 @@ async fn get_message_hides_scope_violations_as_not_found() {
     let (status, _, _) =
         app.request("GET", "/api/messages/missing-id", Some(&admin_token), None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    sqlx::query("UPDATE messages SET deleted_at = ? WHERE id = ?")
+    sqlx::query("UPDATE messages SET deleted_at = $1 WHERE id = $2")
         .bind(chrono::Utc::now().to_rfc3339())
         .bind(&id)
         .execute(&app.state.db)
@@ -518,7 +518,7 @@ async fn recall_message_overwrites_content_with_placeholder() {
     assert!(body["data"]["recalledAt"].is_string());
 
     let (content, is_recalled, status_col): (String, i64, String) = sqlx::query_as(
-        "SELECT content, is_recalled, delivery_status FROM messages WHERE id = ?",
+        "SELECT content, is_recalled, delivery_status FROM messages WHERE id = $1",
     )
     .bind(&id)
     .fetch_one(&app.state.db)
@@ -530,7 +530,7 @@ async fn recall_message_overwrites_content_with_placeholder() {
 
     // Audit entry written.
     let logged: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM activity_logs WHERE action = 'message recall' AND resource_id = ?",
+        "SELECT COUNT(*) FROM activity_logs WHERE action = 'message recall' AND resource_id = $1",
     )
     .bind(&id)
     .fetch_one(&app.state.db)
@@ -866,7 +866,7 @@ async fn bulk_delete_recalls_eligible_and_reports_item_errors() {
     assert_eq!(errors.len(), 4);
 
     // The recalled one has the placeholder content.
-    let content: String = sqlx::query_scalar("SELECT content FROM messages WHERE id = ?")
+    let content: String = sqlx::query_scalar("SELECT content FROM messages WHERE id = $1")
         .bind(body["data"]["results"][0]["messageId"].as_str().unwrap())
         .fetch_one(&app.state.db)
         .await
@@ -900,7 +900,7 @@ async fn attachment_listing_returns_records_and_count() {
     sqlx::query(
         "INSERT INTO attachments (id, message_id, conversation_id, file_name, content_type,
                                   file_size, file_url, storage_key, created_at)
-         VALUES ('att-1', ?, ?, 'doc.pdf', 'application/pdf', 42, '/uploads/doc.pdf', 'doc.pdf', ?)",
+         VALUES ('att-1', $1, $2, 'doc.pdf', 'application/pdf', 42, '/uploads/doc.pdf', 'doc.pdf', $3)",
     )
     .bind(&id)
     .bind(&conv)
@@ -949,7 +949,7 @@ async fn attachment_upload_stores_file_and_validates() {
     assert_eq!(body["data"]["mimeType"], json!("image/png"));
     assert_eq!(body["data"]["fileSize"], json!(7));
     // The stored object exists on disk.
-    let key: String = sqlx::query_scalar("SELECT storage_key FROM attachments WHERE message_id = ?")
+    let key: String = sqlx::query_scalar("SELECT storage_key FROM attachments WHERE message_id = $1")
         .bind(&id)
         .fetch_one(&app.state.db)
         .await
@@ -1045,7 +1045,7 @@ async fn forward_creates_copies_with_provenance() {
     // the target conversation's timestamps were bumped.
     let new_id = body["data"]["results"][0]["messageId"].as_str().unwrap();
     let (content, metadata, status_col): (String, String, String) = sqlx::query_as(
-        "SELECT content, metadata, delivery_status FROM messages WHERE id = ?",
+        "SELECT content, metadata, delivery_status FROM messages WHERE id = $1",
     )
     .bind(new_id)
     .fetch_one(&app.state.db)
@@ -1058,7 +1058,7 @@ async fn forward_creates_copies_with_provenance() {
     assert_eq!(meta["forwardedFrom"]["messageId"], json!(id));
     assert_eq!(meta["forwardedBy"], json!(admin_id));
     let bumped: Option<String> =
-        sqlx::query_scalar("SELECT last_message_at FROM conversations WHERE id = ?")
+        sqlx::query_scalar("SELECT last_message_at FROM conversations WHERE id = $1")
             .bind(&target_a)
             .fetch_one(&app.state.db)
             .await
@@ -1067,7 +1067,7 @@ async fn forward_creates_copies_with_provenance() {
 
     // Audit entry.
     let logged: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM activity_logs WHERE action = 'message forward' AND resource_id = ?",
+        "SELECT COUNT(*) FROM activity_logs WHERE action = 'message forward' AND resource_id = $1",
     )
     .bind(&id)
     .fetch_one(&app.state.db)
@@ -1138,7 +1138,7 @@ async fn set_tags_replaces_and_records_audit_stamps() {
     assert_eq!(body["data"]["updatedBy"], json!(admin_id));
 
     // Metadata merged, not replaced wholesale.
-    let metadata: String = sqlx::query_scalar("SELECT metadata FROM messages WHERE id = ?")
+    let metadata: String = sqlx::query_scalar("SELECT metadata FROM messages WHERE id = $1")
         .bind(&id)
         .fetch_one(&app.state.db)
         .await
@@ -1195,7 +1195,7 @@ async fn remove_tags_clears_collection() {
     assert_eq!(body["data"]["removedTags"], json!(["vip"]));
     assert!(body["data"]["removedAt"].is_string());
 
-    let metadata: String = sqlx::query_scalar("SELECT metadata FROM messages WHERE id = ?")
+    let metadata: String = sqlx::query_scalar("SELECT metadata FROM messages WHERE id = $1")
         .bind(&id)
         .fetch_one(&app.state.db)
         .await
@@ -1278,7 +1278,7 @@ async fn schedule_delayed_validates_and_marks_recallable() {
     let id = result["delayedMessageId"].as_str().unwrap();
     assert_eq!(result["scheduledSendTime"], result["recallDeadline"]);
     assert!(app.state.recallable_messages.is_recallable(id));
-    let status: String = sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = ?")
+    let status: String = sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = $1")
         .bind(id)
         .fetch_one(&app.state.db)
         .await
@@ -1307,7 +1307,7 @@ async fn schedule_for(app: &TestApp, agent_id: &str, conv: &str, platform: &str)
 }
 
 async fn force_due(app: &TestApp, id: &str) {
-    sqlx::query("UPDATE scheduled_messages SET scheduled_at = ? WHERE id = ?")
+    sqlx::query("UPDATE scheduled_messages SET scheduled_at = $1 WHERE id = $2")
         .bind("2000-01-01T00:00:00.000Z")
         .bind(id)
         .execute(&app.state.db)
@@ -1333,7 +1333,7 @@ async fn process_delayed_dispatches_per_platform() {
     assert_eq!(result["success"], json!(true), "{result}");
     let message_id = result["messageId"].as_str().unwrap();
     let (status_col, is_sent, deadline): (String, i64, Option<String>) = sqlx::query_as(
-        "SELECT delivery_status, is_sent, recall_deadline FROM messages WHERE id = ?",
+        "SELECT delivery_status, is_sent, recall_deadline FROM messages WHERE id = $1",
     )
     .bind(message_id)
     .fetch_one(&app.state.db)
@@ -1343,7 +1343,7 @@ async fn process_delayed_dispatches_per_platform() {
     assert_eq!(is_sent, 1);
     assert!(deadline.is_some());
     let item_status: String =
-        sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = ?")
+        sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = $1")
             .bind(&early)
             .fetch_one(&app.state.db)
             .await
@@ -1368,7 +1368,7 @@ async fn process_delayed_dispatches_per_platform() {
     let result = service::process_delayed(&app.state, &weird).await;
     assert_eq!(result["success"], json!(false));
     let (item_status, metadata): (String, String) =
-        sqlx::query_as("SELECT status, metadata FROM scheduled_messages WHERE id = ?")
+        sqlx::query_as("SELECT status, metadata FROM scheduled_messages WHERE id = $1")
             .bind(&weird)
             .fetch_one(&app.state.db)
             .await
@@ -1391,14 +1391,14 @@ async fn dispatch_due_processes_only_due_items() {
 
     let processed = service::dispatch_due(&app.state).await;
     assert_eq!(processed, 1);
-    let due_status: String = sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = ?")
+    let due_status: String = sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = $1")
         .bind(&due)
         .fetch_one(&app.state.db)
         .await
         .unwrap();
     assert_eq!(due_status, "sent");
     let future_status: String =
-        sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = ?")
+        sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = $1")
             .bind(&future)
             .fetch_one(&app.state.db)
             .await
@@ -1417,7 +1417,7 @@ async fn cancel_delayed_transitions_and_guards() {
         service::cancel_delayed(&app.state, &id, &admin_id, Some("changed my mind"), true).await;
     assert_eq!(result["success"], json!(true), "{result}");
     let (status_col, metadata): (String, String) =
-        sqlx::query_as("SELECT status, metadata FROM scheduled_messages WHERE id = ?")
+        sqlx::query_as("SELECT status, metadata FROM scheduled_messages WHERE id = $1")
             .bind(&id)
             .fetch_one(&app.state.db)
             .await
@@ -1426,7 +1426,7 @@ async fn cancel_delayed_transitions_and_guards() {
     assert!(metadata.contains("changed my mind"));
     assert!(!app.state.recallable_messages.is_recallable(&id));
     let logged: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM message_recall_logs WHERE message_id = ? AND action = 'successful'",
+        "SELECT COUNT(*) FROM message_recall_logs WHERE message_id = $1 AND action = 'successful'",
     )
     .bind(&id)
     .fetch_one(&app.state.db)
@@ -1463,7 +1463,7 @@ async fn recall_sent_message_service_capability() {
     assert_eq!(result["canRecall"], json!(true));
     assert_eq!(result["messageId"], json!(id));
     let (content, is_recalled, status_col): (String, i64, String) =
-        sqlx::query_as("SELECT content, is_recalled, delivery_status FROM messages WHERE id = ?")
+        sqlx::query_as("SELECT content, is_recalled, delivery_status FROM messages WHERE id = $1")
             .bind(&id)
             .fetch_one(&app.state.db)
             .await
@@ -1472,7 +1472,7 @@ async fn recall_sent_message_service_capability() {
     assert_eq!(is_recalled, 1);
     assert_eq!(status_col, "recalled");
     let logged: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM message_recall_logs WHERE message_id = ? AND action = 'successful'",
+        "SELECT COUNT(*) FROM message_recall_logs WHERE message_id = $1 AND action = 'successful'",
     )
     .bind(&id)
     .fetch_one(&app.state.db)
@@ -1510,7 +1510,7 @@ async fn archive_stale_failed_retires_old_items() {
         let _ = service::process_delayed(&app.state, id).await; // -> failed
     }
     // Make one failure look a day old.
-    sqlx::query("UPDATE scheduled_messages SET updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE scheduled_messages SET updated_at = $1 WHERE id = $2")
         .bind("2000-01-01T00:00:00.000Z")
         .bind(&stale)
         .execute(&app.state.db)
@@ -1520,14 +1520,14 @@ async fn archive_stale_failed_retires_old_items() {
     let archived = service::archive_stale_failed(&app.state.db).await.unwrap();
     assert_eq!(archived, 1);
     let stale_status: String =
-        sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = ?")
+        sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = $1")
             .bind(&stale)
             .fetch_one(&app.state.db)
             .await
             .unwrap();
     assert_eq!(stale_status, "archived");
     let fresh_status: String =
-        sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = ?")
+        sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = $1")
             .bind(&fresh)
             .fetch_one(&app.state.db)
             .await
@@ -1581,7 +1581,7 @@ async fn offline_buffer_replay_delivery_and_stats() {
     assert!(gone.is_empty());
 
     // Expired entries are purged (b1 is still retained as delivered; expire it).
-    sqlx::query("UPDATE offline_message_buffer SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?")
+    sqlx::query("UPDATE offline_message_buffer SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = $1")
         .bind(&b1)
         .execute(db)
         .await

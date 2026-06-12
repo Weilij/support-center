@@ -1,6 +1,6 @@
 //! Persistence for labels and their derived usage counts (CRD §2.6).
 
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 /// Derived-count subselects shared by every tag listing (CRD 1479, 1555, 1709):
 /// distinct non-deleted customers carrying the tag, and distinct non-deleted
@@ -68,8 +68,8 @@ pub fn escape_like(s: &str) -> String {
 }
 
 /// A live (non-soft-deleted) tag.
-pub async fn find_live_tag(pool: &SqlitePool, id: i64) -> sqlx::Result<Option<TagRow>> {
-    sqlx::query_as::<_, TagRow>("SELECT * FROM tags WHERE id = ? AND deleted_at IS NULL")
+pub async fn find_live_tag(pool: &PgPool, id: i64) -> sqlx::Result<Option<TagRow>> {
+    sqlx::query_as::<_, TagRow>("SELECT * FROM tags WHERE id = $1 AND deleted_at IS NULL")
         .bind(id)
         .fetch_optional(pool)
         .await
@@ -77,12 +77,12 @@ pub async fn find_live_tag(pool: &SqlitePool, id: i64) -> sqlx::Result<Option<Ta
 
 /// Name uniqueness among live tags (soft-deleting a tag frees its name — CRD 1487/1504).
 pub async fn name_in_use(
-    pool: &SqlitePool,
+    pool: &PgPool,
     name: &str,
     exclude_id: Option<i64>,
 ) -> sqlx::Result<bool> {
     let found: Option<i64> = sqlx::query_scalar(
-        "SELECT id FROM tags WHERE name = ? AND deleted_at IS NULL AND id != ? LIMIT 1",
+        "SELECT id FROM tags WHERE name = $1 AND deleted_at IS NULL AND id != $2 LIMIT 1",
     )
     .bind(name)
     .bind(exclude_id.unwrap_or(-1))
@@ -92,17 +92,17 @@ pub async fn name_in_use(
 }
 
 /// Tag plus derived counts; does NOT exclude soft-deleted rows (used by update re-read).
-pub async fn tag_with_counts(pool: &SqlitePool, id: i64) -> sqlx::Result<Option<TagWithCounts>> {
+pub async fn tag_with_counts(pool: &PgPool, id: i64) -> sqlx::Result<Option<TagWithCounts>> {
     let sql = format!(
         "SELECT t.id, t.name, t.color, t.description, t.team_id, t.is_active, t.created_by, \
-         t.created_at, t.updated_at, {TAG_COUNT_COLUMNS} FROM tags t WHERE t.id = ?"
+         t.created_at, t.updated_at, {TAG_COUNT_COLUMNS} FROM tags t WHERE t.id = $1"
     );
-    sqlx::query_as::<_, TagWithCounts>(&sql).bind(id).fetch_optional(pool).await
+    sqlx::query_as::<_, TagWithCounts>(&crate::db::pg_params(&sql)).bind(id).fetch_optional(pool).await
 }
 
 /// Detail view with team/creator display names; intentionally does not exclude
 /// soft-deleted tags (CRD 1497).
-pub async fn tag_detail(pool: &SqlitePool, id: i64) -> sqlx::Result<Option<TagDetail>> {
+pub async fn tag_detail(pool: &PgPool, id: i64) -> sqlx::Result<Option<TagDetail>> {
     let sql = format!(
         "SELECT t.id, t.name, t.color, t.description, t.team_id, tm.name AS team_name, \
          t.is_active, t.created_by, a.display_name AS created_by_name, \
@@ -110,14 +110,14 @@ pub async fn tag_detail(pool: &SqlitePool, id: i64) -> sqlx::Result<Option<TagDe
          FROM tags t \
          LEFT JOIN teams tm ON tm.id = t.team_id \
          LEFT JOIN agents a ON a.id = t.created_by \
-         WHERE t.id = ?"
+         WHERE t.id = $1"
     );
-    sqlx::query_as::<_, TagDetail>(&sql).bind(id).fetch_optional(pool).await
+    sqlx::query_as::<_, TagDetail>(&crate::db::pg_params(&sql)).bind(id).fetch_optional(pool).await
 }
 
 /// One page of live tags ordered by name, with derived counts (CRD 1475-1481).
 pub async fn list_tags(
-    pool: &SqlitePool,
+    pool: &PgPool,
     page: i64,
     page_size: i64,
     search: Option<&str>,
@@ -127,12 +127,13 @@ pub async fn list_tags(
         .filter(|s| !s.is_empty())
         .map(|s| format!("%{}%", escape_like(s)));
     let search_sql = if pattern.is_some() {
-        " AND (t.name LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\')"
+        " AND (t.name ILIKE ? ESCAPE '\\' OR t.description ILIKE ? ESCAPE '\\')"
     } else {
         ""
     };
 
     let count_sql = format!("SELECT COUNT(*) FROM tags t WHERE t.deleted_at IS NULL{search_sql}");
+    let count_sql = crate::db::pg_params(&count_sql);
     let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
     if let Some(p) = &pattern {
         count_q = count_q.bind(p.clone()).bind(p.clone());
@@ -143,8 +144,9 @@ pub async fn list_tags(
         "SELECT t.id, t.name, t.color, t.description, t.team_id, t.is_active, t.created_by, \
          t.created_at, t.updated_at, {TAG_COUNT_COLUMNS} \
          FROM tags t WHERE t.deleted_at IS NULL{search_sql} \
-         ORDER BY t.name ASC LIMIT ? OFFSET ?"
+         ORDER BY t.name ASC LIMIT $1 OFFSET $2"
     );
+    let rows_sql = crate::db::pg_params(&rows_sql);
     let mut rows_q = sqlx::query_as::<_, TagWithCounts>(&rows_sql);
     if let Some(p) = &pattern {
         rows_q = rows_q.bind(p.clone()).bind(p.clone());

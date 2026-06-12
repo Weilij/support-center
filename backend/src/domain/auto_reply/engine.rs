@@ -5,7 +5,7 @@
 //! carrying an error description (CRD 1421).
 
 use serde_json::{json, Value};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -76,12 +76,12 @@ impl RuleCache {
 
 /// Load the active, non-deleted rules of one scope (None = global), with
 /// conditions and actions, ordered by priority ascending.
-async fn load_scope(db: &SqlitePool, scope: Option<i64>) -> Result<Vec<CachedRule>, sqlx::Error> {
+async fn load_scope(db: &PgPool, scope: Option<i64>) -> Result<Vec<CachedRule>, sqlx::Error> {
     let rows: Vec<(i64, Option<i64>, String, String, i64, i64)> = sqlx::query_as(
         "SELECT id, team_id, name, trigger_type, priority, allow_fallback
          FROM auto_reply_rules
          WHERE deleted_at IS NULL AND is_active = 1
-           AND ((? IS NULL AND team_id IS NULL) OR team_id = ?)
+           AND (($1 IS NULL AND team_id IS NULL) OR team_id = $2)
          ORDER BY priority ASC, id ASC",
     )
     .bind(scope)
@@ -93,14 +93,14 @@ async fn load_scope(db: &SqlitePool, scope: Option<i64>) -> Result<Vec<CachedRul
     for (id, team_id, name, trigger_type, priority, allow_fallback) in rows {
         let conditions: Vec<(String, Option<String>, i64, String)> = sqlx::query_as(
             "SELECT condition_type, value, case_sensitive, match_mode
-             FROM auto_reply_conditions WHERE rule_id = ? ORDER BY id ASC",
+             FROM auto_reply_conditions WHERE rule_id = $1 ORDER BY id ASC",
         )
         .bind(id)
         .fetch_all(db)
         .await?;
         let actions: Vec<(String, Option<String>)> = sqlx::query_as(
             "SELECT action_type, content FROM auto_reply_actions
-             WHERE rule_id = ? ORDER BY sort_order ASC, id ASC",
+             WHERE rule_id = $1 ORDER BY sort_order ASC, id ASC",
         )
         .bind(id)
         .fetch_all(db)
@@ -165,11 +165,11 @@ async fn applicable_rules(
 /// schedule's timezone falls inside an active entry for the current weekday;
 /// close-at-or-before-open windows cross midnight; NO schedule entries at all
 /// means always within hours (suppressing off-hours rules).
-pub async fn within_business_hours(db: &SqlitePool, team_id: Option<i64>) -> bool {
+pub async fn within_business_hours(db: &PgPool, team_id: Option<i64>) -> bool {
     let Some(team) = team_id else { return true };
     let rows: Vec<(i64, String, String, String)> = match sqlx::query_as(
         "SELECT day_of_week, start_time, end_time, COALESCE(timezone, 'Asia/Taipei')
-         FROM auto_reply_business_hours WHERE team_id = ? AND is_active = 1",
+         FROM auto_reply_business_hours WHERE team_id = $1 AND is_active = 1",
     )
     .bind(team)
     .fetch_all(db)
@@ -342,7 +342,7 @@ async fn dispatch(state: &AppState, rule: &CachedRule, ctx: &DispatchContext<'_>
         "INSERT INTO messages
             (id, conversation_id, sender_type, content, content_type, is_sent, sent_at,
              delivery_status, sender_name, metadata, created_at)
-         VALUES (?, ?, 'system', ?, 'text', 1, ?, 'delivered', 'Auto-Reply', ?, ?)",
+         VALUES ($1, $2, 'system', $3, 'text', 1, $4, 'delivered', 'Auto-Reply', $5, $6)",
     )
     .bind(&message_id)
     .bind(ctx.conversation_id)
@@ -354,7 +354,7 @@ async fn dispatch(state: &AppState, rule: &CachedRule, ctx: &DispatchContext<'_>
     .await;
     if stored.is_ok() {
         let _ = sqlx::query(
-            "UPDATE conversations SET last_message_at = ?, updated_at = ? WHERE id = ?",
+            "UPDATE conversations SET last_message_at = $1, updated_at = $2 WHERE id = $3",
         )
         .bind(&now)
         .bind(&now)
@@ -368,7 +368,7 @@ async fn dispatch(state: &AppState, rule: &CachedRule, ctx: &DispatchContext<'_>
         "INSERT INTO auto_reply_logs
             (rule_id, conversation_id, customer_id, trigger_content, response_content,
              matched_condition, platform, delivery_method, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(rule.id)
     .bind(ctx.conversation_id)
@@ -507,8 +507,8 @@ pub async fn evaluate_message(state: &AppState, input: MessageEvalInput<'_>) -> 
         let (status, err) = if result.sent { ("success", None) } else { ("failed", result.error.clone()) };
         let _ = sqlx::query(
             "UPDATE auto_reply_deliveries
-             SET status = ?, rule_id = ?, delivery_method = ?, last_error = ?, sent_at = ?
-             WHERE platform = ? AND platform_message_id = ?",
+             SET status = $1, rule_id = $2, delivery_method = $3, last_error = $4, sent_at = $5
+             WHERE platform = $6 AND platform_message_id = $7",
         )
         .bind(status)
         .bind(rule.id)
@@ -533,7 +533,7 @@ enum Reservation {
 /// Ledger state machine (CRD 1445): none -> pending (reserved) -> success
 /// (terminal) | failed (retryable, attempt counter incremented).
 async fn reserve_attempt(
-    db: &SqlitePool,
+    db: &PgPool,
     platform: &str,
     mid: &str,
     rule_id: i64,
@@ -541,7 +541,7 @@ async fn reserve_attempt(
     customer_id: i64,
 ) -> Reservation {
     let existing: Result<Option<String>, _> = sqlx::query_scalar(
-        "SELECT status FROM auto_reply_deliveries WHERE platform = ? AND platform_message_id = ?",
+        "SELECT status FROM auto_reply_deliveries WHERE platform = $1 AND platform_message_id = $2",
     )
     .bind(platform)
     .bind(mid)
@@ -554,8 +554,8 @@ async fn reserve_attempt(
         Ok(Some(_failed)) => {
             let updated = sqlx::query(
                 "UPDATE auto_reply_deliveries
-                 SET status = 'pending', attempt_count = attempt_count + 1, last_attempt_at = ?
-                 WHERE platform = ? AND platform_message_id = ? AND status = 'failed'",
+                 SET status = 'pending', attempt_count = attempt_count + 1, last_attempt_at = $1
+                 WHERE platform = $2 AND platform_message_id = $3 AND status = 'failed'",
             )
             .bind(now_iso())
             .bind(platform)
@@ -570,10 +570,10 @@ async fn reserve_attempt(
         }
         Ok(None) => {
             let inserted = sqlx::query(
-                "INSERT OR IGNORE INTO auto_reply_deliveries
+                "INSERT INTO auto_reply_deliveries
                     (platform, platform_message_id, rule_id, conversation_id, customer_id,
                      status, attempt_count, last_attempt_at, created_at)
-                 VALUES (?, ?, ?, ?, ?, 'pending', 1, ?, ?)",
+                 VALUES ($1, $2, $3, $4, $5, 'pending', 1, $6, $7) ON CONFLICT DO NOTHING",
             )
             .bind(platform)
             .bind(mid)
@@ -645,7 +645,7 @@ pub async fn retry_redelivered(
     let original: Option<OriginalMessageRow> = sqlx::query_as(
         "SELECT m.content, m.content_type, m.conversation_id, c.team_id, m.customer_id
          FROM messages m JOIN conversations c ON c.id = m.conversation_id
-         WHERE m.platform_message_id = ?",
+         WHERE m.platform_message_id = $1",
     )
     .bind(platform_message_id)
     .fetch_optional(&state.db)

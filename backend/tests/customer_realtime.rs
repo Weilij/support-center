@@ -37,7 +37,7 @@ async fn seed_auth_session(app: &TestApp, id: &str, agent_id: &str, data: Option
     let expires = (chrono::Utc::now() + chrono::Duration::seconds(ttl_secs))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     sqlx::query(
-        "INSERT INTO auth_sessions (id, agent_id, data, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO auth_sessions (id, agent_id, data, expires_at, created_at) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(id)
     .bind(agent_id)
@@ -305,7 +305,7 @@ async fn list_messages_pagination_cursor_and_attachments() {
     for (id, key) in [("att-with", Some("obj-key.png")), ("att-without", None::<&str>)] {
         sqlx::query(
             "INSERT INTO attachments (id, message_id, file_name, content_type, file_size, file_url, storage_key, created_at)
-             VALUES (?, ?, 'f.png', 'image/png', 3, '/uploads/obj-key.png', ?, ?)",
+             VALUES ($1, $2, 'f.png', 'image/png', 3, '/uploads/obj-key.png', $3, $4)",
         )
         .bind(id)
         .bind(&m2)
@@ -415,7 +415,7 @@ async fn create_message_persists_links_broadcasts_and_round_trips_correlation() 
     // Unlinked attachment to be claimed by the new message (CRD 3912).
     sqlx::query(
         "INSERT INTO attachments (id, file_name, content_type, file_size, file_url, storage_key, created_at)
-         VALUES ('att-new', 'doc.pdf', 'application/pdf', 9, '/uploads/doc.pdf', 'doc.pdf', ?)",
+         VALUES ('att-new', 'doc.pdf', 'application/pdf', 9, '/uploads/doc.pdf', 'doc.pdf', $1)",
     )
     .bind(chrono::Utc::now().to_rfc3339())
     .execute(&app.state.db)
@@ -451,7 +451,7 @@ async fn create_message_persists_links_broadcasts_and_round_trips_correlation() 
 
     // Persisted already sent/delivered and attributed to the agent (CRD 3911).
     let row: (String, String, i64, Option<String>) = sqlx::query_as(
-        "SELECT sender_type, delivery_status, is_sent, agent_id FROM messages WHERE id = ?",
+        "SELECT sender_type, delivery_status, is_sent, agent_id FROM messages WHERE id = $1",
     )
     .bind(&message_id)
     .fetch_one(&app.state.db)
@@ -470,7 +470,7 @@ async fn create_message_persists_links_broadcasts_and_round_trips_correlation() 
 
     // Conversation recency advanced (CRD 3913).
     let last: Option<String> =
-        sqlx::query_scalar("SELECT last_message_at FROM conversations WHERE id = ?")
+        sqlx::query_scalar("SELECT last_message_at FROM conversations WHERE id = $1")
             .bind(&s.conv)
             .fetch_one(&app.state.db)
             .await
@@ -603,7 +603,7 @@ async fn upload_stores_asset_without_creating_a_message() {
     assert!(url.ends_with(".png"));
     let key = url.strip_prefix("/uploads/").unwrap();
     assert!(std::path::Path::new(&app.state.config.upload_dir).join(key).exists());
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE conversation_id = ?")
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE conversation_id = $1")
         .bind(&s.conv)
         .fetch_one(&app.state.db)
         .await

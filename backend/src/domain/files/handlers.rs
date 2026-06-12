@@ -54,7 +54,7 @@ fn signed_public_url(state: &AppState, key: &str, ttl: i64) -> String {
 // ================================================================ public ops
 
 pub async fn health(State(state): State<Arc<AppState>>) -> Response {
-    let db_ok = sqlx::query_scalar::<_, i64>("SELECT 1").fetch_one(&state.db).await.is_ok();
+    let db_ok = sqlx::query_scalar::<_, i64>("SELECT 1::bigint").fetch_one(&state.db).await.is_ok();
     let store_ok = tokio::fs::create_dir_all(&state.config.upload_dir).await.is_ok();
     envelope::ok(json!({
         "status": if db_ok && store_ok { "healthy" } else { "degraded" },
@@ -123,7 +123,7 @@ pub async fn public_proxy(
 
 async fn content_type_for_key(state: &AppState, key: &str) -> String {
     sqlx::query_scalar::<_, Option<String>>(
-        "SELECT content_type FROM attachments WHERE storage_key = ? LIMIT 1",
+        "SELECT content_type FROM attachments WHERE storage_key = $1 LIMIT 1",
     )
     .bind(key)
     .fetch_optional(&state.db)
@@ -543,9 +543,9 @@ pub async fn list(
     let scope_user = (!user.is_admin()).then_some(user.id.clone());
     let total: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM attachments
-         WHERE (? IS NULL OR uploaded_by = ?)
-           AND (? IS NULL OR platform = ?)
-           AND (? IS NULL OR conversation_id = ?)",
+         WHERE ($1 IS NULL OR uploaded_by = $2)
+           AND ($3 IS NULL OR platform = $4)
+           AND ($5 IS NULL OR conversation_id = $6)",
     )
     .bind(&scope_user)
     .bind(&scope_user)
@@ -560,10 +560,10 @@ pub async fn list(
                 file_size, file_url, public_url, storage_key, upload_status, uploaded_by,
                 platform, file_type, created_at, updated_at
          FROM attachments
-         WHERE (? IS NULL OR uploaded_by = ?)
-           AND (? IS NULL OR platform = ?)
-           AND (? IS NULL OR conversation_id = ?)
-         ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+         WHERE ($1 IS NULL OR uploaded_by = $2)
+           AND ($3 IS NULL OR platform = $4)
+           AND ($5 IS NULL OR conversation_id = $6)
+         ORDER BY created_at DESC, id DESC LIMIT $7 OFFSET $8",
     )
     .bind(&scope_user)
     .bind(&scope_user)
@@ -586,7 +586,7 @@ pub async fn stats_summary(
 ) -> Result {
     let scope_user = (!user.is_admin()).then_some(user.id.clone());
     let (count, bytes): (i64, Option<i64>) = sqlx::query_as(
-        "SELECT COUNT(*), SUM(file_size) FROM attachments WHERE (? IS NULL OR uploaded_by = ?)",
+        "SELECT COUNT(*), SUM(file_size)::bigint FROM attachments WHERE ($1 IS NULL OR uploaded_by = $2)",
     )
     .bind(&scope_user)
     .bind(&scope_user)
@@ -594,8 +594,8 @@ pub async fn stats_summary(
     .await
     .unwrap_or((0, None));
     let by_type: Vec<(Option<String>, i64, Option<i64>)> = sqlx::query_as(
-        "SELECT file_type, COUNT(*), SUM(file_size) FROM attachments
-         WHERE (? IS NULL OR uploaded_by = ?) GROUP BY file_type",
+        "SELECT file_type, COUNT(*), SUM(file_size)::bigint FROM attachments
+         WHERE ($1 IS NULL OR uploaded_by = $2) GROUP BY file_type",
     )
     .bind(&scope_user)
     .bind(&scope_user)
@@ -604,7 +604,7 @@ pub async fn stats_summary(
     .unwrap_or_default();
     let by_platform: Vec<(Option<String>, i64)> = sqlx::query_as(
         "SELECT platform, COUNT(*) FROM attachments
-         WHERE (? IS NULL OR uploaded_by = ?) GROUP BY platform",
+         WHERE ($1 IS NULL OR uploaded_by = $2) GROUP BY platform",
     )
     .bind(&scope_user)
     .bind(&scope_user)
@@ -613,7 +613,7 @@ pub async fn stats_summary(
     .unwrap_or_default();
     let window_start = (chrono::Utc::now() - chrono::Duration::days(30)).to_rfc3339();
     let recent: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM attachments WHERE (? IS NULL OR uploaded_by = ?) AND created_at >= ?",
+        "SELECT COUNT(*) FROM attachments WHERE ($1 IS NULL OR uploaded_by = $2) AND created_at >= $3",
     )
     .bind(&scope_user)
     .bind(&scope_user)
@@ -690,7 +690,7 @@ pub async fn delete_file(
     if let Some(key) = row.storage_key.as_deref().filter(|k| !k.is_empty()) {
         store::delete_object(&state.config.upload_dir, key).await;
     }
-    sqlx::query("DELETE FROM attachments WHERE id = ?")
+    sqlx::query("DELETE FROM attachments WHERE id = $1")
         .bind(&file_id)
         .execute(&state.db)
         .await?;
@@ -739,7 +739,7 @@ pub async fn message_files(
         "SELECT id, message_id, conversation_id, file_name, original_name, content_type,
                 file_size, file_url, public_url, storage_key, upload_status, uploaded_by,
                 platform, file_type, created_at, updated_at
-         FROM attachments WHERE message_id = ? ORDER BY created_at DESC LIMIT 50",
+         FROM attachments WHERE message_id = $1 ORDER BY created_at DESC LIMIT 50",
     )
     .bind(&message_id)
     .fetch_all(&state.db)
@@ -764,10 +764,10 @@ pub async fn search(
     let pattern = format!("%{}%", query.to_lowercase());
     let total: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM attachments
-         WHERE (? IS NULL OR uploaded_by = ?)
-           AND (LOWER(file_name) LIKE ? OR LOWER(original_name) LIKE ?)
-           AND (? IS NULL OR platform = ?)
-           AND (? IS NULL OR file_type = ?)",
+         WHERE ($1 IS NULL OR uploaded_by = $2)
+           AND (LOWER(file_name) LIKE $3 OR LOWER(original_name) LIKE $4)
+           AND ($5 IS NULL OR platform = $6)
+           AND ($7 IS NULL OR file_type = $8)",
     )
     .bind(&scope_user)
     .bind(&scope_user)
@@ -784,11 +784,11 @@ pub async fn search(
                 file_size, file_url, public_url, storage_key, upload_status, uploaded_by,
                 platform, file_type, created_at, updated_at
          FROM attachments
-         WHERE (? IS NULL OR uploaded_by = ?)
-           AND (LOWER(file_name) LIKE ? OR LOWER(original_name) LIKE ?)
-           AND (? IS NULL OR platform = ?)
-           AND (? IS NULL OR file_type = ?)
-         ORDER BY created_at DESC LIMIT ? OFFSET ?",
+         WHERE ($1 IS NULL OR uploaded_by = $2)
+           AND (LOWER(file_name) LIKE $3 OR LOWER(original_name) LIKE $4)
+           AND ($5 IS NULL OR platform = $6)
+           AND ($7 IS NULL OR file_type = $8)
+         ORDER BY created_at DESC LIMIT $9 OFFSET $10",
     )
     .bind(&scope_user)
     .bind(&scope_user)
@@ -842,7 +842,7 @@ pub async fn batch(
                 if let Some(key) = row.storage_key.as_deref().filter(|k| !k.is_empty()) {
                     store::delete_object(&state.config.upload_dir, key).await;
                 }
-                let _ = sqlx::query("DELETE FROM attachments WHERE id = ?")
+                let _ = sqlx::query("DELETE FROM attachments WHERE id = $1")
                     .bind(id)
                     .execute(&state.db)
                     .await;
@@ -995,7 +995,7 @@ pub async fn confirm_upload(
     let key = row.storage_key.clone().unwrap_or_default();
     let object = store::get_object(&state.config.upload_dir, &key).await;
     let Some(bytes) = object else {
-        sqlx::query("UPDATE attachments SET upload_status = 'failed', updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE attachments SET upload_status = 'failed', updated_at = $1 WHERE id = $2")
             .bind(now_iso())
             .bind(&file_id)
             .execute(&state.db)
@@ -1006,7 +1006,7 @@ pub async fn confirm_upload(
         tracing::warn!(file = %file_id, expected = size, actual = bytes.len(), "confirm size mismatch");
     }
     sqlx::query(
-        "UPDATE attachments SET upload_status = 'completed', file_size = ?, updated_at = ? WHERE id = ?",
+        "UPDATE attachments SET upload_status = 'completed', file_size = $1, updated_at = $2 WHERE id = $3",
     )
     .bind(bytes.len() as i64)
     .bind(now_iso())
