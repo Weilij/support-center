@@ -683,7 +683,7 @@ pub async fn preview(
         return Err(AppError::BadRequest("timeRange is required".into()));
     }
     // Synthetic sample only — no live data, nothing persisted (CRD 4619).
-    let seed = (chrono::Utc::now().timestamp_millis() % 50) as i64;
+    let seed = (chrono::Utc::now().timestamp_millis() % 50);
     let sample = match kind {
         "conversation_summary" => json!({
             "period": {"range": body.time_range},
