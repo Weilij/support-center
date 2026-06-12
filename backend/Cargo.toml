@@ -2,6 +2,7 @@
 name = "mcss-backend"
 version = "0.1.0"
 edition = "2021"
+default-run = "mcss-backend"
 
 [lib]
 name = "mcss_backend"
