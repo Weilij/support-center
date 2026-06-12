@@ -21,6 +21,7 @@ import Notifications from './pages/Notifications'
 import Tags from './pages/Tags'
 import Shell from './Shell'
 import Teams from './pages/Teams'
+import Settings from './pages/Settings'
 
 interface RouteMeta {
   requiresAuth?: boolean // default true (CRD 6476)
@@ -124,7 +125,11 @@ export const router = createBrowserRouter([
     path: '/teams',
     element: page({ title: '團隊管理', adminOnly: true }, <Teams />),
   },
-  ...['/channels', '/activity', '/settings', '/auto-reply'].map((path) => ({
+  {
+    path: '/settings',
+    element: page({ title: '系統設定', adminOnly: true }, <Settings />),
+  },
+  ...['/channels', '/activity', '/auto-reply'].map((path) => ({
     path,
     element: page({ title: t('dashboard.title'), adminOnly: true }, <Dashboard />),
   })),
