@@ -18,6 +18,12 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   - [x] §4.4 files & attachments (31f1d39): uploads, signed proxies, direct-upload flow
   - [x] §6.5 background queue (b5d14b8): jobs, retries, DLQ, monitoring
 - [ ] Phase 6: ops/analytics/reports/notifications/settings  ← IN PROGRESS
+  - [x] §6.4 notifications + reminders + alerting (90454aa)
+  - [ ] §6.3 monitoring & health (CRD 4697-4881)
+  - [ ] §6.1 analytics (CRD 4201-4505)
+  - [ ] §6.2 reports (CRD 4505-4697)
+  - [ ] §6.6 system settings & admin (CRD 5247-5488)
+  - [ ] §6.7 rate-limit & mutual-exclusion guarantees (CRD 5488-5578)
 - [ ] Phase 7: frontend SPA
 - [ ] Phase 8: web installer
 
