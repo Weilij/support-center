@@ -95,3 +95,6 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
 - 2026-06-12 (cont. 12): teams screen (6394a26), settings screen committed.
   Remaining §8.2 screens: profile, reports/export, channels, activity,
   auto-reply. Then §8.5 traceability + Phase 8 installer (CRD 6724-6979).
+- 2026-06-12 (cont. 13): profile (9f37b60) + reports screens committed.
+  Remaining §8.2: channels admin, activity log, auto-reply config screens.
+  Then §8.5 traceability + Phase 8 installer.
