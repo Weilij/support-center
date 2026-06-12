@@ -1,4 +1,5 @@
 pub mod activity;
+pub mod analytics;
 pub mod agents;
 pub mod auth;
 pub mod auto_reply;
