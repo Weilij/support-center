@@ -20,6 +20,7 @@ import ConversationDetail from './pages/ConversationDetail'
 import Notifications from './pages/Notifications'
 import Tags from './pages/Tags'
 import Shell from './Shell'
+import Teams from './pages/Teams'
 
 interface RouteMeta {
   requiresAuth?: boolean // default true (CRD 6476)
@@ -119,7 +120,11 @@ export const router = createBrowserRouter([
     element: page({ title: t('dashboard.title') }, <Dashboard />),
   })),
   // Admin-flagged destinations (admin gating happens in-screen + backend).
-  ...['/teams', '/channels', '/activity', '/settings', '/auto-reply'].map((path) => ({
+  {
+    path: '/teams',
+    element: page({ title: '團隊管理', adminOnly: true }, <Teams />),
+  },
+  ...['/channels', '/activity', '/settings', '/auto-reply'].map((path) => ({
     path,
     element: page({ title: t('dashboard.title'), adminOnly: true }, <Dashboard />),
   })),
