@@ -118,3 +118,7 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   FINAL FULL PASS: backend+installer 545 tests green, clippy 0 warnings,
   frontend 7 tests + build green. Project complete; only external-credential
   stubs (TODO channels/cloud/scale-out) remain by design.
+- 2026-06-12 (deploy): docker compose stack RUNTIME-VERIFIED (05829de) —
+  fixed volume ownership, healthcheck without wget, nginx upstream ordering,
+  lockfile platform flags. Backend healthy via nginx proxy, SPA serves.
+  Project fully delivered: code + 552 tests + smoke + containers + docs.
