@@ -1,1 +1,1 @@
-{"root":["./src/i18n.ts","./src/main.tsx","./src/router.tsx","./src/api/client.ts","./src/auth/session.ts","./src/pages/dashboard.tsx","./src/pages/login.tsx","./src/pages/notfound.tsx"],"version":"5.9.3"}
+{"root":["./src/i18n.ts","./src/main.tsx","./src/router.tsx","./src/api/client.ts","./src/auth/session.ts","./src/pages/conversations.tsx","./src/pages/dashboard.tsx","./src/pages/login.tsx","./src/pages/notfound.tsx","./src/stores/conversations.ts","./src/stores/store.ts"],"version":"5.9.3"}

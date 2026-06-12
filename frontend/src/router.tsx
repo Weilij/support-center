@@ -15,6 +15,7 @@ import { t } from './i18n'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import NotFound from './pages/NotFound'
+import Conversations from './pages/Conversations'
 
 interface RouteMeta {
   requiresAuth?: boolean // default true (CRD 6476)
@@ -90,7 +91,11 @@ export const router = createBrowserRouter([
     element: page({ title: t('dashboard.title') }, <Dashboard />),
   },
   // Authenticated-only destinations (placeholder screens render the shared shell).
-  ...['/profile', '/conversations', '/conversations/:id', '/tags', '/notifications',
+  {
+    path: '/conversations',
+    element: page({ title: '對話' }, <Conversations />),
+  },
+  ...['/profile', '/conversations/:id', '/tags', '/notifications',
       '/export', '/reports'].map((path) => ({
     path,
     element: page({ title: t('dashboard.title') }, <Dashboard />),
