@@ -43,8 +43,15 @@ Key environment variables (see `backend/src/config.rs`): `JWT_SECRET`,
 `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `FACEBOOK_APP_SECRET`,
 `FACEBOOK_VERIFY_TOKEN`, `LIFF_ID`, `FRONTEND_URL`, `BACKEND_URL`.
 
-Bootstrap an admin: insert an `agents` row with an argon2 hash, or run the
-installer wizard. All subsequent administration happens through the API/UI.
+Bootstrap demo data (admin account, team, sample conversations):
+
+```bash
+cd backend && cargo run --example seed
+# sign in with admin@example.com / admin123
+```
+
+The seeder is idempotent. All subsequent administration happens through the
+API/UI (or the installer wizard).
 
 Frontend unit tests: `cd frontend && npm test` (vitest).
 
