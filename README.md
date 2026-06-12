@@ -55,6 +55,16 @@ API/UI (or the installer wizard).
 
 Frontend unit tests: `cd frontend && npm test` (vitest).
 
+### Docker
+
+```bash
+echo 'JWT_SECRET=change-me' > .env
+docker compose up --build   # frontend on :8080, backend internal
+```
+
+> Note: compose files are provided but were not runtime-verified in this
+> environment (Docker daemon unavailable at build time).
+
 ## Testing
 
 ```bash
