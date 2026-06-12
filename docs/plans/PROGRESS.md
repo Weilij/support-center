@@ -9,15 +9,15 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
 - [x] Phase 2: org — tags, customers, teams, agents, activity log (192 tests green)
 - [x] Phase 3: conversations, sessions, messaging, customer-facing (316 tests green)
 - [x] Phase 4: realtime — WS gateway, rooms/broadcast, user sessions, customer channels, latest-message cache, collaboration (403 tests green)
-- [ ] Phase 5: channels/webhooks/auto-reply/delayed/files  ← IN PROGRESS
+- [x] Phase 5: channels/webhooks/auto-reply/delayed/files (499 tests green)
   - [x] §4.1 channel integrations + crypto (d82c8b6)
   - [x] §4.2 webhook ingestion LINE/FB (d82c8b6)
   - [x] §2.5 auto-reply engine + management (375943f)
   - [x] §2.4 delayed messages HTTP surface (2659fc7): both route families on the shared scheduler
   - [x] §4.3 LIFF mini-page/admin/join (8a7a2d5)
   - [x] §4.4 files & attachments (31f1d39): uploads, signed proxies, direct-upload flow
-  - [ ] §6.5 background queue (CRD 5106-5247)
-- [ ] Phase 6: ops/analytics/reports/notifications/settings
+  - [x] §6.5 background queue (b5d14b8): jobs, retries, DLQ, monitoring
+- [ ] Phase 6: ops/analytics/reports/notifications/settings  ← IN PROGRESS
 - [ ] Phase 7: frontend SPA
 - [ ] Phase 8: web installer
 
@@ -52,3 +52,7 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   Pattern reminders: domain/<area>/{mod,handlers,store}.rs; envelope::*;
   AppError; require_auth/require_admin; tests per op in backend/tests/<area>.rs;
   cargo test + clippy clean before commit; user prefers inline work (no subagents).
+- 2026-06-12 (cont. 4): §4.4 files (31f1d39), §6.5 queue (b5d14b8). Phase 5 COMPLETE.
+  Phase 6 next: §6.4 notifications (CRD 4881-5106), §6.3 monitoring (4697-4881),
+  §6.1 analytics (4201-4505), §6.2 reports (4505-4697), §6.6 settings (5247-5488),
+  §6.7 rate-limit guarantees (5488-5578).
