@@ -7,7 +7,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use common::{spawn_app, TestApp};
 use hmac::{Hmac, Mac};
-use serde_json::{json, Value};
+use serde_json::json;
 use sha2::Sha256;
 
 fn line_sig(body: &str) -> String {

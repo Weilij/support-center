@@ -16,6 +16,13 @@ use crate::state::AppState;
 
 type Result<T = Response> = std::result::Result<T, AppError>;
 
+/// id, team_id, name, trigger, priority, active, fallback, created_by, created, updated, deleted
+type RuleRow = (i64, Option<i64>, String, String, i64, i64, i64, Option<String>, String, Option<String>, Option<String>);
+/// id, team_id, day_of_week, start, end, timezone, active
+type ScheduleRow = (i64, i64, i64, Option<String>, Option<String>, Option<String>, i64);
+/// id, rule_id, rule_name, conversation, customer, trigger, response, matched, platform, method, created
+type LogRow = (i64, Option<i64>, Option<String>, Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, String);
+
 const TRIGGER_TYPES: &[&str] = &["welcome", "greeting", "keyword", "off_hours", "fallback"];
 const CONDITION_TYPES: &[&str] = &["exact", "contains", "regex", "message_type"];
 const ACTION_TYPES: &[&str] = &["text", "image", "flex"];
@@ -49,7 +56,7 @@ fn page_params(q: &ScopeQuery) -> (i64, i64) {
 }
 
 async fn rule_view(db: &SqlitePool, rule_id: i64) -> Result<Value> {
-    let row: Option<(i64, Option<i64>, String, String, i64, i64, i64, Option<String>, String, Option<String>, Option<String>)> =
+    let row: Option<RuleRow> =
         sqlx::query_as(
             "SELECT id, team_id, name, trigger_type, priority, is_active, allow_fallback,
                     created_by, created_at, updated_at, deleted_at
@@ -390,7 +397,7 @@ pub async fn get_schedules(
 ) -> Result {
     let team = resolve_team(&q, &user)
         .ok_or_else(|| AppError::BadRequest("teamId is required".into()))?;
-    let rows: Vec<(i64, i64, i64, Option<String>, Option<String>, Option<String>, i64)> =
+    let rows: Vec<ScheduleRow> =
         sqlx::query_as(
             "SELECT id, team_id, day_of_week, start_time, end_time, timezone, is_active
              FROM auto_reply_business_hours WHERE team_id = ? ORDER BY day_of_week",
@@ -541,7 +548,7 @@ pub async fn list_logs(
     .fetch_one(&state.db)
     .await?;
 
-    let rows: Vec<(i64, Option<i64>, Option<String>, Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, String)> =
+    let rows: Vec<LogRow> =
         sqlx::query_as(&format!(
             "SELECT l.id, l.rule_id, r.name, l.conversation_id, l.customer_id, l.trigger_content,
                     l.response_content, l.matched_condition, l.platform, l.delivery_method, l.created_at
