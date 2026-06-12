@@ -19,7 +19,7 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   - [x] §6.5 background queue (b5d14b8): jobs, retries, DLQ, monitoring
 - [ ] Phase 6: ops/analytics/reports/notifications/settings  ← IN PROGRESS
   - [x] §6.4 notifications + reminders + alerting (90454aa)
-  - [ ] §6.3 monitoring & health (CRD 4697-4881)
+  - [x] §6.3 monitoring & health: sweeps, breaker, dashboards
   - [ ] §6.1 analytics (CRD 4201-4505)
   - [ ] §6.2 reports (CRD 4505-4697)
   - [ ] §6.6 system settings & admin (CRD 5247-5488)
