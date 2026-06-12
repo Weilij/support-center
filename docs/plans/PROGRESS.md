@@ -21,7 +21,7 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   - [x] §6.4 notifications + reminders + alerting (90454aa)
   - [x] §6.3 monitoring & health: sweeps, breaker, dashboards
   - [x] §6.1 analytics: insights/comparison/dashboards/security
-  - [ ] §6.2 reports (CRD 4505-4697)
+  - [x] §6.2 reports: pipeline/downloads/batch/scheduling
   - [ ] §6.6 system settings & admin (CRD 5247-5488)
   - [x] §6.7 rate-limit contract + keyed lease locks
 - [ ] Phase 7: frontend SPA
