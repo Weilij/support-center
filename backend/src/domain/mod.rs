@@ -10,6 +10,7 @@ pub mod delayed_messages;
 pub mod files;
 pub mod liff;
 pub mod messaging;
+pub mod notifications;
 pub mod queue;
 pub mod sessions;
 pub mod tags;

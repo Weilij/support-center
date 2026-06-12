@@ -34,6 +34,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 mcss_backend::domain::messaging::service::dispatch_due(&state).await;
                 ticks += 1;
+                // Scheduled reminder processing (CRD 5048): once a minute.
+                if ticks.is_multiple_of(60) {
+                    let _ =
+                        mcss_backend::domain::notifications::reminders::process_due(&state).await;
+                }
                 if ticks.is_multiple_of(3600) {
                     let _ =
                         mcss_backend::domain::messaging::service::archive_stale_failed(&state.db)
