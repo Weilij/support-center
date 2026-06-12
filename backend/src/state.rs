@@ -155,6 +155,7 @@ pub struct AppState {
     pub auto_reply_cache: crate::domain::auto_reply::engine::RuleCache,
     pub files_limiter: crate::domain::files::limiter::UploadLimiter,
     pub queue: crate::domain::queue::JobQueue,
+    pub monitoring: crate::domain::monitoring::center::Center,
     pub recallable_messages: RecallableMarkers,
     /// Central realtime hub (CRD §5.1): connection registry, rooms, channels
     /// and the broadcast API used by the domain modules.
@@ -173,6 +174,7 @@ impl AppState {
             auto_reply_cache: crate::domain::auto_reply::engine::RuleCache::default(),
             files_limiter: crate::domain::files::limiter::UploadLimiter::default(),
             queue: crate::domain::queue::JobQueue::default(),
+            monitoring: crate::domain::monitoring::center::Center::default(),
             recallable_messages: RecallableMarkers::default(),
             realtime: Arc::new(crate::realtime::RealtimeHub::new()),
         })
