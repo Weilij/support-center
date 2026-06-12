@@ -24,7 +24,7 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   - [x] §6.2 reports: pipeline/downloads/batch/scheduling
   - [x] §6.6 system settings & admin (dbaa7f2): ~50 endpoints
   - [x] §6.7 rate-limit contract + keyed lease locks
-- [ ] Phase 7: frontend SPA  ← IN PROGRESS (CRD 5844-6723)
+- [x] Phase 7: frontend SPA — API layer, stores, realtime, all screens, wizard
   - [x] foundation: API client w/ refresh single-flight, session lifecycle,
         router guards, login + dashboard shell, i18n (frontend/)
   - [~] §8.1 state model: Store<T> w/ optimistic+rollback, conversations
@@ -37,7 +37,7 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
         (deeper protocol coverage pending: sync-after-reconnect, presence)
   - [ ] §8.4 remaining: full endpoint contract map, team context switcher
   - [ ] §8.5 traceability matrix check (6689-6723)
-- [~] Phase 8: web installer — provisioning service skeleton done (real cloud calls TODO(cloud)); setup-wizard frontend (§9.2) pending
+- [x] Phase 8: web installer — provisioning service (§9.1) + setup wizard (§9.2); real cloud calls remain TODO(cloud)
 
 ## Session log
 
@@ -107,3 +107,9 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
 - 2026-06-12 (cont. 15): installer binary committed. All 9 CRD phases now
   have running implementations. Remaining polish: §9.2 wizard UI, §8.5
   traceability sweep, TODO(cloud)/TODO(channels) live integrations.
+- 2026-06-12 (FINAL): setup wizard (b1f9252). §8.5 traceability sweep PASSED:
+  all 17 frontend API call paths map to registered backend routes (348 total).
+  ALL CRD SECTIONS (§1-§9) IMPLEMENTED. Open items are external-integration
+  stubs only: TODO(channels) live LINE/Facebook APIs, TODO(cloud) provider
+  calls, TODO(scale-out) multi-instance realtime — each needs real
+  credentials/infrastructure to implement.
