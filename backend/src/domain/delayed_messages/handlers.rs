@@ -51,18 +51,20 @@ async fn check_send_permission(
     Ok(())
 }
 
-/// Countdown broadcast (CRD 1327), best-effort: conversation + acting agent.
-fn broadcast_countdown(
-    state: &AppState,
-    conversation_id: &str,
-    message_id: &str,
-    user: &AuthUser,
-    content: &str,
-    message_type: &str,
-    platform: &str,
+/// Countdown broadcast parameters (CRD 1327).
+struct Countdown<'a> {
+    conversation_id: &'a str,
+    message_id: &'a str,
+    content: &'a str,
+    message_type: &'a str,
+    platform: &'a str,
     delay_seconds: i64,
-    scheduled_at: &str,
-) {
+    scheduled_at: &'a str,
+}
+
+/// Countdown broadcast (CRD 1327), best-effort: conversation + acting agent.
+fn broadcast_countdown(state: &AppState, user: &AuthUser, c: Countdown<'_>) {
+    let Countdown { conversation_id, message_id, content, message_type, platform, delay_seconds, scheduled_at } = c;
     let payload = json!({
         "conversationId": conversation_id,
         "messageId": message_id,
@@ -161,10 +163,11 @@ pub async fn v2_send(
         ip.as_deref(), None,
     )
     .await;
-    broadcast_countdown(
-        &state, conversation_id, &message_id, &user, content,
-        body.message_type.as_deref().unwrap_or("text"), platform, delay, &scheduled_iso,
-    );
+    broadcast_countdown(&state, &user, Countdown {
+        conversation_id, message_id: &message_id, content,
+        message_type: body.message_type.as_deref().unwrap_or("text"),
+        platform, delay_seconds: delay, scheduled_at: &scheduled_iso,
+    });
 
     Ok(envelope::ok(json!({
         "messageId": message_id,
@@ -319,7 +322,8 @@ pub async fn v2_failed(
         .conversation_id
         .filter(|c| !c.is_empty())
         .ok_or_else(|| AppError::BadRequest("conversationId is required".into()))?;
-    let rows: Vec<(String, Option<String>, Option<String>, Option<String>, Option<String>)> =
+    type FailedRow = (String, Option<String>, Option<String>, Option<String>, Option<String>);
+    let rows: Vec<FailedRow> =
         sqlx::query_as(
             "SELECT id, content, metadata, updated_at, scheduled_at FROM scheduled_messages
              WHERE conversation_id = ? AND status = 'failed'
@@ -490,10 +494,11 @@ pub async fn legacy_send(
     }
     let message_id = result["delayedMessageId"].as_str().unwrap_or_default().to_string();
     let scheduled = result["scheduledSendTime"].as_str().unwrap_or_default().to_string();
-    broadcast_countdown(
-        &state, conversation_id, &message_id, &user, content,
-        body.message_type.as_deref().unwrap_or("text"), platform, delay, &scheduled,
-    );
+    broadcast_countdown(&state, &user, Countdown {
+        conversation_id, message_id: &message_id, content,
+        message_type: body.message_type.as_deref().unwrap_or("text"),
+        platform, delay_seconds: delay, scheduled_at: &scheduled,
+    });
     Ok(envelope::ok(json!({
         "messageId": message_id,
         "scheduledSendTime": scheduled,
@@ -659,7 +664,8 @@ pub async fn legacy_reschedule(
     if !(MIN_DELAY..=MAX_DELAY).contains(&delay) {
         return Err(AppError::BadRequest("delaySeconds must be between 1 and 120".into()));
     }
-    let row: Option<(String, String, String, Option<String>, String, Option<String>)> =
+    type RescheduleRow = (String, String, String, Option<String>, String, Option<String>);
+    let row: Option<RescheduleRow> =
         sqlx::query_as(
             "SELECT agent_id, status, conversation_id, content, content_type, metadata
              FROM scheduled_messages WHERE id = ?",
@@ -703,9 +709,10 @@ pub async fn legacy_reschedule(
     state
         .recallable_messages
         .mark(&message_id, std::time::Duration::from_secs(delay as u64 + 60));
-    broadcast_countdown(
-        &state, &conversation_id, &message_id, &user,
-        content.as_deref().unwrap_or(""), &mtype, &platform, delay, &new_fire,
-    );
+    broadcast_countdown(&state, &user, Countdown {
+        conversation_id: &conversation_id, message_id: &message_id,
+        content: content.as_deref().unwrap_or(""), message_type: &mtype,
+        platform: &platform, delay_seconds: delay, scheduled_at: &new_fire,
+    });
     Ok(envelope::ok(json!({ "messageId": message_id, "newSendTime": new_fire })))
 }
