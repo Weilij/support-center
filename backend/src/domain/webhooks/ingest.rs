@@ -416,8 +416,24 @@ fn spawn_followups(state: Arc<AppState>, ctx: FollowupContext) {
         // Latest-message cache refresh (CRD 2769).
         crate::realtime::latest::schedule_refresh(state.clone(), ctx.conversation_id.clone());
 
-        // TODO(media): enqueue media retrieval for downloadable media and emit
-        // the follow-up message-updated broadcast once processed (CRD 2856).
+        // Media retrieval is queued for background processing (CRD §6.5,
+        // 5133-5148); location/sticker kinds are non-downloadable.
+        if let Some(media) = &ctx.media {
+            let downloadable = matches!(ctx.kind.as_str(), "image" | "video" | "audio" | "file");
+            let platform_mid = media.get("mediaId").and_then(Value::as_str).unwrap_or_default();
+            if downloadable && !platform_mid.is_empty() {
+                state.queue.enqueue_media(serde_json::json!({
+                    "type": "media_processing",
+                    "messageId": ctx.message_id,
+                    "conversationId": ctx.conversation_id,
+                    "teamId": ctx.team_id,
+                    "platformMessageId": platform_mid,
+                    "mediaType": ctx.kind,
+                    "fileName": media.get("fileName"),
+                    "enqueuedAt": chrono::Utc::now().timestamp_millis(),
+                }));
+            }
+        }
         // TODO(notifications): new-conversation notification trigger (CRD 2860).
 
         ensure_system_agent(&state.db).await;

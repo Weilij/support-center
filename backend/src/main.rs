@@ -43,6 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    mcss_backend::domain::queue::worker::spawn(state.clone());
     let router = app::build_router(state);
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
