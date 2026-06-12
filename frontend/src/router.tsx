@@ -22,6 +22,7 @@ import Tags from './pages/Tags'
 import Shell from './Shell'
 import Teams from './pages/Teams'
 import Settings from './pages/Settings'
+import ProfilePage from './pages/Profile'
 
 interface RouteMeta {
   requiresAuth?: boolean // default true (CRD 6476)
@@ -115,8 +116,11 @@ export const router = createBrowserRouter([
     path: '/tags',
     element: page({ title: '標籤管理' }, <Tags />),
   },
-  ...['/profile',
-      '/export', '/reports'].map((path) => ({
+  {
+    path: '/profile',
+    element: page({ title: '個人資料' }, <ProfilePage />),
+  },
+  ...['/export', '/reports'].map((path) => ({
     path,
     element: page({ title: t('dashboard.title') }, <Dashboard />),
   })),
