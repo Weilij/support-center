@@ -23,6 +23,7 @@ import Shell from './Shell'
 import Teams from './pages/Teams'
 import Settings from './pages/Settings'
 import ProfilePage from './pages/Profile'
+import Reports from './pages/Reports'
 
 interface RouteMeta {
   requiresAuth?: boolean // default true (CRD 6476)
@@ -120,10 +121,14 @@ export const router = createBrowserRouter([
     path: '/profile',
     element: page({ title: '個人資料' }, <ProfilePage />),
   },
-  ...['/export', '/reports'].map((path) => ({
-    path,
-    element: page({ title: t('dashboard.title') }, <Dashboard />),
-  })),
+  {
+    path: '/reports',
+    element: page({ title: '報表' }, <Reports />),
+  },
+  {
+    path: '/export',
+    element: page({ title: '報表' }, <Reports />),
+  },
   // Admin-flagged destinations (admin gating happens in-screen + backend).
   {
     path: '/teams',
