@@ -10,6 +10,13 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
 - [x] Phase 3: conversations, sessions, messaging, customer-facing (316 tests green)
 - [x] Phase 4: realtime — WS gateway, rooms/broadcast, user sessions, customer channels, latest-message cache, collaboration (403 tests green)
 - [ ] Phase 5: channels/webhooks/auto-reply/delayed/files  ← IN PROGRESS
+  - [x] §4.1 channel integrations + crypto (d82c8b6)
+  - [x] §4.2 webhook ingestion LINE/FB (d82c8b6)
+  - [x] §2.5 auto-reply engine + management (375943f)
+  - [ ] §2.4 delayed messages HTTP surface (CRD 1171-1334; service layer already in domain/messaging/service.rs)
+  - [ ] §4.3 LIFF (CRD 2862-2996)
+  - [ ] §4.4 files & attachments (CRD 2996-3221)
+  - [ ] §6.5 background queue (CRD 5106-5247)
 - [ ] Phase 6: ops/analytics/reports/notifications/settings
 - [ ] Phase 7: frontend SPA
 - [ ] Phase 8: web installer
@@ -31,3 +38,5 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   monitoring endpoints at CRD 3847-4080).
 - 2026-06-12: Phase 4 complete: gateway (191ea2c), rooms+user sessions (8e6668e),
   customer channels+module+collaboration (6b0929d). 403 tests, clippy clean.
+- 2026-06-12 (cont.): channels+webhooks committed (d82c8b6), auto-reply (375943f).
+  462+ tests green. Inline implementation (user prefers no subagents).
