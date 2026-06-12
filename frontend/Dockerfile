@@ -2,7 +2,9 @@
 FROM node:22-slim AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --no-fund --no-audit
+# npm install instead of npm ci: lockfiles written by npm 11 on macOS can
+# mark platform-specific esbuild binaries non-optional, breaking ci on linux.
+RUN npm install --no-fund --no-audit
 COPY tsconfig.json vite.config.ts index.html ./
 COPY src ./src
 RUN npm run build
