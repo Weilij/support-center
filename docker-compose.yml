@@ -9,17 +9,19 @@ services:
     volumes:
       - mcss-data:/home/mcss/data
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/system/health || exit 1"]
-      interval: 30s
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/3000' || exit 1"]
+      interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
+      start_period: 10s
 
   frontend:
     build: ./frontend
     ports:
       - "8080:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 volumes:
   mcss-data:

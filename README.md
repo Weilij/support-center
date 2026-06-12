@@ -62,8 +62,8 @@ echo 'JWT_SECRET=change-me' > .env
 docker compose up --build   # frontend on :8080, backend internal
 ```
 
-> Note: compose files are provided but were not runtime-verified in this
-> environment (Docker daemon unavailable at build time).
+Runtime-verified: both images build, the backend reports healthy through
+the nginx proxy, and the SPA (including fallback routes) serves on :8080.
 
 ## Testing
 

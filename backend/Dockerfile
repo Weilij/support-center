@@ -7,7 +7,8 @@ COPY migrations ./migrations
 RUN cargo build --release --bin mcss-backend
 
 FROM debian:bookworm-slim
-RUN useradd --system --create-home mcss
+RUN useradd --system --create-home mcss \
+    && mkdir -p /home/mcss/data && chown -R mcss:mcss /home/mcss/data
 USER mcss
 WORKDIR /home/mcss
 COPY --from=builder /app/target/release/mcss-backend /usr/local/bin/mcss-backend
