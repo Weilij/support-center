@@ -24,7 +24,15 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   - [x] §6.2 reports: pipeline/downloads/batch/scheduling
   - [x] §6.6 system settings & admin (dbaa7f2): ~50 endpoints
   - [x] §6.7 rate-limit contract + keyed lease locks
-- [ ] Phase 7: frontend SPA  ← NEXT (CRD 5844-6723)
+- [ ] Phase 7: frontend SPA  ← IN PROGRESS (CRD 5844-6723)
+  - [x] foundation: API client w/ refresh single-flight, session lifecycle,
+        router guards, login + dashboard shell, i18n (frontend/)
+  - [ ] §8.1 state model (CRD 5846-6126): conversations/messages/teams/tags/
+        notifications stores w/ optimistic updates + rollback
+  - [ ] §8.2 views & flows (6127-6332): conversation list/detail, admin screens
+  - [ ] §8.3 realtime client (6332-6465): WS connect/auth/reconnect, event routing
+  - [ ] §8.4 remaining: full endpoint contract map, team context switcher
+  - [ ] §8.5 traceability matrix check (6689-6723)
 - [ ] Phase 8: web installer
 
 ## Session log
@@ -73,3 +81,5 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   NEXT: Phase 7 frontend SPA (CRD 5844-6723: state model 5846, views 6127,
   realtime client 6332, routing/API/i18n 6465, traceability 6689). Suggest
   Vite+React in frontend/. Then Phase 8 installer (6724-6979).
+- 2026-06-12 (cont. 7): Phase 7 started — frontend foundation committed.
+  npm run build green. Resume with §8.1 state model + §8.2 conversation views.
