@@ -8,6 +8,11 @@ export default defineConfig({
     proxy: {
       '/api': { target: 'http://localhost:3000', changeOrigin: true },
       '/phase2-auth': { target: 'http://localhost:3000', changeOrigin: true },
+      '/installer': {
+        target: 'http://localhost:8976',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/installer/, ''),
+      },
     },
   },
 })

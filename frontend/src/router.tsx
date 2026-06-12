@@ -27,6 +27,7 @@ import Reports from './pages/Reports'
 import ActivityLog from './pages/Activity'
 import AutoReply from './pages/AutoReply'
 import Channels from './pages/Channels'
+import Install from './pages/Install'
 
 interface RouteMeta {
   requiresAuth?: boolean // default true (CRD 6476)
@@ -152,6 +153,10 @@ export const router = createBrowserRouter([
   {
     path: '/auto-reply',
     element: page({ title: '自動回覆', adminOnly: true }, <AutoReply />),
+  },
+  {
+    path: '/install',
+    element: page({ requiresAuth: false, title: '安裝精靈' }, <Install />),
   },
   {
     path: '*',
