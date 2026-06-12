@@ -20,7 +20,7 @@ messages, file management with signed URLs, WebSocket realtime (rooms,
 broadcasts, presence, collaboration), background job queue with retries +
 dead-letter, notifications/reminders/alerting, monitoring + circuit breaker,
 analytics/dashboards, reports + scheduling, system administration.
-**542 integration tests; clippy-clean.**
+**545 tests (integration + installer); clippy-clean.**
 
 **Frontend** — shared API client (single-flight token refresh, guarded login
 redirect, backoff retries), optimistic-update store layer, realtime client
@@ -46,10 +46,12 @@ Key environment variables (see `backend/src/config.rs`): `JWT_SECRET`,
 Bootstrap an admin: insert an `agents` row with an argon2 hash, or run the
 installer wizard. All subsequent administration happens through the API/UI.
 
+Frontend unit tests: `cd frontend && npm test` (vitest).
+
 ## Testing
 
 ```bash
-cd backend && cargo test          # 542 integration tests
+cd backend && cargo test          # 545 tests (integration + installer)
 cd backend && cargo clippy --all-targets
 cd frontend && npm run build      # type-check + bundle
 ```
