@@ -14,6 +14,7 @@ pub mod messaging;
 pub mod monitoring;
 pub mod notifications;
 pub mod queue;
+pub mod reports;
 pub mod sessions;
 pub mod tags;
 pub mod teams;

@@ -25,6 +25,11 @@ impl RatePolicy {
     pub const ADMIN: Self = Self::new("admin", 200, 60);
     pub const HIGH_FREQUENCY: Self = Self::new("high-frequency", 500, 60);
 
+    /// Reports family: ~30 requests/minute (CRD 4690).
+    pub const fn reports() -> Self {
+        Self::new("reports", 30, 60)
+    }
+
     const fn new(scope: &'static str, max_requests: u32, window_secs: u64) -> Self {
         Self { scope, max_requests, window: Duration::from_secs(window_secs) }
     }
