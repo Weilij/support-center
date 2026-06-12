@@ -20,7 +20,7 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
 - [ ] Phase 6: ops/analytics/reports/notifications/settings  ← IN PROGRESS
   - [x] §6.4 notifications + reminders + alerting (90454aa)
   - [x] §6.3 monitoring & health: sweeps, breaker, dashboards
-  - [ ] §6.1 analytics (CRD 4201-4505)
+  - [x] §6.1 analytics: insights/comparison/dashboards/security
   - [ ] §6.2 reports (CRD 4505-4697)
   - [ ] §6.6 system settings & admin (CRD 5247-5488)
   - [x] §6.7 rate-limit contract + keyed lease locks
