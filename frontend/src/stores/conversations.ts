@@ -34,18 +34,34 @@ export const conversationsStore = new Store<ConversationsState>({
   error: null,
 })
 
+/// The list endpoint returns the conversations as a bare array in `data`;
+/// lastMessage is an object whose preview lives at .content.
+function normalize(raw: unknown): Conversation[] {
+  const list = Array.isArray(raw)
+    ? raw
+    : ((raw as { items?: unknown[]; conversations?: unknown[] })?.items ??
+       (raw as { conversations?: unknown[] })?.conversations ??
+       [])
+  return (list as Record<string, unknown>[]).map((c) => ({
+    ...(c as Conversation),
+    lastMessage:
+      typeof c.lastMessage === 'object' && c.lastMessage !== null
+        ? String((c.lastMessage as { content?: unknown }).content ?? '')
+        : (c.lastMessage as string | undefined),
+  }))
+}
+
 export async function loadConversations(page = 1, force = false): Promise<void> {
   const current = conversationsStore.get()
   if (!force && page === current.page && conversationsStore.isFresh(FRESH_MS)) return
   conversationsStore.update((s) => ({ ...s, busy: true, error: null }))
-  const resp = await get<{ items?: Conversation[]; conversations?: Conversation[]; total?: number }>(
-    `/api/conversations?page=${page}`,
-  )
-  if (resp.success && resp.data) {
-    const items = resp.data.items ?? resp.data.conversations ?? []
+  const resp = await get<unknown>(`/api/conversations?page=${page}`)
+  if (resp.success && resp.data !== undefined) {
+    const items = normalize(resp.data)
+    const total = (resp as { pagination?: { total?: number } }).pagination?.total ?? items.length
     conversationsStore.set({
       items,
-      total: resp.data.total ?? items.length,
+      total,
       page,
       busy: false,
       error: null,
