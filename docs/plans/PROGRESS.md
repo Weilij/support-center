@@ -89,3 +89,6 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
 - 2026-06-12 (cont. 8): §8.1 store layer + conversations screen committed.
 - 2026-06-12 (cont. 9): §8.3 realtime client committed.
 - 2026-06-12 (cont. 10): §8.2 conversation detail committed.
+- 2026-06-12 (cont. 11): notifications center (732fe48), shell nav + tags
+  screen committed. Remaining §8.2: profile, reports/export, admin screens
+  (teams/channels/settings/auto-reply/activity). Then §8.5 + Phase 8.
