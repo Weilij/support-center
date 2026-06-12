@@ -23,7 +23,7 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   - [ ] §6.1 analytics (CRD 4201-4505)
   - [ ] §6.2 reports (CRD 4505-4697)
   - [ ] §6.6 system settings & admin (CRD 5247-5488)
-  - [ ] §6.7 rate-limit & mutual-exclusion guarantees (CRD 5488-5578)
+  - [x] §6.7 rate-limit contract + keyed lease locks
 - [ ] Phase 7: frontend SPA
 - [ ] Phase 8: web installer
 
