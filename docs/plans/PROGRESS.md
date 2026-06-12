@@ -13,7 +13,7 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   - [x] §4.1 channel integrations + crypto (d82c8b6)
   - [x] §4.2 webhook ingestion LINE/FB (d82c8b6)
   - [x] §2.5 auto-reply engine + management (375943f)
-  - [ ] §2.4 delayed messages HTTP surface (CRD 1171-1334; service layer already in domain/messaging/service.rs)
+  - [x] §2.4 delayed messages HTTP surface (2659fc7): both route families on the shared scheduler
   - [ ] §4.3 LIFF (CRD 2862-2996)
   - [ ] §4.4 files & attachments (CRD 2996-3221)
   - [ ] §6.5 background queue (CRD 5106-5247)
@@ -40,3 +40,6 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   customer channels+module+collaboration (6b0929d). 403 tests, clippy clean.
 - 2026-06-12 (cont.): channels+webhooks committed (d82c8b6), auto-reply (375943f).
   462+ tests green. Inline implementation (user prefers no subagents).
+- 2026-06-12 (cont. 2): §2.4 delayed messages done (2659fc7). 471 tests green, clippy clean.
+  Next: §4.3 LIFF (CRD 2862-2996), §4.4 files (CRD 2996-3221), §6.5 queue (CRD 5106-5247),
+  then Phase 6 (CRD 4201-5578), Phase 7 frontend (5844-6723), Phase 8 installer (6724-6979).
