@@ -18,10 +18,6 @@ export default function Settings() {
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  if (!session.isAdmin()) {
-    return <main style={{ margin: '10vh auto', maxWidth: 480 }}><p>權限不足</p></main>
-  }
-
   useEffect(() => {
     void get<{ general?: GeneralSettings }>('/api/system/settings').then((resp) => {
       if (resp.success && resp.data?.general) setGeneral(resp.data.general)
@@ -49,6 +45,10 @@ export default function Settings() {
     </label>
   )
 
+  // Admin gate AFTER all hooks (Rules of Hooks: stable hook order).
+  if (!session.isAdmin()) {
+    return <main style={{ margin: '10vh auto', maxWidth: 480 }}><p>權限不足</p></main>
+  }
   return (
     <main style={{ maxWidth: 480, margin: '5vh auto' }}>
       <h1>系統設定</h1>

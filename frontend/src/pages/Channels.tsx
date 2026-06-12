@@ -19,10 +19,6 @@ export default function Channels() {
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
 
-  if (!session.isAdmin()) {
-    return <main style={{ margin: '10vh auto', maxWidth: 480 }}><p>權限不足</p></main>
-  }
-
   const load = async () => {
     const resp = await get<Channel[]>('/api/channels')
     if (resp.success && Array.isArray(resp.data)) setChannels(resp.data)
@@ -41,6 +37,10 @@ export default function Channels() {
     void load()
   }
 
+  // Admin gate AFTER all hooks (Rules of Hooks: stable hook order).
+  if (!session.isAdmin()) {
+    return <main style={{ margin: '10vh auto', maxWidth: 480 }}><p>權限不足</p></main>
+  }
   return (
     <main style={{ maxWidth: 720, margin: '5vh auto' }}>
       <h1>頻道管理</h1>

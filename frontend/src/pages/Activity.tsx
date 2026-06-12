@@ -18,10 +18,6 @@ export default function ActivityLog() {
   const [items, setItems] = useState<Activity[]>([])
   const [error, setError] = useState<string | null>(null)
 
-  if (!session.isAdmin()) {
-    return <main style={{ margin: '10vh auto', maxWidth: 480 }}><p>權限不足</p></main>
-  }
-
   useEffect(() => {
     void get<{ items?: Activity[]; activities?: Activity[] }>('/api/activities').then((resp) => {
       if (resp.success && resp.data) {
@@ -32,6 +28,10 @@ export default function ActivityLog() {
     })
   }, [])
 
+  // Admin gate AFTER all hooks (Rules of Hooks: stable hook order).
+  if (!session.isAdmin()) {
+    return <main style={{ margin: '10vh auto', maxWidth: 480 }}><p>權限不足</p></main>
+  }
   return (
     <main style={{ maxWidth: 860, margin: '5vh auto' }}>
       <h1>活動日誌</h1>

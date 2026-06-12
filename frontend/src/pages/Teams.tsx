@@ -29,11 +29,6 @@ export default function Teams() {
   const [name, setName] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  // Admin gating happens in-screen (router guard only checks auth, CRD 6495).
-  if (!session.isAdmin()) {
-    return <main style={{ margin: '10vh auto', maxWidth: 480 }}><p>權限不足</p></main>
-  }
-
   const load = async () => {
     const resp = await get<{ items?: Team[]; teams?: Team[] } | Team[]>('/api/teams')
     if (resp.success && resp.data) {
@@ -67,6 +62,10 @@ export default function Teams() {
     }
   }
 
+  // Admin gate AFTER all hooks (Rules of Hooks: stable hook order).
+  if (!session.isAdmin()) {
+    return <main style={{ margin: '10vh auto', maxWidth: 480 }}><p>權限不足</p></main>
+  }
   return (
     <main style={{ maxWidth: 720, margin: '5vh auto' }}>
       <h1>團隊管理</h1>
