@@ -217,10 +217,8 @@ async fn deployment_status(
     }
 }
 
-#[tokio::main]
-async fn main() {
-    let installer = Installer::default();
-    let app = Router::new()
+fn router(installer: Installer) -> Router {
+    Router::new()
         .route("/", get(descriptor))
         .route("/health", get(health))
         .route("/oauth/authorize", get(oauth_authorize))
@@ -228,9 +226,102 @@ async fn main() {
         .route("/auth/token", post(auth_token))
         .route("/deployment/start", post(deployment_start))
         .route("/deployment/status/{id}", get(deployment_status))
-        .with_state(installer);
+        .with_state(installer)
+}
+
+#[tokio::main]
+async fn main() {
+    let app = router(Installer::default());
     let port: u16 = std::env::var("INSTALLER_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8976);
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await.expect("bind");
     println!("MCSS installer listening on port {port}");
     axum::serve(listener, app).await.expect("serve");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    async fn send(app: &Router, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
+        let builder = axum::http::Request::builder().method(method).uri(path);
+        let request = match body {
+            Some(b) => builder
+                .header("Content-Type", "application/json")
+                .body(Body::from(b.to_string()))
+                .unwrap(),
+            None => builder.body(Body::empty()).unwrap(),
+        };
+        let resp = app.clone().oneshot(request).await.unwrap();
+        let status = resp.status();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    #[tokio::test]
+    async fn descriptor_and_health() {
+        let app = router(Installer::default());
+        let (status, body) = send(&app, "GET", "/", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "operational");
+        assert!(body["endpoints"]["deployment"].is_array());
+        let (status, body) = send(&app, "GET", "/health", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ok");
+        assert!(body["timestamp"].is_i64());
+    }
+
+    #[tokio::test]
+    async fn auth_flows_validate_inputs() {
+        let app = router(Installer::default());
+        // OAuth without client id configuration -> 500 documented error.
+        std::env::remove_var("CLOUD_OAUTH_CLIENT_ID");
+        let (status, body) = send(&app, "GET", "/oauth/authorize", None).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["error"], "OAuth not configured");
+        // Callback without a grant code -> 400.
+        let (status, body) = send(&app, "POST", "/oauth/callback", Some(json!({}))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "Authorization code required");
+        // Token verification requires both fields.
+        let (status, body) = send(&app, "POST", "/auth/token", Some(json!({"apiToken": "x"}))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "API Token and Account ID are required");
+    }
+
+    #[tokio::test]
+    async fn provisioning_pipeline_runs_to_completion() {
+        let app = router(Installer::default());
+        // Name rules: 3-50 chars, lowercase/digits/hyphens.
+        for bad in ["ab", "Bad-Name", "has space", &"x".repeat(51)] {
+            let (status, _) =
+                send(&app, "POST", "/deployment/start", Some(json!({"projectName": bad}))).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        }
+        let (status, body) =
+            send(&app, "POST", "/deployment/start", Some(json!({"projectName": "smoke-tenant"}))).await;
+        assert_eq!(status, StatusCode::OK);
+        let id = body["deploymentId"].as_str().unwrap().to_string();
+
+        // Poll until the 8-step pipeline completes.
+        let mut last = Value::Null;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let (status, body) = send(&app, "GET", &format!("/deployment/status/{id}"), None).await;
+            assert_eq!(status, StatusCode::OK);
+            last = body;
+            if last["status"] == "completed" {
+                break;
+            }
+        }
+        assert_eq!(last["status"], "completed");
+        assert_eq!(last["progressPercent"], 100);
+        assert_eq!(last["completedSteps"].as_array().unwrap().len(), 8);
+        assert!(last["adminCredentials"]["password"].is_string(), "one-time admin credentials");
+
+        let (status, _) = send(&app, "GET", "/deployment/status/ghost", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
 }
