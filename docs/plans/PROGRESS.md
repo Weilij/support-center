@@ -92,3 +92,6 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
 - 2026-06-12 (cont. 11): notifications center (732fe48), shell nav + tags
   screen committed. Remaining §8.2: profile, reports/export, admin screens
   (teams/channels/settings/auto-reply/activity). Then §8.5 + Phase 8.
+- 2026-06-12 (cont. 12): teams screen (6394a26), settings screen committed.
+  Remaining §8.2 screens: profile, reports/export, channels, activity,
+  auto-reply. Then §8.5 traceability + Phase 8 installer (CRD 6724-6979).
