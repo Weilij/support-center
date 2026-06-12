@@ -6,6 +6,7 @@ pub mod channels;
 pub mod conversations;
 pub mod customer_conversations;
 pub mod customers;
+pub mod delayed_messages;
 pub mod messaging;
 pub mod sessions;
 pub mod tags;
