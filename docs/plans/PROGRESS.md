@@ -15,7 +15,7 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   - [x] §2.5 auto-reply engine + management (375943f)
   - [x] §2.4 delayed messages HTTP surface (2659fc7): both route families on the shared scheduler
   - [x] §4.3 LIFF mini-page/admin/join (8a7a2d5)
-  - [ ] §4.4 files & attachments (CRD 2996-3221)
+  - [x] §4.4 files & attachments (31f1d39): uploads, signed proxies, direct-upload flow
   - [ ] §6.5 background queue (CRD 5106-5247)
 - [ ] Phase 6: ops/analytics/reports/notifications/settings
 - [ ] Phase 7: frontend SPA
