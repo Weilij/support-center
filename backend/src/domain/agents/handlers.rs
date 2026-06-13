@@ -207,6 +207,7 @@ struct ProfileUpdates {
     team_id: Option<i64>,
     is_active: Option<bool>,
     password_policy: Option<String>,
+    position: Option<String>,
 }
 
 /// Body validation shared by single update and bulk update (CRD 2283, 2287).
@@ -280,14 +281,27 @@ fn validate_profile_body(body: &Value) -> Result<ProfileUpdates> {
             Some(s.to_string())
         }
     };
+    let position = match obj.get("position") {
+        None => None,
+        Some(v) => {
+            let s = v.as_str().unwrap_or("");
+            if !["system_admin", "supervisor", "agent"].contains(&s) {
+                return Err(AppError::BadRequest(
+                    "position must be one of: system_admin, supervisor, agent".into(),
+                ));
+            }
+            Some(s.to_string())
+        }
+    };
     let updates =
-        ProfileUpdates { display_name, email, role, team_id, is_active, password_policy };
+        ProfileUpdates { display_name, email, role, team_id, is_active, password_policy, position };
     if updates.display_name.is_none()
         && updates.email.is_none()
         && updates.role.is_none()
         && updates.team_id.is_none()
         && updates.is_active.is_none()
         && updates.password_policy.is_none()
+        && updates.position.is_none()
     {
         return Err(AppError::BadRequest("No fields to update".into()));
     }
@@ -359,6 +373,14 @@ async fn apply_profile_updates(
         // Prior memberships are replaced with a single primary membership (CRD 2285).
         teams_store::replace_memberships(&state.db, &operator.id, team_id).await?;
         state.team_cache.invalidate(&operator.id);
+    }
+    if let Some(position) = &updates.position {
+        sqlx::query("UPDATE agents SET position = $1, updated_at = $2 WHERE id = $3")
+            .bind(position)
+            .bind(&now)
+            .bind(&operator.id)
+            .execute(&state.db)
+            .await?;
     }
     Ok(())
 }

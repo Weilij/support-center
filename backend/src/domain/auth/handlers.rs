@@ -47,6 +47,7 @@ fn agent_view(agent: &AgentRow) -> Value {
         "role": agent.role,
         "isActive": agent.is_active != 0,
         "createdAt": agent.created_at_millis(),
+        "position": agent.position,
     })
 }
 

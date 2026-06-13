@@ -30,12 +30,13 @@ pub struct OperatorRow {
     pub updated_at: Option<String>,
     pub primary_team_id: Option<i64>,
     pub team_name: Option<String>,
+    pub position: Option<String>,
 }
 
 pub const OPERATOR_SELECT: &str =
     "SELECT a.id, a.email, a.display_name, a.role, a.is_active, a.password_policy,
             a.last_active_at, a.last_login_at, a.created_at, a.updated_at,
-            tm.team_id AS primary_team_id, t.name AS team_name
+            tm.team_id AS primary_team_id, t.name AS team_name, a.position
      FROM agents a
      LEFT JOIN team_members tm ON tm.agent_id = a.id AND tm.is_primary = 1
      LEFT JOIN teams t ON t.id = tm.team_id
@@ -64,6 +65,7 @@ pub fn operator_view(o: &OperatorRow) -> Value {
         "lastLoginAt": o.last_login_at,
         "createdAt": o.created_at,
         "updatedAt": o.updated_at,
+        "position": o.position,
     })
 }
 

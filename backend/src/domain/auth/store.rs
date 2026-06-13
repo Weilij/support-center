@@ -19,6 +19,7 @@ pub struct AgentRow {
     pub deleted_at: Option<String>,
     pub created_at: String,
     pub updated_at: Option<String>,
+    pub position: Option<String>,
 }
 
 impl AgentRow {
