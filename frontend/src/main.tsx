@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { RouterProvider } from 'react-router-dom'
 
+import './styles/theme.css'
 import { router } from './router'
 import { session } from './auth/session'
 import { connectRealtime } from './realtime/client'

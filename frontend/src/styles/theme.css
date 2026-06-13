@@ -1,0 +1,62 @@
+/* Apple-Glass theme layer (spec 2026-06-14). Tokens + base element styles so
+   even inline-styled pages inherit the aesthetic. */
+:root {
+  --accent: #3b82f6;
+  --text: #1f2937;
+  --muted: #6b7280;
+  --radius: 14px;
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --glass-bg-strong: rgba(255, 255, 255, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.6);
+  --glass-blur: 20px;
+  --shadow: 0 8px 32px rgba(31, 38, 135, 0.12);
+}
+
+html, body, #root { min-height: 100%; }
+
+body {
+  margin: 0;
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 45%, #ecfeff 100%) fixed;
+}
+
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: transform 0.08s ease, box-shadow 0.15s ease;
+}
+button:hover:not(:disabled) { box-shadow: var(--shadow); transform: translateY(-1px); }
+button:disabled { opacity: 0.5; cursor: default; }
+.btn-primary { background: var(--accent); color: #fff; border-color: transparent; }
+
+input, select, textarea {
+  font: inherit;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
+  padding: 7px 10px;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: rgba(120, 120, 140, 0.35); border-radius: 8px; }
