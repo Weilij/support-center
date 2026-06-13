@@ -10,6 +10,7 @@ import {
   useLocation,
 } from 'react-router-dom'
 
+import { can, type Area } from './auth/permissions'
 import { session } from './auth/session'
 import { t } from './i18n'
 import Login from './pages/Login'
@@ -42,7 +43,7 @@ import Install from './pages/Install'
 interface RouteMeta {
   requiresAuth?: boolean // default true (CRD 6476)
   guestOnly?: boolean
-  adminOnly?: boolean // metadata only; enforced by screens + backend (CRD 6495)
+  area?: Area // access area; checked after auth (CRD 6495)
   title?: string
 }
 
@@ -64,7 +65,11 @@ function Guard({ meta, children }: { meta: RouteMeta; children: React.ReactNode 
         const snap = session.snapshot()
         if (snap !== null) {
           if (!requiresAuth && !meta.guestOnly) return setDecision('allow')
-          if (snap && requiresAuth && !meta.guestOnly) return setDecision('allow')
+          if (snap && requiresAuth && !meta.guestOnly) {
+            return setDecision(
+              can(session.position(), meta.area ?? 'daily') ? 'allow' : 'toDashboard',
+            )
+          }
         }
         // 4. Wait for session initialization when pending (CRD 6481).
         if (session.lifecycle() === 'pending') await session.init()
@@ -77,6 +82,9 @@ function Guard({ meta, children }: { meta: RouteMeta; children: React.ReactNode 
         }
         if (requiresAuth && !authenticated) {
           return setDecision('toLogin')
+        }
+        if (requiresAuth && !meta.guestOnly && !can(session.position(), meta.area ?? 'daily')) {
+          return setDecision('toDashboard')
         }
         setDecision('allow')
       } catch {
@@ -112,97 +120,99 @@ export const router = createBrowserRouter([
   },
   {
     path: '/dashboard',
-    element: page({ title: t('dashboard.title') }, <Dashboard />),
+    element: page({ title: t('dashboard.title'), area: 'daily' }, <Dashboard />),
   },
-  // Authenticated-only destinations (placeholder screens render the shared shell).
+  // daily-area destinations (all authenticated positions).
   {
     path: '/conversations',
-    element: page({ title: '對話' }, <Conversations />),
+    element: page({ title: '對話', area: 'daily' }, <Conversations />),
   },
   {
     path: '/conversations/:id',
-    element: page({ title: '對話' }, <ConversationDetail />),
+    element: page({ title: '對話', area: 'daily' }, <ConversationDetail />),
   },
   {
     path: '/customers',
-    element: page({ title: '客戶管理' }, <Customers />),
+    element: page({ title: '客戶管理', area: 'daily' }, <Customers />),
   },
   {
     path: '/messages/search',
-    element: page({ title: '訊息搜尋' }, <MessageSearch />),
+    element: page({ title: '訊息搜尋', area: 'daily' }, <MessageSearch />),
   },
   {
     path: '/notifications',
-    element: page({ title: '通知中心' }, <Notifications />),
+    element: page({ title: '通知中心', area: 'daily' }, <Notifications />),
   },
   {
     path: '/tags',
-    element: page({ title: '標籤管理' }, <Tags />),
+    element: page({ title: '標籤管理', area: 'daily' }, <Tags />),
   },
   {
     path: '/profile',
-    element: page({ title: '個人資料' }, <ProfilePage />),
-  },
-  {
-    path: '/analytics',
-    element: page({ title: '數據分析' }, <Analytics />),
+    element: page({ title: '個人資料', area: 'daily' }, <ProfilePage />),
   },
   {
     path: '/reminders',
-    element: page({ title: '提醒' }, <Reminders />),
-  },
-  {
-    path: '/reports',
-    element: page({ title: '報表' }, <Reports />),
-  },
-  {
-    path: '/export',
-    element: page({ title: '報表' }, <Reports />),
-  },
-  // Admin-flagged destinations (admin gating happens in-screen + backend).
-  {
-    path: '/agents',
-    element: page({ title: '客服人員管理', adminOnly: true }, <Agents />),
-  },
-  {
-    path: '/sessions',
-    element: page({ title: '工作階段', adminOnly: true }, <Sessions />),
-  },
-  {
-    path: '/teams',
-    element: page({ title: '團隊管理', adminOnly: true }, <Teams />),
-  },
-  {
-    path: '/settings',
-    element: page({ title: '系統設定', adminOnly: true }, <Settings />),
-  },
-  {
-    path: '/activity',
-    element: page({ title: '活動日誌', adminOnly: true }, <ActivityLog />),
-  },
-  {
-    path: '/channels',
-    element: page({ title: '頻道管理', adminOnly: true }, <Channels />),
+    element: page({ title: '提醒', area: 'daily' }, <Reminders />),
   },
   {
     path: '/auto-reply',
-    element: page({ title: '自動回覆', adminOnly: true }, <AutoReply />),
+    element: page({ title: '自動回覆', area: 'daily' }, <AutoReply />),
+  },
+  // ops-area destinations (supervisor and above).
+  {
+    path: '/agents',
+    element: page({ title: '客服人員管理', area: 'ops' }, <Agents />),
+  },
+  {
+    path: '/sessions',
+    element: page({ title: '工作階段', area: 'ops' }, <Sessions />),
+  },
+  {
+    path: '/teams',
+    element: page({ title: '團隊管理', area: 'ops' }, <Teams />),
+  },
+  // analytics-area destinations (supervisor and above).
+  {
+    path: '/analytics',
+    element: page({ title: '數據分析', area: 'analytics' }, <Analytics />),
+  },
+  {
+    path: '/reports',
+    element: page({ title: '報表', area: 'analytics' }, <Reports />),
+  },
+  {
+    path: '/export',
+    element: page({ title: '報表', area: 'analytics' }, <Reports />),
+  },
+  {
+    path: '/activity',
+    element: page({ title: '活動日誌', area: 'analytics' }, <ActivityLog />),
+  },
+  // system-area destinations (system_admin only).
+  {
+    path: '/settings',
+    element: page({ title: '系統設定', area: 'system' }, <Settings />),
+  },
+  {
+    path: '/channels',
+    element: page({ title: '頻道管理', area: 'system' }, <Channels />),
   },
   {
     path: '/liff',
-    element: page({ title: 'LIFF 設定', adminOnly: true }, <LiffSettings />),
+    element: page({ title: 'LIFF 設定', area: 'system' }, <LiffSettings />),
   },
   {
     path: '/system/monitoring',
-    element: page({ title: '系統監控', adminOnly: true }, <SystemMonitoring />),
+    element: page({ title: '系統監控', area: 'system' }, <SystemMonitoring />),
   },
   {
     path: '/system/alerts',
-    element: page({ title: '告警設定', adminOnly: true }, <AlertConfig />),
+    element: page({ title: '告警設定', area: 'system' }, <AlertConfig />),
   },
   {
     path: '/system/maintenance',
-    element: page({ title: '系統維護', adminOnly: true }, <SystemMaintenance />),
+    element: page({ title: '系統維護', area: 'system' }, <SystemMaintenance />),
   },
   {
     path: '/install',
