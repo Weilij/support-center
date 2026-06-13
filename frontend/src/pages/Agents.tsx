@@ -11,10 +11,13 @@ import {
   loadAgents,
   loadStatusStatistics,
   batchTransferAgents,
+  setAgentPosition,
   PRESENCE_STATES,
   type Agent,
 } from '../stores/agents'
 import type { Column } from '../components/DataTable'
+import { session } from '../auth/session'
+import { positionOf, POSITION_LABELS, AREA_ACCESS, type Position } from '../auth/permissions'
 
 const PAGE_SIZE = 20
 
@@ -25,6 +28,13 @@ const PRESENCE_LABELS: Record<string, string> = {
   offline: '離線',
   break: '休息',
   meeting: '會議',
+}
+
+const AREA_LABELS: Record<string, string> = {
+  daily: '日常',
+  ops: '營運管理',
+  analytics: '分析',
+  system: '系統',
 }
 
 export default function Agents() {
@@ -71,6 +81,14 @@ export default function Agents() {
     }
   }
 
+  const canEditPosition = session.position() === 'system_admin'
+
+  const changePosition = async (agentId: string, position: string) => {
+    const res = await setAgentPosition(agentId, position)
+    setToast(res.ok ? '職位已更新' : res.message ?? '更新失敗')
+    if (res.ok) setAgents((as) => as.map((a) => (a.id === agentId ? { ...a, position } : a)))
+  }
+
   const columns: Column<Agent>[] = [
     {
       key: 'sel',
@@ -83,6 +101,27 @@ export default function Agents() {
     { key: 'displayName', header: '名稱', render: (a) => a.displayName || a.email || a.id },
     { key: 'email', header: 'Email', render: (a) => a.email || '—' },
     { key: 'role', header: '角色', render: (a) => <StatusPill status={a.role ?? ''} /> },
+    {
+      key: 'position',
+      header: '職位',
+      width: 150,
+      render: (a) =>
+        canEditPosition ? (
+          <select
+            value={positionOf(a as { position?: string; role?: string })}
+            onChange={(e) => void changePosition(a.id, e.target.value)}
+            style={{ padding: '3px 6px', borderRadius: 6, border: '1px solid #ccc' }}
+          >
+            {(Object.keys(POSITION_LABELS) as Position[]).map((p) => (
+              <option key={p} value={p}>
+                {POSITION_LABELS[p]}
+              </option>
+            ))}
+          </select>
+        ) : (
+          POSITION_LABELS[positionOf(a as { position?: string; role?: string })]
+        ),
+    },
     { key: 'teamName', header: '團隊', render: (a) => a.teamName || '—' },
     {
       key: 'isActive',
@@ -144,6 +183,32 @@ export default function Agents() {
       <Pagination page={page} total={total} pageSize={PAGE_SIZE} onPage={(p) => void load(p)} />
 
       <Toast message={toast} onDismiss={() => setToast(null)} />
+
+      <section style={{ marginTop: 24 }}>
+        <h3>職位權限對照表</h3>
+        <table style={{ borderCollapse: 'collapse', fontSize: 14 }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: 'left', padding: '6px 12px' }}>區域</th>
+              {(Object.keys(POSITION_LABELS) as Position[]).map((p) => (
+                <th key={p} style={{ padding: '6px 12px' }}>{POSITION_LABELS[p]}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {(['daily', 'ops', 'analytics', 'system'] as const).map((area) => (
+              <tr key={area} style={{ borderTop: '1px solid #eee' }}>
+                <td style={{ padding: '6px 12px' }}>{AREA_LABELS[area]}</td>
+                {(Object.keys(POSITION_LABELS) as Position[]).map((p) => (
+                  <td key={p} style={{ textAlign: 'center', padding: '6px 12px' }}>
+                    {AREA_ACCESS[p].includes(area) ? '✅' : '—'}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
     </main>
   )
 }

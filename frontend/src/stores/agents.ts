@@ -8,6 +8,7 @@ export interface Agent {
   email?: string
   displayName?: string
   role?: string
+  position?: string
   isActive?: boolean
   teamId?: number | null
   teamName?: string | null
@@ -33,6 +34,15 @@ export async function loadAgents(page = 1, limit = 20): Promise<AgentsPage> {
 export async function loadStatusStatistics(): Promise<Record<string, number>> {
   const resp = await get<Record<string, number>>('/api/agents/status/statistics')
   return resp.success && resp.data ? resp.data : {}
+}
+
+/// System-admin-only: persist a member's position.
+export async function setAgentPosition(
+  agentId: string,
+  position: string,
+): Promise<{ ok: boolean; message?: string }> {
+  const resp = await put(`/api/agents/${agentId}`, { position })
+  return { ok: resp.success, message: resp.message }
 }
 
 /// Move many agents to a team in one call. Returns success count + any errors.
