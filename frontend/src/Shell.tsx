@@ -1,10 +1,11 @@
 // Shared authenticated shell: grouped navigation, unread badge, logout
 // (CRD §8.2). Nav is data-driven (NAV_GROUPS) so later feature epics slot new
-// destinations into a group without touching layout. `admin` entries render
-// only for admins; `badge` injects a live counter.
+// destinations into a group without touching layout. Items are gated by `area`
+// against the current user's position; `badge` injects a live counter.
 
 import { Link, useNavigate } from 'react-router-dom'
 
+import { can, type Area } from './auth/permissions'
 import { session, authChanged } from './auth/session'
 import { notificationsStore } from './stores/notifications'
 import { useStore } from './stores/store'
@@ -12,55 +13,48 @@ import { useStore } from './stores/store'
 interface NavItem {
   to: string
   label: string
-  admin?: boolean
+  area: Area
   badge?: 'unread'
 }
 
-interface NavGroup {
-  title: string
-  items: NavItem[]
-}
-
-// Grouped destinations. Feature epics extend the relevant group's items.
-const NAV_GROUPS: NavGroup[] = [
+const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
   {
     title: '日常',
     items: [
-      { to: '/dashboard', label: '儀表板' },
-      { to: '/conversations', label: '對話' },
-      { to: '/customers', label: '客戶' },
-      { to: '/messages/search', label: '訊息搜尋' },
-      { to: '/reminders', label: '提醒' },
-      { to: '/notifications', label: '通知', badge: 'unread' },
-      { to: '/tags', label: '標籤' },
+      { to: '/dashboard', label: '儀表板', area: 'daily' },
+      { to: '/conversations', label: '對話', area: 'daily' },
+      { to: '/customers', label: '客戶', area: 'daily' },
+      { to: '/messages/search', label: '訊息搜尋', area: 'daily' },
+      { to: '/reminders', label: '提醒', area: 'daily' },
+      { to: '/auto-reply', label: '自動回覆', area: 'daily' },
+      { to: '/tags', label: '標籤', area: 'daily' },
+      { to: '/notifications', label: '通知', area: 'daily', badge: 'unread' },
     ],
   },
   {
-    title: '管理',
+    title: '營運管理',
     items: [
-      { to: '/agents', label: '客服人員', admin: true },
-      { to: '/teams', label: '團隊', admin: true },
-      { to: '/sessions', label: '工作階段', admin: true },
-      { to: '/channels', label: '頻道', admin: true },
-      { to: '/auto-reply', label: '自動回覆', admin: true },
-      { to: '/liff', label: 'LIFF', admin: true },
-      { to: '/settings', label: '設定', admin: true },
+      { to: '/agents', label: '客服人員', area: 'ops' },
+      { to: '/teams', label: '團隊', area: 'ops' },
+      { to: '/sessions', label: '工作階段', area: 'ops' },
     ],
   },
   {
     title: '分析',
     items: [
-      { to: '/analytics', label: '數據分析' },
-      { to: '/reports', label: '報表' },
-      { to: '/activity', label: '活動日誌', admin: true },
+      { to: '/analytics', label: '數據分析', area: 'analytics' },
+      { to: '/reports', label: '報表', area: 'analytics' },
+      { to: '/activity', label: '活動日誌', area: 'analytics' },
     ],
   },
   {
     title: '系統',
     items: [
-      { to: '/system/monitoring', label: '監控', admin: true },
-      { to: '/system/alerts', label: '告警', admin: true },
-      { to: '/system/maintenance', label: '維護', admin: true },
+      { to: '/system/monitoring', label: '監控', area: 'system' },
+      { to: '/system/alerts', label: '告警', area: 'system' },
+      { to: '/system/maintenance', label: '維護', area: 'system' },
+      { to: '/liff', label: 'LIFF', area: 'system' },
+      { to: '/settings', label: '設定', area: 'system' },
     ],
   },
 ]
@@ -69,7 +63,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate()
   const notifications = useStore(notificationsStore)
   const who = session.identity()
-  const isAdmin = session.isAdmin()
+  const pos = session.position()
 
   const logout = async () => {
     const sessionId = session.sessionId()
@@ -106,7 +100,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
         }}
       >
         {NAV_GROUPS.map((group) => {
-          const visible = group.items.filter((i) => !i.admin || isAdmin)
+          const visible = group.items.filter((i) => can(pos, i.area))
           if (visible.length === 0) return null
           return (
             <div key={group.title} style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
