@@ -17,6 +17,16 @@ import Dashboard from './pages/Dashboard'
 import NotFound from './pages/NotFound'
 import Conversations from './pages/Conversations'
 import ConversationDetail from './pages/ConversationDetail'
+import Customers from './pages/Customers'
+import MessageSearch from './pages/MessageSearch'
+import Agents from './pages/Agents'
+import Sessions from './pages/Sessions'
+import LiffSettings from './pages/LiffSettings'
+import Analytics from './pages/Analytics'
+import Reminders from './pages/Reminders'
+import SystemMonitoring from './pages/SystemMonitoring'
+import AlertConfig from './pages/AlertConfig'
+import SystemMaintenance from './pages/SystemMaintenance'
 import Notifications from './pages/Notifications'
 import Tags from './pages/Tags'
 import Shell from './Shell'
@@ -114,6 +124,14 @@ export const router = createBrowserRouter([
     element: page({ title: '對話' }, <ConversationDetail />),
   },
   {
+    path: '/customers',
+    element: page({ title: '客戶管理' }, <Customers />),
+  },
+  {
+    path: '/messages/search',
+    element: page({ title: '訊息搜尋' }, <MessageSearch />),
+  },
+  {
     path: '/notifications',
     element: page({ title: '通知中心' }, <Notifications />),
   },
@@ -126,6 +144,14 @@ export const router = createBrowserRouter([
     element: page({ title: '個人資料' }, <ProfilePage />),
   },
   {
+    path: '/analytics',
+    element: page({ title: '數據分析' }, <Analytics />),
+  },
+  {
+    path: '/reminders',
+    element: page({ title: '提醒' }, <Reminders />),
+  },
+  {
     path: '/reports',
     element: page({ title: '報表' }, <Reports />),
   },
@@ -134,6 +160,14 @@ export const router = createBrowserRouter([
     element: page({ title: '報表' }, <Reports />),
   },
   // Admin-flagged destinations (admin gating happens in-screen + backend).
+  {
+    path: '/agents',
+    element: page({ title: '客服人員管理', adminOnly: true }, <Agents />),
+  },
+  {
+    path: '/sessions',
+    element: page({ title: '工作階段', adminOnly: true }, <Sessions />),
+  },
   {
     path: '/teams',
     element: page({ title: '團隊管理', adminOnly: true }, <Teams />),
@@ -153,6 +187,22 @@ export const router = createBrowserRouter([
   {
     path: '/auto-reply',
     element: page({ title: '自動回覆', adminOnly: true }, <AutoReply />),
+  },
+  {
+    path: '/liff',
+    element: page({ title: 'LIFF 設定', adminOnly: true }, <LiffSettings />),
+  },
+  {
+    path: '/system/monitoring',
+    element: page({ title: '系統監控', adminOnly: true }, <SystemMonitoring />),
+  },
+  {
+    path: '/system/alerts',
+    element: page({ title: '告警設定', adminOnly: true }, <AlertConfig />),
+  },
+  {
+    path: '/system/maintenance',
+    element: page({ title: '系統維護', adminOnly: true }, <SystemMaintenance />),
   },
   {
     path: '/install',

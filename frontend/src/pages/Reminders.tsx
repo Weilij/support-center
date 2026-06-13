@@ -1,0 +1,126 @@
+// Reminders (Phase 3.3): create personal/conversation reminders, see upcoming
+// ones within a window, and mark them complete. Summary cards show the backlog.
+
+import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
+
+import { get, post, put } from '../api/client'
+import { DataTable } from '../components/DataTable'
+import { Input, Textarea } from '../components/Form'
+import { StatCard, Toast } from '../components/ui'
+import type { Column } from '../components/DataTable'
+
+interface Reminder {
+  id: string
+  title?: string
+  content?: string
+  remindAt?: string
+  conversationId?: string | null
+  isCompleted?: boolean
+}
+
+interface ReminderStats {
+  total?: number
+  pending?: number
+  completed?: number
+  overdue?: number
+}
+
+export default function Reminders() {
+  const [reminders, setReminders] = useState<Reminder[]>([])
+  const [stats, setStats] = useState<ReminderStats>({})
+  const [busy, setBusy] = useState(false)
+  const [title, setTitle] = useState('')
+  const [content, setContent] = useState('')
+  const [remindAt, setRemindAt] = useState('')
+  const [toast, setToast] = useState<string | null>(null)
+
+  const load = async () => {
+    setBusy(true)
+    const [up, st] = await Promise.all([
+      get<{ reminders?: Reminder[] }>('/api/reminders/upcoming'),
+      get<ReminderStats>('/api/reminders/stats'),
+    ])
+    if (up.success && up.data) setReminders(up.data.reminders ?? [])
+    if (st.success && st.data) setStats(st.data)
+    setBusy(false)
+  }
+  useEffect(() => {
+    void load()
+  }, [])
+
+  const create = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!title.trim() || !remindAt) return
+    const resp = await post('/api/reminders', {
+      title: title.trim(),
+      content: content.trim() || undefined,
+      remindAt: new Date(remindAt).toISOString(),
+    })
+    if (resp.success) {
+      setToast('提醒已建立')
+      setTitle('')
+      setContent('')
+      setRemindAt('')
+      void load()
+    } else {
+      setToast(resp.message ?? '建立失敗')
+    }
+  }
+
+  const complete = async (id: string) => {
+    const resp = await put(`/api/reminders/${id}/complete`)
+    if (resp.success) {
+      setToast('已完成')
+      void load()
+    }
+  }
+
+  const columns: Column<Reminder>[] = [
+    {
+      key: 'remindAt',
+      header: '時間',
+      width: 160,
+      render: (r) => (r.remindAt ? new Date(r.remindAt).toLocaleString() : '—'),
+    },
+    { key: 'title', header: '提醒', render: (r) => r.title || '—' },
+    {
+      key: 'conversationId',
+      header: '對話',
+      width: 90,
+      render: (r) =>
+        r.conversationId ? <Link to={`/conversations/${r.conversationId}`}>{String(r.conversationId).slice(0, 8)}</Link> : '—',
+    },
+    {
+      key: 'action',
+      header: '',
+      width: 80,
+      render: (r) => (!r.isCompleted ? <button onClick={() => void complete(r.id)}>完成</button> : '✓'),
+    },
+  ]
+
+  return (
+    <main style={{ maxWidth: 880, margin: '4vh auto', padding: '0 16px' }}>
+      <h1>提醒</h1>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '12px 0' }}>
+        <StatCard label="總計" value={stats.total ?? 0} />
+        <StatCard label="待處理" value={stats.pending ?? 0} />
+        <StatCard label="已完成" value={stats.completed ?? 0} />
+        <StatCard label="逾期" value={stats.overdue ?? 0} />
+      </div>
+
+      <form onSubmit={create} style={{ border: '1px solid #eee', borderRadius: 8, padding: 12, marginBottom: 16 }}>
+        <strong>新增提醒</strong>
+        <Input label="標題" value={title} onChange={(e) => setTitle(e.target.value)} />
+        <Input label="提醒時間" type="datetime-local" value={remindAt} onChange={(e) => setRemindAt(e.target.value)} />
+        <Textarea label="內容（選填）" value={content} onChange={(e) => setContent(e.target.value)} />
+        <button type="submit">建立</button>
+      </form>
+
+      <h3 style={{ margin: '0 0 8px' }}>即將到來</h3>
+      <DataTable columns={columns} rows={reminders} rowKey={(r) => r.id} busy={busy} empty="沒有即將到來的提醒" />
+
+      <Toast message={toast} onDismiss={() => setToast(null)} />
+    </main>
+  )
+}

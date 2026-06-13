@@ -1,10 +1,15 @@
-// Team management screen (CRD §8.2, admin-flagged): team list with member
-// counts, create team, member listing per team.
+// Team management (admin): team list + create, a per-team QR-code panel
+// (generate / show latest join QR), and member management with inline role and
+// active-status changes plus bulk removal (Phase 2.2).
 
 import { useEffect, useState } from 'react'
 
-import { get, post } from '../api/client'
+import { get, post, put } from '../api/client'
 import { session } from '../auth/session'
+import { DataTable } from '../components/DataTable'
+import { Modal, ConfirmDialog } from '../components/Modal'
+import { StatusPill, Toast } from '../components/ui'
+import type { Column } from '../components/DataTable'
 
 interface Team {
   id: number
@@ -20,6 +25,23 @@ interface Member {
   email?: string
   role?: string
   teamRole?: string
+  isActive?: boolean
+}
+
+interface LatestQr {
+  qrCodeImage?: string
+  joinUrl?: string
+}
+
+const ROLE_OPTIONS = [
+  { value: 'agent', label: '客服' },
+  { value: 'admin', label: '管理員' },
+]
+
+function qrSrc(image?: string): string | undefined {
+  if (!image) return undefined
+  if (image.startsWith('data:') || image.startsWith('http')) return image
+  return `data:image/png;base64,${image}`
 }
 
 export default function Teams() {
@@ -28,6 +50,11 @@ export default function Teams() {
   const [members, setMembers] = useState<Member[]>([])
   const [name, setName] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [toast, setToast] = useState<string | null>(null)
+  const [picked, setPicked] = useState<Set<string>>(new Set())
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [qr, setQr] = useState<LatestQr | null>(null)
+  const [qrOpen, setQrOpen] = useState(false)
 
   const load = async () => {
     const resp = await get<{ items?: Team[]; teams?: Team[] } | Team[]>('/api/teams')
@@ -44,10 +71,9 @@ export default function Teams() {
 
   const openTeam = async (id: number) => {
     setSelected(id)
+    setPicked(new Set())
     const resp = await get<{ members?: Member[]; items?: Member[] }>(`/api/teams/${id}/members`)
-    if (resp.success && resp.data) {
-      setMembers(resp.data.members ?? resp.data.items ?? [])
-    }
+    if (resp.success && resp.data) setMembers(resp.data.members ?? resp.data.items ?? [])
   }
 
   const create = async (e: React.FormEvent) => {
@@ -62,50 +88,179 @@ export default function Teams() {
     }
   }
 
-  // Admin gate AFTER all hooks (Rules of Hooks: stable hook order).
-  if (!session.isAdmin()) {
-    return <main style={{ margin: '10vh auto', maxWidth: 480 }}><p>權限不足</p></main>
+  const changeRole = async (memberId: string, role: string) => {
+    const resp = await put(`/api/teams/members/${memberId}/role`, { role })
+    setToast(resp.success ? '角色已更新' : resp.message ?? '更新失敗')
+    if (resp.success) setMembers((ms) => ms.map((m) => (m.id === memberId ? { ...m, role } : m)))
   }
+
+  const toggleActive = async (m: Member) => {
+    const resp = await put(`/api/teams/members/${m.id}/status`, { isActive: !m.isActive })
+    setToast(resp.success ? '狀態已更新' : resp.message ?? '更新失敗')
+    if (resp.success) setMembers((ms) => ms.map((x) => (x.id === m.id ? { ...x, isActive: !m.isActive } : x)))
+  }
+
+  const bulkDelete = async () => {
+    const memberIds = [...picked]
+    const resp = await post('/api/teams/members/bulk-delete', { memberIds })
+    setConfirmDelete(false)
+    setToast(resp.success ? `已移除 ${memberIds.length} 位成員` : resp.message ?? '刪除失敗')
+    if (resp.success && selected != null) {
+      setPicked(new Set())
+      void openTeam(selected)
+    }
+  }
+
+  const showQr = async (teamId: number) => {
+    const resp = await get<LatestQr>(`/api/teams/${teamId}/qr-code/latest`)
+    setQr(resp.success && resp.data ? resp.data : {})
+    setQrOpen(true)
+  }
+
+  const regenerateQr = async (teamId: number) => {
+    const resp = await post(`/api/teams/${teamId}/qr-code`, {})
+    if (resp.success) {
+      setToast('已重新產生 QR code')
+      await showQr(teamId)
+    } else {
+      setToast(resp.message ?? '產生失敗')
+    }
+  }
+
+  const togglePick = (id: string) =>
+    setPicked((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  if (!session.isAdmin()) {
+    return (
+      <main style={{ margin: '10vh auto', maxWidth: 480 }}>
+        <p>權限不足</p>
+      </main>
+    )
+  }
+
+  const memberColumns: Column<Member>[] = [
+    {
+      key: 'sel',
+      header: '',
+      width: 28,
+      render: (m) => <input type="checkbox" checked={picked.has(m.id)} onChange={() => togglePick(m.id)} />,
+    },
+    { key: 'displayName', header: '名稱', render: (m) => m.displayName || m.email || m.id },
+    {
+      key: 'role',
+      header: '角色',
+      width: 120,
+      render: (m) => (
+        <select
+          value={m.role ?? 'agent'}
+          onChange={(e) => void changeRole(m.id, e.target.value)}
+          style={{ padding: '3px 6px', borderRadius: 6, border: '1px solid #ccc' }}
+        >
+          {ROLE_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      ),
+    },
+    {
+      key: 'isActive',
+      header: '狀態',
+      width: 110,
+      render: (m) => (
+        <button onClick={() => void toggleActive(m)}>
+          <StatusPill status={m.isActive ? 'active' : 'inactive'} label={m.isActive ? '啟用' : '停用'} />
+        </button>
+      ),
+    },
+  ]
+
   return (
-    <main style={{ maxWidth: 720, margin: '5vh auto' }}>
+    <main style={{ maxWidth: 920, margin: '4vh auto', padding: '0 16px' }}>
       <h1>團隊管理</h1>
       {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
       <form onSubmit={create} style={{ display: 'flex', gap: 8 }}>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="新團隊名稱" />
         <button type="submit">建立</button>
       </form>
-      <div style={{ display: 'flex', gap: 24, marginTop: 16 }}>
-        <ul style={{ listStyle: 'none', padding: 0, flex: 1 }}>
+
+      <div style={{ display: 'flex', gap: 24, marginTop: 16, alignItems: 'flex-start' }}>
+        <ul style={{ listStyle: 'none', padding: 0, flex: '0 0 240px' }}>
           {teams.map((team) => (
             <li
               key={team.id}
-              onClick={() => void openTeam(team.id)}
               style={{
-                padding: 8, cursor: 'pointer',
+                padding: 8,
+                borderRadius: 6,
+                cursor: 'pointer',
                 background: selected === team.id ? '#eef5ff' : undefined,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
               }}
             >
-              <strong>{team.name}</strong>
-              {team.memberCount !== undefined && <span>（{team.memberCount} 人）</span>}
+              <span style={{ flex: 1 }} onClick={() => void openTeam(team.id)}>
+                <strong>{team.name}</strong>
+                {team.memberCount !== undefined && <span>（{team.memberCount}）</span>}
+              </span>
+              <button onClick={() => void showQr(team.id)} title="加入 QR code">
+                QR
+              </button>
             </li>
           ))}
         </ul>
+
         <div style={{ flex: 1 }}>
           {selected !== null && (
             <>
-              <h2>成員</h2>
-              <ul style={{ listStyle: 'none', padding: 0 }}>
-                {members.map((m) => (
-                  <li key={m.id} style={{ padding: 4 }}>
-                    {m.displayName ?? m.email}
-                    <small style={{ color: '#666' }}> {m.teamRole ?? m.role}</small>
-                  </li>
-                ))}
-              </ul>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <h2 style={{ margin: 0 }}>成員</h2>
+                {picked.size > 0 && (
+                  <button onClick={() => setConfirmDelete(true)} style={{ color: 'crimson' }}>
+                    移除所選（{picked.size}）
+                  </button>
+                )}
+              </div>
+              <DataTable columns={memberColumns} rows={members} rowKey={(m) => m.id} empty="此團隊沒有成員" />
             </>
           )}
         </div>
       </div>
+
+      <Modal open={qrOpen} title="團隊加入 QR code" onClose={() => setQrOpen(false)} width={360}>
+        {qr?.qrCodeImage ? (
+          <img src={qrSrc(qr.qrCodeImage)} alt="QR code" style={{ width: '100%', maxWidth: 280, display: 'block', margin: '0 auto' }} />
+        ) : (
+          <p style={{ color: '#888' }}>尚無 QR code，請重新產生。</p>
+        )}
+        {qr?.joinUrl && (
+          <p style={{ fontSize: 13, wordBreak: 'break-all' }}>
+            <a href={qr.joinUrl} target="_blank" rel="noreferrer">
+              {qr.joinUrl}
+            </a>
+          </p>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
+          <button onClick={() => selected != null && void regenerateQr(selected)}>重新產生</button>
+        </div>
+      </Modal>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        message={`確定要移除所選的 ${picked.size} 位成員嗎？`}
+        confirmLabel="移除"
+        danger
+        onConfirm={() => void bulkDelete()}
+        onCancel={() => setConfirmDelete(false)}
+      />
+
+      <Toast message={toast} onDismiss={() => setToast(null)} />
     </main>
   )
 }

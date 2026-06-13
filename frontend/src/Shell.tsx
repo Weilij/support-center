@@ -1,16 +1,75 @@
-// Shared authenticated shell: navigation, unread badge, logout (CRD §8.2).
+// Shared authenticated shell: grouped navigation, unread badge, logout
+// (CRD §8.2). Nav is data-driven (NAV_GROUPS) so later feature epics slot new
+// destinations into a group without touching layout. `admin` entries render
+// only for admins; `badge` injects a live counter.
 
 import { Link, useNavigate } from 'react-router-dom'
 
-import { post } from './api/client'
 import { session, authChanged } from './auth/session'
 import { notificationsStore } from './stores/notifications'
 import { useStore } from './stores/store'
+
+interface NavItem {
+  to: string
+  label: string
+  admin?: boolean
+  badge?: 'unread'
+}
+
+interface NavGroup {
+  title: string
+  items: NavItem[]
+}
+
+// Grouped destinations. Feature epics extend the relevant group's items.
+const NAV_GROUPS: NavGroup[] = [
+  {
+    title: '日常',
+    items: [
+      { to: '/dashboard', label: '儀表板' },
+      { to: '/conversations', label: '對話' },
+      { to: '/customers', label: '客戶' },
+      { to: '/messages/search', label: '訊息搜尋' },
+      { to: '/reminders', label: '提醒' },
+      { to: '/notifications', label: '通知', badge: 'unread' },
+      { to: '/tags', label: '標籤' },
+    ],
+  },
+  {
+    title: '管理',
+    items: [
+      { to: '/agents', label: '客服人員', admin: true },
+      { to: '/teams', label: '團隊', admin: true },
+      { to: '/sessions', label: '工作階段', admin: true },
+      { to: '/channels', label: '頻道', admin: true },
+      { to: '/auto-reply', label: '自動回覆', admin: true },
+      { to: '/liff', label: 'LIFF', admin: true },
+      { to: '/settings', label: '設定', admin: true },
+    ],
+  },
+  {
+    title: '分析',
+    items: [
+      { to: '/analytics', label: '數據分析' },
+      { to: '/reports', label: '報表' },
+      { to: '/activity', label: '活動日誌', admin: true },
+    ],
+  },
+  {
+    title: '系統',
+    items: [
+      { to: '/system/monitoring', label: '監控', admin: true },
+      { to: '/system/alerts', label: '告警', admin: true },
+      { to: '/system/maintenance', label: '維護', admin: true },
+    ],
+  },
+]
 
 export default function Shell({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate()
   const notifications = useStore(notificationsStore)
   const who = session.identity()
+  const isAdmin = session.isAdmin()
 
   const logout = async () => {
     const sessionId = session.sessionId()
@@ -30,22 +89,39 @@ export default function Shell({ children }: { children: React.ReactNode }) {
     authChanged.emit()
     navigate('/login', { replace: true })
   }
-  void post // keep import shape stable for future use
+
+  const badgeText = (item: NavItem) =>
+    item.badge === 'unread' && notifications.unread > 0 ? ` (${notifications.unread})` : ''
 
   return (
     <div style={{ fontFamily: 'sans-serif' }}>
-      <nav style={{
-        display: 'flex', gap: 16, alignItems: 'center', padding: '8px 16px',
-        borderBottom: '1px solid #ddd',
-      }}>
-        <Link to="/dashboard">儀表板</Link>
-        <Link to="/conversations">對話</Link>
-        <Link to="/notifications">
-          通知{notifications.unread > 0 ? ` (${notifications.unread})` : ''}
-        </Link>
-        <Link to="/tags">標籤</Link>
-        {session.isAdmin() && <Link to="/teams">團隊</Link>}
-        {session.isAdmin() && <Link to="/settings">設定</Link>}
+      <nav
+        style={{
+          display: 'flex',
+          gap: 20,
+          alignItems: 'center',
+          padding: '8px 16px',
+          borderBottom: '1px solid #ddd',
+          flexWrap: 'wrap',
+        }}
+      >
+        {NAV_GROUPS.map((group) => {
+          const visible = group.items.filter((i) => !i.admin || isAdmin)
+          if (visible.length === 0) return null
+          return (
+            <div key={group.title} style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: '#aaa', textTransform: 'uppercase' }}>
+                {group.title}
+              </span>
+              {visible.map((item) => (
+                <Link key={item.to} to={item.to}>
+                  {item.label}
+                  {badgeText(item)}
+                </Link>
+              ))}
+            </div>
+          )
+        })}
         <span style={{ marginLeft: 'auto' }}>{who?.displayName}</span>
         <button onClick={() => void logout()}>登出</button>
       </nav>

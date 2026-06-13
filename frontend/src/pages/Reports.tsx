@@ -3,8 +3,8 @@
 
 import { useEffect, useState } from 'react'
 
-import { get, post } from '../api/client'
-import { session } from '../auth/session'
+import { get, post, download as downloadFile } from '../api/client'
+import { Modal } from '../components/Modal'
 
 interface Report {
   id: string
@@ -28,6 +28,8 @@ export default function Reports() {
   const [format, setFormat] = useState('json')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [preview, setPreview] = useState<unknown | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
 
   const load = async () => {
     const resp = await get<{ reports?: Report[] }>('/api/reports')
@@ -54,21 +56,19 @@ export default function Reports() {
   }
 
   const download = async (id: string) => {
-    // Authenticated download: fetch with the bearer header and trigger a save.
-    const resp = await fetch(`/api/reports/${id}/download`, {
-      headers: { Authorization: `Bearer ${session.accessToken() ?? ''}` },
-    })
-    if (!resp.ok) {
-      setError('下載失敗')
-      return
+    const res = await downloadFile('GET', `/api/reports/${id}/download`, undefined, 'report')
+    if (!res.ok) setError(res.message ?? '下載失敗')
+  }
+
+  const showPreview = async () => {
+    setError(null)
+    const resp = await post<unknown>('/api/reports/preview', { kind, timeRange: 'last_7_days' })
+    if (resp.success) {
+      setPreview(resp.data ?? null)
+      setPreviewOpen(true)
+    } else {
+      setError(resp.message ?? '預覽失敗')
     }
-    const blob = await resp.blob()
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = resp.headers.get('content-disposition')?.match(/filename="(.+)"/)?.[1] ?? 'report'
-    a.click()
-    URL.revokeObjectURL(url)
   }
 
   return (
@@ -87,6 +87,7 @@ export default function Reports() {
           <option value="csv">CSV</option>
         </select>
         <button type="submit" disabled={busy}>產生報表</button>
+        <button type="button" onClick={() => void showPreview()}>預覽</button>
       </form>
       <table style={{ width: '100%', marginTop: 16, borderCollapse: 'collapse' }}>
         <thead>
@@ -109,6 +110,12 @@ export default function Reports() {
           ))}
         </tbody>
       </table>
+
+      <Modal open={previewOpen} title="報表預覽" onClose={() => setPreviewOpen(false)} width={560}>
+        <pre style={{ background: '#f7f7f7', padding: 12, borderRadius: 6, overflowX: 'auto', fontSize: 12 }}>
+          {preview ? JSON.stringify(preview, null, 2) : '無資料'}
+        </pre>
+      </Modal>
     </main>
   )
 }

@@ -1,7 +1,7 @@
 // Conversation list container (CRD §8.1 List Conversations + mark-as-read
 // with optimistic unread clearing).
 
-import { get, put } from '../api/client'
+import { get, put, post } from '../api/client'
 import { Store } from './store'
 
 export interface Conversation {
@@ -85,6 +85,61 @@ export function markConversationRead(id: string): Promise<boolean> {
     }),
     () => put(`/api/conversations/${id}/read`),
   )
+}
+
+/// Assign a conversation to a team. Optimistically reflects the new team and
+/// 'assigned' status, reverting if the server refuses (CRD §3.2 routing).
+export function assignConversation(id: string, teamId: number, reason?: string): Promise<boolean> {
+  return conversationsStore.optimistic(
+    (s) => ({
+      ...s,
+      items: s.items.map((c) =>
+        c.id === id ? { ...c, teamId, status: 'assigned' } : c,
+      ),
+    }),
+    () => post(`/api/conversations/${id}/assign`, { teamId, reason }),
+  )
+}
+
+/// Transfer a conversation from its current team to another.
+export function transferConversation(
+  id: string,
+  toTeamId: number,
+  fromTeamId?: number | null,
+  reason?: string,
+): Promise<boolean> {
+  return conversationsStore.optimistic(
+    (s) => ({
+      ...s,
+      items: s.items.map((c) => (c.id === id ? { ...c, teamId: toTeamId, status: 'active' } : c)),
+    }),
+    () => post(`/api/conversations/${id}/transfer`, { toTeamId, fromTeamId, reason }),
+  )
+}
+
+/// Remove the team assignment, returning the conversation to the unassigned pool.
+export function unassignConversation(id: string, reason?: string): Promise<boolean> {
+  return conversationsStore.optimistic(
+    (s) => ({
+      ...s,
+      items: s.items.map((c) => (c.id === id ? { ...c, teamId: null, status: 'active' } : c)),
+    }),
+    () => post(`/api/conversations/${id}/unassign`, { reason }),
+  )
+}
+
+export type BulkOperation = 'assign' | 'set_priority' | 'add_tags' | 'remove_tags'
+
+/// Apply a bulk operation to many conversations, then refresh the list from the
+/// server (the response is a summary, not the updated rows).
+export async function bulkConversations(
+  conversationIds: string[],
+  operation: BulkOperation,
+  data: Record<string, unknown>,
+): Promise<boolean> {
+  const resp = await post('/api/conversations/bulk', { operation, conversationIds, data })
+  if (resp.success) await loadConversations(conversationsStore.get().page, true)
+  return resp.success
 }
 
 /// Real-time reconciliation: a pushed new-message event bumps the affected

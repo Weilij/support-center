@@ -148,3 +148,129 @@ export const put = <T = unknown>(path: string, body?: unknown, options?: Request
   api<T>('PUT', path, body, options)
 export const del = <T = unknown>(path: string, options?: RequestOptions) =>
   api<T>('DELETE', path, undefined, options)
+
+// ---------------------------------------------------------------------------
+// Shared helpers (Epic 0 foundation): the list/upload/download primitives that
+// every CRUD screen reuses, so individual pages stop hand-rolling them.
+// ---------------------------------------------------------------------------
+
+export type QueryValue = string | number | boolean | null | undefined
+
+/// Build a query string from a params map, skipping null/undefined/'' values
+/// and URL-encoding the rest. Returns '' (not '?') when nothing is present so
+/// callers can always do `${path}${buildQuery(params)}`.
+export function buildQuery(params: Record<string, QueryValue>): string {
+  const usp = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value === null || value === undefined || value === '') continue
+    usp.append(key, String(value))
+  }
+  const qs = usp.toString()
+  return qs ? `?${qs}` : ''
+}
+
+/// The shape list endpoints settle on: a page of rows plus pagination meta.
+/// The backend is inconsistent about envelope keys (data vs items vs a bare
+/// array, pagination.total vs total), so `unwrapList` tolerates all of them.
+export interface ListResult<T> {
+  items: T[]
+  total: number
+  page: number
+}
+
+export function unwrapList<T>(resp: Envelope<T[] | { items?: T[] }>, page = 1): ListResult<T> {
+  const data = resp.data as unknown
+  const items: T[] = Array.isArray(data)
+    ? (data as T[])
+    : (((data as { items?: T[]; rows?: T[] })?.items ??
+        (data as { rows?: T[] })?.rows ??
+        []) as T[])
+  const pag = (resp as { pagination?: { total?: number; page?: number } }).pagination
+  const total = pag?.total ?? (resp as { total?: number }).total ?? items.length
+  return { items, total, page: pag?.page ?? page }
+}
+
+/// multipart/form-data upload — the JSON `api()` path can't carry binaries.
+/// Shares the bearer + team-context headers and the same envelope contract,
+/// but lets the browser set the multipart boundary (no Content-Type override).
+export async function upload<T = unknown>(
+  path: string,
+  form: FormData,
+): Promise<Envelope<T>> {
+  const headers: Record<string, string> = {}
+  const token = session.accessToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const teamContext = session.contextTeamId()
+  if (teamContext) headers['X-Context-Team-ID'] = String(teamContext)
+
+  let resp: Response
+  try {
+    resp = await fetch(path.startsWith('/') ? path : `/api/${path}`, {
+      method: 'POST',
+      headers,
+      body: form,
+    })
+  } catch {
+    return { success: false, message: t('error.network'), status: 0 }
+  }
+  const parsed: Envelope<T> | null = await resp.json().catch(() => null)
+  if (resp.ok) {
+    return parsed ?? { success: false, message: t('error.format'), status: resp.status }
+  }
+  if (resp.status === 401) redirectToLoginOnce()
+  return {
+    success: false,
+    ...(parsed ?? {}),
+    message: (parsed?.message as string) || (parsed?.error as string) || statusMessage(resp.status),
+    status: resp.status,
+  }
+}
+
+export interface DownloadResult {
+  ok: boolean
+  message?: string
+}
+
+/// Fetch a binary/report response and trigger a browser save, honouring the
+/// server's Content-Disposition filename. Centralises the blob dance the
+/// Reports screen previously hand-rolled.
+export async function download(
+  method: string,
+  path: string,
+  body?: unknown,
+  fallbackName = 'download',
+): Promise<DownloadResult> {
+  const headers: Record<string, string> = {}
+  const token = session.accessToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const teamContext = session.contextTeamId()
+  if (teamContext) headers['X-Context-Team-ID'] = String(teamContext)
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
+
+  let resp: Response
+  try {
+    resp = await fetch(path.startsWith('/') ? path : `/api/${path}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+  } catch {
+    return { ok: false, message: t('error.network') }
+  }
+  if (!resp.ok) {
+    if (resp.status === 401) redirectToLoginOnce()
+    return { ok: false, message: statusMessage(resp.status) }
+  }
+  const name =
+    resp.headers.get('content-disposition')?.match(/filename="?([^"]+)"?/)?.[1] ?? fallbackName
+  const blob = await resp.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+  return { ok: true }
+}
