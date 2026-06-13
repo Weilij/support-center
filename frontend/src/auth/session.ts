@@ -2,6 +2,8 @@
 // credentials, cached identity, lifecycle pending/authenticated/
 // unauthenticated, a short-lived auth snapshot, and a global change signal.
 
+import { positionOf, type Position } from './permissions'
+
 export type SessionLifecycle = 'pending' | 'authenticated' | 'unauthenticated'
 
 export interface Identity {
@@ -9,6 +11,7 @@ export interface Identity {
   email?: string
   displayName?: string
   role?: string
+  position?: string
   [key: string]: unknown
 }
 
@@ -63,6 +66,7 @@ export const session = {
   lifecycle: () => lifecycle,
   identity: () => identity,
   isAdmin: () => identity?.role === 'admin',
+  position: (): Position => positionOf(identity),
 
   /// Short-lived auth snapshot for instant guard decisions (CRD 6480).
   snapshot(): boolean | null {
