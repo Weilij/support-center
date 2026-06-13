@@ -9,11 +9,14 @@ export function StatCard({ label, value, hint }: { label: ReactNode; value: Reac
   return (
     <div
       style={{
-        border: '1px solid #eee',
-        borderRadius: 10,
+        background: 'var(--glass-bg)',
+        backdropFilter: 'blur(var(--glass-blur))',
+        WebkitBackdropFilter: 'blur(var(--glass-blur))',
+        border: '1px solid var(--glass-border)',
+        borderRadius: 'var(--radius)',
+        boxShadow: 'var(--shadow)',
         padding: 16,
         minWidth: 140,
-        background: 'white',
       }}
     >
       <div style={{ fontSize: 13, color: '#888' }}>{label}</div>
@@ -72,6 +75,12 @@ export function FilterBar({ children }: { children: ReactNode }) {
         alignItems: 'center',
         flexWrap: 'wrap',
         margin: '12px 0',
+        background: 'var(--glass-bg)',
+        backdropFilter: 'blur(var(--glass-blur))',
+        WebkitBackdropFilter: 'blur(var(--glass-blur))',
+        border: '1px solid var(--glass-border)',
+        borderRadius: 'var(--radius)',
+        padding: 10,
       }}
     >
       {children}
@@ -98,7 +107,9 @@ export function Toast({ message, onDismiss, ms = 3000 }: { message: string | nul
         bottom: 24,
         left: '50%',
         transform: 'translateX(-50%)',
-        background: '#111',
+        background: 'rgba(17,17,17,0.78)',
+        backdropFilter: 'blur(12px)',
+        WebkitBackdropFilter: 'blur(12px)',
         color: 'white',
         padding: '10px 18px',
         borderRadius: 8,

@@ -41,7 +41,10 @@ export function Modal({ open, title, onClose, children, width = 480 }: ModalProp
         aria-modal="true"
         onClick={(e) => e.stopPropagation()}
         style={{
-          background: 'white',
+          background: 'var(--glass-bg-strong)',
+          backdropFilter: 'blur(var(--glass-blur))',
+          WebkitBackdropFilter: 'blur(var(--glass-blur))',
+          border: '1px solid var(--glass-border)',
           borderRadius: 10,
           padding: 20,
           width,
@@ -76,7 +79,10 @@ export function Drawer({ open, title, onClose, children, width = 420 }: DrawerPr
         aria-modal="true"
         onClick={(e) => e.stopPropagation()}
         style={{
-          background: 'white',
+          background: 'var(--glass-bg-strong)',
+          backdropFilter: 'blur(var(--glass-blur))',
+          WebkitBackdropFilter: 'blur(var(--glass-blur))',
+          border: '1px solid var(--glass-border)',
           width,
           maxWidth: '92vw',
           height: '100%',

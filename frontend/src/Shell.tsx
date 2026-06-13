@@ -94,9 +94,14 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           display: 'flex',
           gap: 20,
           alignItems: 'center',
-          padding: '8px 16px',
-          borderBottom: '1px solid #ddd',
           flexWrap: 'wrap',
+          padding: '10px 16px',
+          position: 'sticky', top: 0, zIndex: 100,
+          background: 'var(--glass-bg)',
+          backdropFilter: 'blur(var(--glass-blur))',
+          WebkitBackdropFilter: 'blur(var(--glass-blur))',
+          borderBottom: '1px solid var(--glass-border)',
+          boxShadow: 'var(--shadow)',
         }}
       >
         {NAV_GROUPS.map((group) => {
