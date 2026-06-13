@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react'
 
 import { get } from '../api/client'
+import { can } from '../auth/permissions'
 import { session } from '../auth/session'
 import { MetricsView } from '../components/MetricsView'
 
@@ -39,7 +40,7 @@ export default function SystemMonitoring() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab])
 
-  if (!session.isAdmin()) {
+  if (!can(session.position(), 'system')) {
     return (
       <main style={{ margin: '10vh auto', maxWidth: 480 }}>
         <p>權限不足</p>

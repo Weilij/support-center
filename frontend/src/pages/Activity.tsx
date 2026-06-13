@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react'
 
 import { get, post } from '../api/client'
+import { can } from '../auth/permissions'
 import { session } from '../auth/session'
 import { DataTable } from '../components/DataTable'
 import { StatCard, Toast } from '../components/ui'
@@ -51,7 +52,7 @@ export default function ActivityLog() {
     if (resp.success) void loadList()
   }
 
-  if (!session.isAdmin()) {
+  if (!can(session.position(), 'analytics')) {
     return (
       <main style={{ margin: '10vh auto', maxWidth: 480 }}>
         <p>權限不足</p>

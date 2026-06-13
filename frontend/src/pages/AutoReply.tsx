@@ -5,7 +5,6 @@
 import { useEffect, useState } from 'react'
 
 import { get, post, del } from '../api/client'
-import { session } from '../auth/session'
 import { DataTable } from '../components/DataTable'
 import { StatCard, Toast } from '../components/ui'
 import type { Column } from '../components/DataTable'
@@ -22,14 +21,6 @@ type Tab = 'rules' | 'schedules' | 'logs'
 
 export default function AutoReply() {
   const [tab, setTab] = useState<Tab>('rules')
-
-  if (!session.isAdmin()) {
-    return (
-      <main style={{ margin: '10vh auto', maxWidth: 480 }}>
-        <p>權限不足</p>
-      </main>
-    )
-  }
 
   return (
     <main style={{ maxWidth: 820, margin: '4vh auto', padding: '0 16px' }}>

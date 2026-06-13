@@ -4,6 +4,8 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 
+import { can } from '../auth/permissions'
+import { session } from '../auth/session'
 import { DataTable, Pagination } from '../components/DataTable'
 import { Modal } from '../components/Modal'
 import { Input } from '../components/Form'
@@ -59,6 +61,14 @@ export default function Sessions() {
       setRows((rs) => rs.map((r) => (r.id === editing.id ? { ...r, topic: topicDraft } : r)))
       setEditing(null)
     }
+  }
+
+  if (!can(session.position(), 'ops')) {
+    return (
+      <main style={{ margin: '10vh auto', maxWidth: 480 }}>
+        <p>權限不足</p>
+      </main>
+    )
   }
 
   const columns: Column<SessionRow>[] = [

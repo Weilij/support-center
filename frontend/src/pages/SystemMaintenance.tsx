@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react'
 
 import { get, post } from '../api/client'
+import { can } from '../auth/permissions'
 import { session } from '../auth/session'
 import { MetricsView } from '../components/MetricsView'
 import { Toast } from '../components/ui'
@@ -46,7 +47,7 @@ export default function SystemMaintenance() {
     if (resp.success && tab === 'optimization') void load()
   }
 
-  if (!session.isAdmin()) {
+  if (!can(session.position(), 'system')) {
     return (
       <main style={{ margin: '10vh auto', maxWidth: 480 }}>
         <p>權限不足</p>

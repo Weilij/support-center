@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react'
 
 import { get, post } from '../api/client'
+import { can } from '../auth/permissions'
 import { session } from '../auth/session'
 import { Input } from '../components/Form'
 import { StatusPill, Toast } from '../components/ui'
@@ -50,7 +51,7 @@ export default function AlertConfig() {
   const testAlert = async () =>
     setToast((await post('/api/alert-config/test-alert', { level: 'warning', title: '測試告警' })).success ? '測試告警已送出' : '送出失敗')
 
-  if (!session.isAdmin()) {
+  if (!can(session.position(), 'system')) {
     return (
       <main style={{ margin: '10vh auto', maxWidth: 480 }}>
         <p>權限不足</p>

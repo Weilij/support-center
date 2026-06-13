@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react'
 
 import { get, put } from '../api/client'
+import { can } from '../auth/permissions'
 import { session } from '../auth/session'
 
 interface GeneralSettings {
@@ -45,8 +46,8 @@ export default function Settings() {
     </label>
   )
 
-  // Admin gate AFTER all hooks (Rules of Hooks: stable hook order).
-  if (!session.isAdmin()) {
+  // Area gate AFTER all hooks (Rules of Hooks: stable hook order).
+  if (!can(session.position(), 'system')) {
     return <main style={{ margin: '10vh auto', maxWidth: 480 }}><p>權限不足</p></main>
   }
   return (

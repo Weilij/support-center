@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react'
 
 import { get, post, put } from '../api/client'
+import { can } from '../auth/permissions'
 import { session } from '../auth/session'
 import { DataTable } from '../components/DataTable'
 import { Modal, ConfirmDialog } from '../components/Modal'
@@ -135,7 +136,7 @@ export default function Teams() {
       return next
     })
 
-  if (!session.isAdmin()) {
+  if (!can(session.position(), 'ops')) {
     return (
       <main style={{ margin: '10vh auto', maxWidth: 480 }}>
         <p>權限不足</p>
