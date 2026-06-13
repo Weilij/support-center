@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react'
 import { notificationsStore, loadNotifications, markRead, markAllRead } from '../stores/notifications'
 import { useStore } from '../stores/store'
 import { get, post } from '../api/client'
+import { can } from '../auth/permissions'
 import { session } from '../auth/session'
 import { StatCard, Toast } from '../components/ui'
 
@@ -19,7 +20,7 @@ interface NotifStats {
 
 export default function Notifications() {
   const state = useStore(notificationsStore)
-  const isAdmin = session.isAdmin()
+  const isAdmin = can(session.position(), 'system')
   const [stats, setStats] = useState<NotifStats>({})
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
