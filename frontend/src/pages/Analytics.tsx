@@ -8,6 +8,8 @@ import { StatCard } from '../components/ui'
 import { DataTable } from '../components/DataTable'
 import { loadAnalyticsOverview, type CoreSummaries, type TopPerformer } from '../stores/analytics'
 import type { Column } from '../components/DataTable'
+import { can } from '../auth/permissions'
+import { session } from '../auth/session'
 
 const RANGES = [
   { value: '7d', label: '近 7 天' },
@@ -33,6 +35,14 @@ export default function Analytics() {
       setBusy(false)
     })
   }, [range])
+
+  if (!can(session.position(), 'analytics')) {
+    return (
+      <main style={{ margin: '10vh auto', maxWidth: 480 }}>
+        <p>權限不足</p>
+      </main>
+    )
+  }
 
   const c = data.conversations ?? {}
   const m = data.messages ?? {}

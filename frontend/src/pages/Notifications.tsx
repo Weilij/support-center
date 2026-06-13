@@ -20,7 +20,7 @@ interface NotifStats {
 
 export default function Notifications() {
   const state = useStore(notificationsStore)
-  const isAdmin = can(session.position(), 'system')
+  const canAccessSystem = can(session.position(), 'system')
   const [stats, setStats] = useState<NotifStats>({})
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
@@ -29,8 +29,8 @@ export default function Notifications() {
 
   useEffect(() => {
     void loadNotifications()
-    if (isAdmin) void get<NotifStats>('/api/notifications/stats').then((r) => r.success && r.data && setStats(r.data))
-  }, [isAdmin])
+    if (canAccessSystem) void get<NotifStats>('/api/notifications/stats').then((r) => r.success && r.data && setStats(r.data))
+  }, [canAccessSystem])
 
   const broadcast = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -53,7 +53,7 @@ export default function Notifications() {
     <main style={{ maxWidth: 720, margin: '4vh auto', fontFamily: 'sans-serif', padding: '0 16px' }}>
       <h1>通知中心 {state.unread > 0 && <small>（未讀 {state.unread}）</small>}</h1>
 
-      {isAdmin && (
+      {canAccessSystem && (
         <>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '8px 0' }}>
             <StatCard label="總通知" value={stats.total ?? 0} />

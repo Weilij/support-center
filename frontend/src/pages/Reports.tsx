@@ -5,6 +5,8 @@ import { useEffect, useState } from 'react'
 
 import { get, post, download as downloadFile } from '../api/client'
 import { Modal } from '../components/Modal'
+import { can } from '../auth/permissions'
+import { session } from '../auth/session'
 
 interface Report {
   id: string
@@ -39,6 +41,14 @@ export default function Reports() {
   useEffect(() => {
     void load()
   }, [])
+
+  if (!can(session.position(), 'analytics')) {
+    return (
+      <main style={{ margin: '10vh auto', maxWidth: 480 }}>
+        <p>權限不足</p>
+      </main>
+    )
+  }
 
   const generate = async (e: React.FormEvent) => {
     e.preventDefault()

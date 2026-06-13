@@ -17,7 +17,7 @@ import {
 } from '../stores/agents'
 import type { Column } from '../components/DataTable'
 import { session } from '../auth/session'
-import { positionOf, POSITION_LABELS, AREA_ACCESS, type Position } from '../auth/permissions'
+import { can, positionOf, POSITION_LABELS, AREA_ACCESS, type Position } from '../auth/permissions'
 
 const PAGE_SIZE = 20
 
@@ -87,6 +87,14 @@ export default function Agents() {
     const res = await setAgentPosition(agentId, position)
     setToast(res.ok ? '職位已更新' : res.message ?? '更新失敗')
     if (res.ok) setAgents((as) => as.map((a) => (a.id === agentId ? { ...a, position } : a)))
+  }
+
+  if (!can(session.position(), 'ops')) {
+    return (
+      <main style={{ margin: '10vh auto', maxWidth: 480 }}>
+        <p>權限不足</p>
+      </main>
+    )
   }
 
   const columns: Column<Agent>[] = [
