@@ -1,31 +1,58 @@
-/* Apple-Glass theme layer (spec 2026-06-14). Tokens + base element styles so
-   even inline-styled pages inherit the aesthetic. */
+/* Refined Apple-Glass theme (spec 2026-06-14). Tokens + base element styles. */
 :root {
-  --accent: #3b82f6;
-  --text: #1f2937;
-  --muted: #6b7280;
-  --radius: 14px;
-  --glass-bg: rgba(255, 255, 255, 0.55);
-  --glass-bg-strong: rgba(255, 255, 255, 0.72);
-  --glass-border: rgba(255, 255, 255, 0.6);
-  --glass-blur: 20px;
-  --shadow: 0 8px 32px rgba(31, 38, 135, 0.12);
+  /* palette */
+  --accent: #4f46e5;
+  --accent-2: #3b82f6;
+  --accent-soft: rgba(79, 70, 229, 0.12);
+  --text: #1f2433;
+  --muted: #7a82a0;
+  --ok: #16a34a;
+  --warn: #b45309;
+  --warn-bg: rgba(245, 158, 11, 0.20);
+  --ok-bg: rgba(34, 197, 94, 0.18);
+  --danger: #dc2626;
+  /* glass surfaces */
+  --surface: rgba(255, 255, 255, 0.55);
+  --surface-strong: rgba(255, 255, 255, 0.72);
+  --surface-border: rgba(255, 255, 255, 0.65);
+  --hairline: rgba(120, 130, 180, 0.15);
+  --blur: 22px;
+  /* shape + depth */
+  --radius: 18px;
+  --radius-sm: 11px;
+  --shadow: 0 8px 32px rgba(60, 70, 140, 0.10);
+  --shadow-lg: 0 12px 40px rgba(60, 70, 140, 0.18);
+  /* spacing scale */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
 }
 
 html, body, #root { min-height: 100%; }
+* { box-sizing: border-box; }
 
 body {
   margin: 0;
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 45%, #ecfeff 100%) fixed;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  background: linear-gradient(135deg, #dfe7ff 0%, #eadfff 42%, #d9f5ff 100%) fixed;
 }
 
+h1 { font-size: 22px; font-weight: 700; }
+h2 { font-size: 18px; font-weight: 700; }
+h3 { font-size: 15px; font-weight: 600; }
+
 .glass {
-  background: var(--glass-bg);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
-  border: 1px solid var(--glass-border);
+  background: var(--surface);
+  backdrop-filter: blur(var(--blur));
+  -webkit-backdrop-filter: blur(var(--blur));
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.glass-strong {
+  background: var(--surface-strong);
+  backdrop-filter: blur(var(--blur));
+  -webkit-backdrop-filter: blur(var(--blur));
+  border: 1px solid var(--surface-border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
 }
@@ -33,30 +60,35 @@ body {
 button {
   font: inherit;
   color: var(--text);
-  background: var(--glass-bg-strong);
-  border: 1px solid var(--glass-border);
-  border-radius: 10px;
-  padding: 6px 14px;
+  background: var(--surface-strong);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-sm);
+  padding: 7px 14px;
   cursor: pointer;
-  transition: transform 0.08s ease, box-shadow 0.15s ease;
+  transition: transform 0.08s ease, box-shadow 0.15s ease, background 0.15s ease;
 }
 button:hover:not(:disabled) { box-shadow: var(--shadow); transform: translateY(-1px); }
 button:disabled { opacity: 0.5; cursor: default; }
 .btn-primary { background: var(--accent); color: #fff; border-color: transparent; }
+.btn-primary:hover:not(:disabled) { background: #4338ca; }
 
 input, select, textarea {
   font: inherit;
   color: var(--text);
   background: rgba(255, 255, 255, 0.7);
-  border: 1px solid rgba(0, 0, 0, 0.1);
-  border-radius: 10px;
-  padding: 7px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  border-radius: var(--radius-sm);
+  padding: 8px 11px;
 }
 input:focus, select:focus, textarea:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: rgba(120, 120, 140, 0.35); border-radius: 8px; }
+::-webkit-scrollbar-thumb { background: rgba(120, 120, 160, 0.30); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(120, 120, 160, 0.45); }
