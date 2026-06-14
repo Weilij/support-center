@@ -81,17 +81,21 @@ export default function AppShell({
   const pos = session.position()
 
   const logout = async () => {
-    const sessionId = session.sessionId()
     // Server logout is best-effort (CRD §8.1 sign-out: failures ignored).
+    // The backend clears the HttpOnly cookies via the mcss_refresh cookie;
+    // we send X-CSRF-Token from the readable mcss_csrf cookie.
     try {
+      const csrf = document.cookie
+        .split('; ')
+        .find((row) => row.startsWith('mcss_csrf='))
+        ?.split('=')[1]
       await fetch('/api/auth/logout', {
         method: 'POST',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.accessToken() ?? ''}`,
-          'X-Session-ID': sessionId ?? '',
+          ...(csrf ? { 'X-CSRF-Token': decodeURIComponent(csrf) } : {}),
         },
-        body: JSON.stringify({ refreshToken: session.refreshToken() }),
       })
     } catch { /* ignored */ }
     session.clear()

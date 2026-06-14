@@ -1,6 +1,10 @@
-// Browser session state (CRD §8.4 guard inputs + §8.1 auth state): stored
-// credentials, cached identity, lifecycle pending/authenticated/
-// unauthenticated, a short-lived auth snapshot, and a global change signal.
+// Browser session state (CRD §8.4 guard inputs + §8.1 auth state): cached
+// identity, lifecycle pending/authenticated/unauthenticated, a short-lived
+// auth snapshot, and a global change signal.
+//
+// Access/refresh tokens are NO LONGER stored in JS — the backend sets them as
+// HttpOnly cookies. Only the non-sensitive sessionId and contextTeamId are kept
+// in localStorage. Identity is cached in memory from login / /me.
 
 import { positionOf, type Position } from './permissions'
 
@@ -37,18 +41,12 @@ let initPromise: Promise<void> | null = null
 let snapshot: { at: number; authenticated: boolean } | null = null
 
 export const session = {
-  accessToken: () => localStorage.getItem('mcss.token'),
-  refreshToken: () => localStorage.getItem('mcss.refreshToken'),
   sessionId: () => localStorage.getItem('mcss.sessionId'),
   contextTeamId: () => localStorage.getItem('mcss.contextTeamId'),
 
-  storeTokens(token: string, refreshToken?: string) {
-    localStorage.setItem('mcss.token', token)
-    if (refreshToken) localStorage.setItem('mcss.refreshToken', refreshToken)
-  },
-
-  storeLogin(token: string, refreshToken: string, sessionId: string, who: Identity) {
-    this.storeTokens(token, refreshToken)
+  /// Called after a successful login: cache identity from the JSON body (the
+  /// backend has already set the HttpOnly auth cookies at this point).
+  storeLogin(sessionId: string, who: Identity) {
     localStorage.setItem('mcss.sessionId', sessionId)
     identity = who
     lifecycle = 'authenticated'
@@ -56,9 +54,7 @@ export const session = {
   },
 
   clear() {
-    for (const key of ['mcss.token', 'mcss.refreshToken', 'mcss.sessionId']) {
-      localStorage.removeItem(key)
-    }
+    localStorage.removeItem('mcss.sessionId')
     identity = null
     lifecycle = 'unauthenticated'
   },
@@ -79,18 +75,14 @@ export const session = {
     snapshot = { at: Date.now(), authenticated }
   },
 
-  /// One-time session initialization: validates the stored credential via the
-  /// current-identity endpoint (CRD 6483).
+  /// One-time session initialization: validates the session via the
+  /// current-identity endpoint using the mcss_access cookie (CRD 6483).
   init(): Promise<void> {
     if (!initPromise) {
       initPromise = (async () => {
-        if (!this.accessToken()) {
-          lifecycle = 'unauthenticated'
-          return
-        }
         try {
           const resp = await fetch('/api/auth/me', {
-            headers: { Authorization: `Bearer ${this.accessToken()}` },
+            credentials: 'include',
           })
           const body = await resp.json().catch(() => null)
           if (resp.ok && body?.success) {

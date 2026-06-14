@@ -9,8 +9,8 @@ import { session } from '../auth/session'
 import { t } from '../i18n'
 
 interface LoginData {
-  token: string
-  refreshToken: string
+  // token / refreshToken are set as HttpOnly cookies by the backend;
+  // we ignore them here and let the browser handle them automatically.
   sessionId: string
   agent: { id: string; email: string; displayName: string; role: string }
   mustChangePassword?: boolean
@@ -42,7 +42,7 @@ export default function Login() {
       setError(t('login.mustChange'))
       return
     }
-    session.storeLogin(resp.data.token, resp.data.refreshToken, resp.data.sessionId, resp.data.agent)
+    session.storeLogin(resp.data.sessionId, resp.data.agent)
     navigate('/dashboard', { replace: true })
   }
 

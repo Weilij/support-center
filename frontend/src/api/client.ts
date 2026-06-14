@@ -1,9 +1,10 @@
 // Shared authenticated HTTP client (CRD §8.4, lines 6496-6520).
 //
-// Every backend call passes through here: bearer + team-context headers,
-// JSON-parse fallback, single-flight credential renewal with transparent
-// one-time retry, a guarded once-only redirect to login, and bounded
-// back-off retries for server/network failures only.
+// Every backend call passes through here: credentials:'include' (cookies carry
+// auth), CSRF token on mutations, team-context header, JSON-parse fallback,
+// single-flight credential renewal with transparent one-time retry, a guarded
+// once-only redirect to login, and bounded back-off retries for server/network
+// failures only.
 
 import { session, authChanged } from '../auth/session'
 import { t } from '../i18n'
@@ -37,21 +38,33 @@ function statusMessage(status: number): string {
   return map[status] ?? t('error.server')
 }
 
+/// Read the non-HttpOnly CSRF cookie the backend sets alongside the HttpOnly
+/// auth cookies. Returns undefined when not present (e.g. on the login page
+/// before any auth has occurred).
+function csrfToken(): string | undefined {
+  const match = document.cookie
+    .split('; ')
+    .find((row) => row.startsWith('mcss_csrf='))
+  return match ? decodeURIComponent(match.split('=')[1]) : undefined
+}
+
 /// Single-flight renewal: concurrent unauthorized calls share one attempt.
+/// No body is sent — the mcss_refresh HttpOnly cookie carries the token.
 async function renewCredentials(): Promise<boolean> {
   if (!refreshInFlight) {
     refreshInFlight = (async () => {
-      const refreshToken = session.refreshToken()
-      if (!refreshToken) return false
       try {
+        const csrf = csrfToken()
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+        if (csrf) headers['X-CSRF-Token'] = csrf
         const resp = await fetch('/api/auth/refresh', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refreshToken }),
+          credentials: 'include',
+          headers,
         })
         const body = await resp.json().catch(() => null)
-        if (resp.ok && body?.success && body?.data?.token) {
-          session.storeTokens(body.data.token, body.data.refreshToken)
+        if (resp.ok && body?.success) {
+          // Backend has rotated the cookies — nothing to store in JS.
           return true
         }
       } catch {
@@ -87,16 +100,22 @@ export async function api<T = unknown>(
 ): Promise<Envelope<T>> {
   const { redirectOnUnauthorized = true, isRetry = false, attempt = 0 } = options
 
+  const upperMethod = method.toUpperCase()
+  const isMutation = upperMethod !== 'GET' && upperMethod !== 'HEAD'
+
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  const token = session.accessToken()
-  if (token) headers['Authorization'] = `Bearer ${token}`
   const teamContext = session.contextTeamId()
   if (teamContext) headers['X-Context-Team-ID'] = String(teamContext)
+  if (isMutation) {
+    const csrf = csrfToken()
+    if (csrf) headers['X-CSRF-Token'] = csrf
+  }
 
   let resp: Response
   try {
     resp = await fetch(path.startsWith('/') ? path : `/api/${path}`, {
       method,
+      credentials: 'include',
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     })
@@ -118,7 +137,10 @@ export async function api<T = unknown>(
 
   if (resp.status === 401) {
     // One transparent renewal + single re-issue (CRD 6508-6509).
-    if (redirectOnUnauthorized && !isRetry && session.refreshToken()) {
+    // No longer gated on a JS-held refresh token — attempt whenever we get a
+    // 401 and haven't already retried (the backend 401s the refresh itself if
+    // the refresh cookie is absent or expired).
+    if (redirectOnUnauthorized && !isRetry) {
       if (await renewCredentials()) {
         return api(method, path, body, { ...options, isRetry: true })
       }
@@ -191,7 +213,7 @@ export function unwrapList<T>(resp: Envelope<T[] | { items?: T[] }>, page = 1): 
 }
 
 /// multipart/form-data upload — the JSON `api()` path can't carry binaries.
-/// Shares the bearer + team-context headers and the same envelope contract,
+/// Shares the team-context and CSRF headers and the same envelope contract,
 /// but lets the browser set the multipart boundary (no Content-Type override).
 /// On 401: attempts one transparent single-flight token refresh + retry before
 /// redirecting to login, mirroring the behaviour of `api()`.
@@ -201,15 +223,17 @@ export async function upload<T = unknown>(
   isRetry = false,
 ): Promise<Envelope<T>> {
   const headers: Record<string, string> = {}
-  const token = session.accessToken()
-  if (token) headers['Authorization'] = `Bearer ${token}`
   const teamContext = session.contextTeamId()
   if (teamContext) headers['X-Context-Team-ID'] = String(teamContext)
+  // upload is a mutation (POST) — include CSRF token
+  const csrf = csrfToken()
+  if (csrf) headers['X-CSRF-Token'] = csrf
 
   let resp: Response
   try {
     resp = await fetch(path.startsWith('/') ? path : `/api/${path}`, {
       method: 'POST',
+      credentials: 'include',
       headers,
       body: form,
     })
@@ -221,7 +245,7 @@ export async function upload<T = unknown>(
     return parsed ?? { success: false, message: t('error.format'), status: resp.status }
   }
   if (resp.status === 401) {
-    if (!isRetry && session.refreshToken()) {
+    if (!isRetry) {
       if (await renewCredentials()) {
         return upload(path, form, true)
       }
@@ -253,17 +277,23 @@ export async function download(
   fallbackName = 'download',
   isRetry = false,
 ): Promise<DownloadResult> {
+  const upperMethod = method.toUpperCase()
+  const isMutation = upperMethod !== 'GET' && upperMethod !== 'HEAD'
+
   const headers: Record<string, string> = {}
-  const token = session.accessToken()
-  if (token) headers['Authorization'] = `Bearer ${token}`
   const teamContext = session.contextTeamId()
   if (teamContext) headers['X-Context-Team-ID'] = String(teamContext)
   if (body !== undefined) headers['Content-Type'] = 'application/json'
+  if (isMutation) {
+    const csrf = csrfToken()
+    if (csrf) headers['X-CSRF-Token'] = csrf
+  }
 
   let resp: Response
   try {
     resp = await fetch(path.startsWith('/') ? path : `/api/${path}`, {
       method,
+      credentials: 'include',
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     })
@@ -272,7 +302,7 @@ export async function download(
   }
   if (!resp.ok) {
     if (resp.status === 401) {
-      if (!isRetry && session.refreshToken()) {
+      if (!isRetry) {
         if (await renewCredentials()) {
           return download(method, path, body, fallbackName, true)
         }

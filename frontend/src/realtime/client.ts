@@ -1,6 +1,7 @@
-// Browser realtime client (CRD §8.3): connect with the credential as a query
-// parameter, route pushed events to the state containers, reconnect with
-// capped backoff, and re-handshake whenever credentials change.
+// Browser realtime client (CRD §8.3): connect via the mcss_access HttpOnly
+// cookie (sent automatically on the WS handshake — same-origin), route pushed
+// events to the state containers, reconnect with capped backoff, and
+// re-handshake whenever credentials change.
 
 import { session, authChanged } from '../auth/session'
 import { applyIncomingMessage } from '../stores/conversations'
@@ -38,11 +39,13 @@ onEvent('new_message', (payload) => {
 })
 
 export function connectRealtime(): void {
-  const token = session.accessToken()
-  if (!token || socket) return
+  // Gate on being authenticated (identity cached from login / /me).
+  // The mcss_access HttpOnly cookie is sent automatically on the WS handshake
+  // — no ?token= query param needed.
+  if (!session.identity() || socket) return
   closedByUs = false
   const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  const url = `${scheme}://${window.location.host}/api/websocket/connect?token=${encodeURIComponent(token)}`
+  const url = `${scheme}://${window.location.host}/api/websocket/connect`
   const ws = new WebSocket(url)
   socket = ws
 
@@ -86,9 +89,9 @@ export function subscribeConversation(conversationId: string) {
   sendFrame({ type: 'subscribe', conversationId })
 }
 
-// Credential changes force a fresh handshake with the new token (CRD §8.1
-// renew-credential behavior).
+// Auth changes force a fresh handshake (CRD §8.1 renew-credential behavior).
+// Gate on identity presence — the cookie is sent automatically by the browser.
 authChanged.on(() => {
   disconnectRealtime()
-  if (session.accessToken()) connectRealtime()
+  if (session.identity()) connectRealtime()
 })
