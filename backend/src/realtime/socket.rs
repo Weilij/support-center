@@ -4,6 +4,7 @@
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use axum::extract::{Query, State, WebSocketUpgrade};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -33,12 +34,17 @@ pub struct ConnectQuery {
 pub async fn connect(
     State(state): State<Arc<AppState>>,
     Query(q): Query<ConnectQuery>,
+    headers: HeaderMap,
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Response {
+    // Resolve auth token: query param takes precedence; fall back to the
+    // HttpOnly mcss_access cookie sent automatically by the browser.
+    let token = q.token.clone().or_else(|| crate::middleware::cookies::cookie_value(&headers, "mcss_access"));
+
     // Handshake gate first (CRD 600-610): token checks, role, identity,
     // conversation access.
     let outcome =
-        match gate::authorize(&state, q.token.as_deref(), q.conversation_id.as_deref()).await {
+        match gate::authorize(&state, token.as_deref(), q.conversation_id.as_deref()).await {
             Ok(o) => o,
             Err(resp) => return *resp,
         };
