@@ -30,7 +30,7 @@ import AlertConfig from './pages/AlertConfig'
 import SystemMaintenance from './pages/SystemMaintenance'
 import Notifications from './pages/Notifications'
 import Tags from './pages/Tags'
-import Shell from './Shell'
+import AppShell from './components/AppShell'
 import Teams from './pages/Teams'
 import Settings from './pages/Settings'
 import ProfilePage from './pages/Profile'
@@ -107,7 +107,9 @@ function Guard({ meta, children }: { meta: RouteMeta; children: React.ReactNode 
 
 const page = (meta: RouteMeta, element: React.ReactNode) => (
   <Guard meta={meta}>
-    {(meta.requiresAuth ?? true) && !meta.guestOnly ? <Shell>{element}</Shell> : element}
+    {(meta.requiresAuth ?? true) && !meta.guestOnly
+      ? <AppShell title={meta.title}>{element}</AppShell>
+      : element}
   </Guard>
 )
 
