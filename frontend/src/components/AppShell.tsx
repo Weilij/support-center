@@ -3,7 +3,10 @@
 //   - Left sidebar (~240px): brand, grouped nav (position-gated, unread badge)
 //   - Top header bar: page title, notifications pill, user avatar + name, logout
 //   - Content area: children on gradient background (no extra card)
+// Review #9: responsive — narrow (≤768px) collapses sidebar to a hamburger-toggled
+//   slide-in overlay drawer; desktop layout is unchanged.
 
+import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 
 import { can, type Area } from '../auth/permissions'
@@ -67,6 +70,127 @@ function isActive(pathname: string, to: string): boolean {
   return false
 }
 
+// ── NavList: shared nav groups markup used in both sidebar and mobile drawer ──
+function NavList({
+  pathname,
+  pos,
+  notifications,
+  onLinkClick,
+}: {
+  pathname: string
+  pos: ReturnType<typeof session.position>
+  notifications: { unread: number }
+  onLinkClick?: () => void
+}) {
+  return (
+    <>
+      {NAV_GROUPS.map((group) => {
+        const visible = group.items.filter((i) => can(pos, i.area))
+        if (visible.length === 0) return null
+        return (
+          <div key={group.title} style={{ marginBottom: 20 }}>
+            {/* Group label */}
+            <div
+              style={{
+                fontSize: 11,
+                color: 'var(--muted)',
+                textTransform: 'uppercase',
+                letterSpacing: '0.08em',
+                fontWeight: 600,
+                padding: '0 10px',
+                marginBottom: 4,
+              }}
+            >
+              {group.title}
+            </div>
+            {/* Nav items */}
+            {visible.map((item) => {
+              const active = isActive(pathname, item.to)
+              const unreadCount =
+                item.badge === 'unread' && notifications.unread > 0
+                  ? notifications.unread
+                  : 0
+              return (
+                <Link
+                  key={item.to}
+                  to={item.to}
+                  onClick={onLinkClick}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '8px 10px',
+                    borderRadius: 'var(--radius-sm)',
+                    textDecoration: 'none',
+                    color: active ? 'var(--accent)' : 'var(--muted)',
+                    background: active ? 'var(--surface-strong)' : 'transparent',
+                    fontWeight: active ? 600 : 400,
+                    fontSize: 14,
+                    marginBottom: 2,
+                    transition: 'background 0.12s ease, color 0.12s ease',
+                  }}
+                >
+                  <span>{item.label}</span>
+                  {unreadCount > 0 && (
+                    <span
+                      style={{
+                        background: 'var(--accent)',
+                        color: '#fff',
+                        borderRadius: 999,
+                        fontSize: 11,
+                        fontWeight: 700,
+                        padding: '1px 6px',
+                        minWidth: 18,
+                        textAlign: 'center',
+                      }}
+                    >
+                      {unreadCount}
+                    </span>
+                  )}
+                </Link>
+              )
+            })}
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
+// ── Brand mark shared between desktop sidebar and mobile drawer ──
+function BrandMark() {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        marginBottom: 24,
+        paddingLeft: 4,
+      }}
+    >
+      <div
+        style={{
+          width: 30,
+          height: 30,
+          borderRadius: 8,
+          background: 'linear-gradient(135deg,#6366f1,#3b82f6)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: '#fff',
+          fontWeight: 700,
+          fontSize: 15,
+          flexShrink: 0,
+        }}
+      >
+        客
+      </div>
+      <span style={{ fontWeight: 700, fontSize: 15, color: 'var(--text)' }}>客服中心</span>
+    </div>
+  )
+}
+
 export default function AppShell({
   title,
   children,
@@ -79,6 +203,29 @@ export default function AppShell({
   const notifications = useStore(notificationsStore)
   const who = session.identity()
   const pos = session.position()
+
+  // ── Responsive state ──
+  const [isNarrow, setIsNarrow] = useState(
+    () =>
+      typeof window !== 'undefined' && window.matchMedia
+        ? window.matchMedia('(max-width: 768px)').matches
+        : false,
+  )
+  const [drawerOpen, setDrawerOpen] = useState(false)
+
+  // Subscribe to viewport width changes.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return
+    const mq = window.matchMedia('(max-width: 768px)')
+    const handler = (e: MediaQueryListEvent) => setIsNarrow(e.matches)
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [])
+
+  // Close the drawer on route change.
+  useEffect(() => {
+    setDrawerOpen(false)
+  }, [location.pathname])
 
   const logout = async () => {
     // Server logout is best-effort (CRD §8.1 sign-out: failures ignored).
@@ -109,7 +256,7 @@ export default function AppShell({
     navigate('/login', { replace: true })
   }
 
-  // Sidebar glass surface styles (frosted floating card).
+  // Sidebar glass surface styles (frosted floating card) — desktop only.
   const sidebarStyle: React.CSSProperties = {
     width: 240,
     flexShrink: 0,
@@ -127,6 +274,29 @@ export default function AppShell({
     gap: 0,
   }
 
+  // Drawer styles — mobile overlay sidebar.
+  const drawerStyle: React.CSSProperties = {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    height: '100vh',
+    width: 260,
+    zIndex: 1000,
+    borderRadius: '0 20px 20px 0',
+    background: 'var(--surface)',
+    backdropFilter: 'blur(var(--blur))',
+    WebkitBackdropFilter: 'blur(var(--blur))',
+    border: '1px solid var(--surface-border)',
+    boxShadow: 'var(--shadow)',
+    display: 'flex',
+    flexDirection: 'column',
+    overflowY: 'auto',
+    padding: '20px 12px',
+    gap: 0,
+    transform: drawerOpen ? 'translateX(0)' : 'translateX(-110%)',
+    transition: 'transform 0.25s ease',
+  }
+
   return (
     // Full-viewport fixed-height flex wrapper
     <div
@@ -136,108 +306,45 @@ export default function AppShell({
         overflow: 'hidden',
       }}
     >
-      {/* ── Sidebar ── */}
-      <aside style={sidebarStyle}>
-        {/* Brand row */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            marginBottom: 24,
-            paddingLeft: 4,
-          }}
-        >
-          <div
-            style={{
-              width: 30,
-              height: 30,
-              borderRadius: 8,
-              background: 'linear-gradient(135deg,#6366f1,#3b82f6)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: '#fff',
-              fontWeight: 700,
-              fontSize: 15,
-              flexShrink: 0,
-            }}
-          >
-            客
-          </div>
-          <span style={{ fontWeight: 700, fontSize: 15, color: 'var(--text)' }}>客服中心</span>
-        </div>
+      {/* ── Desktop Sidebar (in-flow, only on wide screens) ── */}
+      {!isNarrow && (
+        <aside style={sidebarStyle}>
+          <BrandMark />
+          <NavList
+            pathname={location.pathname}
+            pos={pos}
+            notifications={notifications}
+          />
+        </aside>
+      )}
 
-        {/* Navigation groups */}
-        {NAV_GROUPS.map((group) => {
-          const visible = group.items.filter((i) => can(pos, i.area))
-          if (visible.length === 0) return null
-          return (
-            <div key={group.title} style={{ marginBottom: 20 }}>
-              {/* Group label */}
-              <div
-                style={{
-                  fontSize: 11,
-                  color: 'var(--muted)',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.08em',
-                  fontWeight: 600,
-                  padding: '0 10px',
-                  marginBottom: 4,
-                }}
-              >
-                {group.title}
-              </div>
-              {/* Nav items */}
-              {visible.map((item) => {
-                const active = isActive(location.pathname, item.to)
-                const unreadCount =
-                  item.badge === 'unread' && notifications.unread > 0
-                    ? notifications.unread
-                    : 0
-                return (
-                  <Link
-                    key={item.to}
-                    to={item.to}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      padding: '8px 10px',
-                      borderRadius: 'var(--radius-sm)',
-                      textDecoration: 'none',
-                      color: active ? 'var(--accent)' : 'var(--muted)',
-                      background: active ? 'var(--surface-strong)' : 'transparent',
-                      fontWeight: active ? 600 : 400,
-                      fontSize: 14,
-                      marginBottom: 2,
-                      transition: 'background 0.12s ease, color 0.12s ease',
-                    }}
-                  >
-                    <span>{item.label}</span>
-                    {unreadCount > 0 && (
-                      <span
-                        style={{
-                          background: 'var(--accent)',
-                          color: '#fff',
-                          borderRadius: 999,
-                          fontSize: 11,
-                          fontWeight: 700,
-                          padding: '1px 6px',
-                          minWidth: 18,
-                          textAlign: 'center',
-                        }}
-                      >
-                        {unreadCount}
-                      </span>
-                    )}
-                  </Link>
-                )
-              })}
-            </div>
-          )
-        })}
-      </aside>
+      {/* ── Mobile Drawer (fixed overlay, only on narrow screens) ── */}
+      {isNarrow && (
+        <>
+          {/* Dim backdrop */}
+          {drawerOpen && (
+            <div
+              onClick={() => setDrawerOpen(false)}
+              style={{
+                position: 'fixed',
+                inset: 0,
+                background: 'rgba(0,0,0,.35)',
+                zIndex: 999,
+              }}
+            />
+          )}
+          {/* Slide-in drawer */}
+          <aside style={drawerStyle}>
+            <BrandMark />
+            <NavList
+              pathname={location.pathname}
+              pos={pos}
+              notifications={notifications}
+              onLinkClick={() => setDrawerOpen(false)}
+            />
+          </aside>
+        </>
+      )}
 
       {/* ── Main column ── */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
@@ -259,6 +366,23 @@ export default function AppShell({
             gap: 12,
           }}
         >
+          {/* Hamburger — narrow only, far left */}
+          {isNarrow && (
+            <button
+              onClick={() => setDrawerOpen((o) => !o)}
+              aria-label="開啟選單"
+              style={{
+                fontSize: 20,
+                lineHeight: 1,
+                padding: '4px 8px',
+                marginRight: 4,
+                flexShrink: 0,
+              }}
+            >
+              ☰
+            </button>
+          )}
+
           {/* Page title */}
           <h1
             style={{
@@ -334,7 +458,7 @@ export default function AppShell({
           style={{
             flex: 1,
             overflowY: 'auto',
-            padding: 16,
+            padding: isNarrow ? 12 : 16,
           }}
         >
           {children}
