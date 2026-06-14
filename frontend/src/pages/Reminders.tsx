@@ -8,6 +8,8 @@ import { get, post, put } from '../api/client'
 import { DataTable } from '../components/DataTable'
 import { Input, Textarea } from '../components/Form'
 import { StatCard, Toast } from '../components/ui'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 import type { Column } from '../components/DataTable'
 
 interface Reminder {
@@ -100,27 +102,32 @@ export default function Reminders() {
   ]
 
   return (
-    <main style={{ maxWidth: 880, margin: '4vh auto', padding: '0 16px' }}>
-      <h1>提醒</h1>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '12px 0' }}>
+    <div style={{ maxWidth: 880, margin: '0 auto', padding: '0 16px' }}>
+      <PageHeader title="提醒" />
+
+      <div style={{ display: 'flex', gap: 'var(--sp-4)', flexWrap: 'wrap', marginBottom: 'var(--sp-5)' }}>
         <StatCard label="總計" value={stats.total ?? 0} />
         <StatCard label="待處理" value={stats.pending ?? 0} />
         <StatCard label="已完成" value={stats.completed ?? 0} />
         <StatCard label="逾期" value={stats.overdue ?? 0} />
       </div>
 
-      <form onSubmit={create} style={{ border: '1px solid #eee', borderRadius: 8, padding: 12, marginBottom: 16 }}>
-        <strong>新增提醒</strong>
-        <Input label="標題" value={title} onChange={(e) => setTitle(e.target.value)} />
-        <Input label="提醒時間" type="datetime-local" value={remindAt} onChange={(e) => setRemindAt(e.target.value)} />
-        <Textarea label="內容（選填）" value={content} onChange={(e) => setContent(e.target.value)} />
-        <button type="submit">建立</button>
-      </form>
+      <Card title="新增提醒" style={{ marginBottom: 'var(--sp-5)' }}>
+        <form onSubmit={create} style={{ display: 'grid', gap: 'var(--sp-3)' }}>
+          <Input label="標題" value={title} onChange={(e) => setTitle(e.target.value)} />
+          <Input label="提醒時間" type="datetime-local" value={remindAt} onChange={(e) => setRemindAt(e.target.value)} />
+          <Textarea label="內容（選填）" value={content} onChange={(e) => setContent(e.target.value)} />
+          <div>
+            <button type="submit">建立</button>
+          </div>
+        </form>
+      </Card>
 
-      <h3 style={{ margin: '0 0 8px' }}>即將到來</h3>
-      <DataTable columns={columns} rows={reminders} rowKey={(r) => r.id} busy={busy} empty="沒有即將到來的提醒" />
+      <Card title="即將到來">
+        <DataTable columns={columns} rows={reminders} rowKey={(r) => r.id} busy={busy} empty="沒有即將到來的提醒" />
+      </Card>
 
       <Toast message={toast} onDismiss={() => setToast(null)} />
-    </main>
+    </div>
   )
 }

@@ -7,6 +7,8 @@ import { useEffect, useState } from 'react'
 import { get, post, del } from '../api/client'
 import { DataTable } from '../components/DataTable'
 import { StatCard, Toast } from '../components/ui'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 import type { Column } from '../components/DataTable'
 
 interface Rule {
@@ -23,9 +25,10 @@ export default function AutoReply() {
   const [tab, setTab] = useState<Tab>('rules')
 
   return (
-    <main style={{ maxWidth: 820, margin: '4vh auto', padding: '0 16px' }}>
-      <h1>自動回覆</h1>
-      <div style={{ display: 'flex', gap: 8, borderBottom: '1px solid #ddd', marginBottom: 16 }}>
+    <div style={{ maxWidth: 820, margin: '0 auto', padding: '0 16px' }}>
+      <PageHeader title="自動回覆" />
+
+      <div style={{ display: 'flex', gap: 8, borderBottom: '1px solid var(--hairline)', marginBottom: 'var(--sp-5)' }}>
         {([
           ['rules', '規則'],
           ['schedules', '營業時間排程'],
@@ -51,7 +54,7 @@ export default function AutoReply() {
       {tab === 'rules' && <RulesTab />}
       {tab === 'schedules' && <SchedulesTab />}
       {tab === 'logs' && <LogsTab />}
-    </main>
+    </div>
   )
 }
 
@@ -101,37 +104,43 @@ function RulesTab() {
 
   return (
     <>
-      {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
-      <form onSubmit={create} style={{ display: 'grid', gap: 8, marginBottom: 16 }}>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="規則名稱" required />
-        <select value={trigger} onChange={(e) => setTrigger(e.target.value)}>
-          <option value="keyword">關鍵字</option>
-          <option value="welcome">歡迎訊息</option>
-          <option value="off_hours">非營業時間</option>
-          <option value="fallback">預設回覆</option>
-        </select>
-        {trigger === 'keyword' && (
-          <input value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="關鍵字（包含比對）" />
-        )}
-        <input value={reply} onChange={(e) => setReply(e.target.value)} placeholder="回覆內容" required />
-        <button type="submit">新增規則</button>
-      </form>
-      <ul style={{ listStyle: 'none', padding: 0 }}>
-        {rules.map((r) => (
-          <li
-            key={r.id}
-            style={{ display: 'flex', gap: 8, padding: 6, alignItems: 'center', borderBottom: '1px solid #f0f0f0' }}
-          >
-            <span style={{ color: '#999' }}>#{r.priority}</span>
-            <strong>{r.name}</strong>
-            <small>{r.triggerType}</small>
-            {!r.isActive && <small style={{ color: 'orange' }}>停用</small>}
-            <button onClick={() => void remove(r.id)} style={{ marginLeft: 'auto' }}>
-              刪除
-            </button>
-          </li>
-        ))}
-      </ul>
+      <Card title="新增規則" style={{ marginBottom: 'var(--sp-5)' }}>
+        {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
+        <form onSubmit={create} style={{ display: 'grid', gap: 'var(--sp-3)' }}>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="規則名稱" required />
+          <select value={trigger} onChange={(e) => setTrigger(e.target.value)}>
+            <option value="keyword">關鍵字</option>
+            <option value="welcome">歡迎訊息</option>
+            <option value="off_hours">非營業時間</option>
+            <option value="fallback">預設回覆</option>
+          </select>
+          {trigger === 'keyword' && (
+            <input value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="關鍵字（包含比對）" />
+          )}
+          <input value={reply} onChange={(e) => setReply(e.target.value)} placeholder="回覆內容" required />
+          <div>
+            <button type="submit">新增規則</button>
+          </div>
+        </form>
+      </Card>
+      <Card title="現有規則">
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+          {rules.map((r) => (
+            <li
+              key={r.id}
+              style={{ display: 'flex', gap: 8, padding: '8px 0', alignItems: 'center', borderBottom: '1px solid var(--hairline)' }}
+            >
+              <span style={{ color: 'var(--muted)' }}>#{r.priority}</span>
+              <strong>{r.name}</strong>
+              <small>{r.triggerType}</small>
+              {!r.isActive && <small style={{ color: 'orange' }}>停用</small>}
+              <button onClick={() => void remove(r.id)} style={{ marginLeft: 'auto' }}>
+                刪除
+              </button>
+            </li>
+          ))}
+        </ul>
+      </Card>
     </>
   )
 }
@@ -182,15 +191,22 @@ function SchedulesTab() {
   }
 
   return (
-    <div>
-      <label style={{ fontSize: 14, color: '#555' }}>
-        時區{' '}
-        <input value={timezone} onChange={(e) => setTimezone(e.target.value)} style={{ padding: '4px 8px' }} />
-      </label>
-      <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 12 }}>
+    <Card
+      title="營業時間排程"
+      actions={
+        <button onClick={() => void save()}>儲存排程</button>
+      }
+    >
+      <div style={{ marginBottom: 'var(--sp-3)' }}>
+        <label style={{ fontSize: 14, color: 'var(--muted)' }}>
+          時區{' '}
+          <input value={timezone} onChange={(e) => setTimezone(e.target.value)} style={{ padding: '4px 8px' }} />
+        </label>
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <tbody>
           {entries.map((e) => (
-            <tr key={e.dayOfWeek} style={{ borderBottom: '1px solid #f0f0f0' }}>
+            <tr key={e.dayOfWeek} style={{ borderBottom: '1px solid var(--hairline)' }}>
               <td style={{ padding: 8, width: 80 }}>
                 <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                   <input
@@ -220,11 +236,8 @@ function SchedulesTab() {
           ))}
         </tbody>
       </table>
-      <button onClick={() => void save()} style={{ marginTop: 12 }}>
-        儲存排程
-      </button>
       <Toast message={toast} onDismiss={() => setToast(null)} />
-    </div>
+    </Card>
   )
 }
 
@@ -269,12 +282,14 @@ function LogsTab() {
   ]
 
   return (
-    <div>
-      <div style={{ display: 'flex', gap: 10, margin: '0 0 12px' }}>
+    <>
+      <div style={{ display: 'flex', gap: 'var(--sp-4)', marginBottom: 'var(--sp-5)' }}>
         <StatCard label="今日觸發" value={todayCount} />
         <StatCard label="累計觸發" value={total} />
       </div>
-      <DataTable columns={columns} rows={logs} rowKey={(l) => l.id} busy={busy} empty="尚無回覆記錄" />
-    </div>
+      <Card>
+        <DataTable columns={columns} rows={logs} rowKey={(l) => l.id} busy={busy} empty="尚無回覆記錄" />
+      </Card>
+    </>
   )
 }

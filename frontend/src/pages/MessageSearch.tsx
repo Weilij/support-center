@@ -14,6 +14,7 @@ import {
   type MessageSearchParams,
 } from '../stores/messages'
 import type { Column } from '../components/DataTable'
+import { PageHeader } from '../components/PageHeader'
 
 const PAGE_SIZE = 50
 
@@ -27,7 +28,7 @@ const SENDER_TYPES = [
 const input: React.CSSProperties = {
   padding: '7px 9px',
   borderRadius: 6,
-  border: '1px solid #ccc',
+  border: '1px solid var(--hairline)',
 }
 
 export default function MessageSearch() {
@@ -68,7 +69,7 @@ export default function MessageSearch() {
       key: 'content',
       header: '內容',
       render: (m) => (
-        <span style={{ textDecoration: m.isRecalled ? 'line-through' : 'none', color: m.isRecalled ? '#aaa' : 'inherit' }}>
+        <span style={{ textDecoration: m.isRecalled ? 'line-through' : 'none', color: m.isRecalled ? 'var(--muted)' : 'inherit' }}>
           {m.content || '—'}
         </span>
       ),
@@ -81,9 +82,21 @@ export default function MessageSearch() {
     },
   ]
 
+  const headerActions = (
+    <>
+      <button onClick={() => void run(0)} disabled={busy}>
+        搜尋
+      </button>
+      <button onClick={() => void exportCsv()} disabled={busy}>
+        匯出 CSV
+      </button>
+    </>
+  )
+
   return (
-    <main style={{ maxWidth: 1000, margin: '4vh auto', padding: '0 16px' }}>
-      <h1>訊息搜尋</h1>
+    <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 16px' }}>
+      <PageHeader title="訊息搜尋" actions={headerActions} />
+
       <FilterBar>
         <input
           placeholder="關鍵字"
@@ -99,18 +112,12 @@ export default function MessageSearch() {
             </option>
           ))}
         </select>
-        <label style={{ fontSize: 13, color: '#666' }}>
+        <label style={{ fontSize: 13, color: 'var(--muted)' }}>
           從 <input type="date" value={filters.dateFrom ?? ''} onChange={(e) => set({ dateFrom: e.target.value })} style={input} />
         </label>
-        <label style={{ fontSize: 13, color: '#666' }}>
+        <label style={{ fontSize: 13, color: 'var(--muted)' }}>
           到 <input type="date" value={filters.dateTo ?? ''} onChange={(e) => set({ dateTo: e.target.value })} style={input} />
         </label>
-        <button onClick={() => void run(0)} disabled={busy}>
-          搜尋
-        </button>
-        <button onClick={() => void exportCsv()} disabled={busy} style={{ marginLeft: 'auto' }}>
-          匯出 CSV
-        </button>
       </FilterBar>
 
       {searched && (
@@ -126,7 +133,7 @@ export default function MessageSearch() {
             <button disabled={busy || offset === 0} onClick={() => void run(Math.max(0, offset - PAGE_SIZE))}>
               上一頁
             </button>
-            <span style={{ fontSize: 14, color: '#555' }}>
+            <span style={{ fontSize: 14, color: 'var(--muted)' }}>
               {total === 0 ? 0 : offset + 1}–{Math.min(offset + PAGE_SIZE, total)} / 共 {total} 筆
             </span>
             <button disabled={busy || offset + PAGE_SIZE >= total} onClick={() => void run(offset + PAGE_SIZE)}>
@@ -137,6 +144,6 @@ export default function MessageSearch() {
       )}
 
       <Toast message={toast} onDismiss={() => setToast(null)} />
-    </main>
+    </div>
   )
 }

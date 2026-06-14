@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react'
 
 import { get, post, del } from '../api/client'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 interface Tag {
   id: number
@@ -46,27 +48,34 @@ export default function Tags() {
     else setError(resp.message ?? null)
   }
 
+  const addAction = (
+    <form onSubmit={create} style={{ display: 'flex', gap: 8 }}>
+      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="新標籤名稱" />
+      <button type="submit">新增</button>
+    </form>
+  )
+
   return (
-    <main style={{ maxWidth: 600, margin: '5vh auto' }}>
-      <h1>標籤管理</h1>
+    <div style={{ maxWidth: 600, margin: '0 auto', padding: '0 16px' }}>
+      <PageHeader title="標籤管理" actions={addAction} />
+
       {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
-      <form onSubmit={create} style={{ display: 'flex', gap: 8 }}>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="新標籤名稱" />
-        <button type="submit">新增</button>
-      </form>
-      <ul style={{ listStyle: 'none', padding: 0 }}>
-        {tags.map((tag) => (
-          <li key={tag.id} style={{ display: 'flex', gap: 8, padding: 6, alignItems: 'center' }}>
-            <span style={{
-              background: tag.color ?? '#3B82F6', color: 'white',
-              borderRadius: 8, padding: '2px 10px',
-            }}>
-              {tag.name}
-            </span>
-            <button onClick={() => void remove(tag.id)} style={{ marginLeft: 'auto' }}>刪除</button>
-          </li>
-        ))}
-      </ul>
-    </main>
+
+      <Card>
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+          {tags.map((tag) => (
+            <li key={tag.id} style={{ display: 'flex', gap: 8, padding: '8px 0', alignItems: 'center', borderBottom: '1px solid var(--hairline)' }}>
+              <span style={{
+                background: tag.color ?? '#3B82F6', color: 'white',
+                borderRadius: 8, padding: '2px 10px',
+              }}>
+                {tag.name}
+              </span>
+              <button onClick={() => void remove(tag.id)} style={{ marginLeft: 'auto' }}>刪除</button>
+            </li>
+          ))}
+        </ul>
+      </Card>
+    </div>
   )
 }

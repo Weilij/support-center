@@ -9,6 +9,8 @@ import { get, post } from '../api/client'
 import { can } from '../auth/permissions'
 import { session } from '../auth/session'
 import { StatCard, Toast } from '../components/ui'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 interface NotifStats {
   total?: number
@@ -49,63 +51,73 @@ export default function Notifications() {
     }
   }
 
+  const pageTitle = (
+    <>
+      通知中心{state.unread > 0 && <small style={{ fontWeight: 400, fontSize: '0.7em', marginLeft: 8, color: 'var(--muted)' }}>（未讀 {state.unread}）</small>}
+    </>
+  )
+
+  const markAllActions = (
+    <button onClick={() => void markAllRead()} disabled={state.unread === 0}>
+      全部標示為已讀
+    </button>
+  )
+
   return (
-    <main style={{ maxWidth: 720, margin: '4vh auto', fontFamily: 'sans-serif', padding: '0 16px' }}>
-      <h1>通知中心 {state.unread > 0 && <small>（未讀 {state.unread}）</small>}</h1>
+    <div style={{ maxWidth: 720, margin: '0 auto', padding: '0 16px' }}>
+      <PageHeader title={pageTitle} actions={markAllActions} />
 
       {canAccessSystem && (
         <>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '8px 0' }}>
+          <div style={{ display: 'flex', gap: 'var(--sp-4)', flexWrap: 'wrap', marginBottom: 'var(--sp-5)' }}>
             <StatCard label="總通知" value={stats.total ?? 0} />
             <StatCard label="未讀" value={stats.unread ?? 0} />
             <StatCard label="已送達" value={stats.delivered ?? stats.sent ?? 0} />
             <StatCard label="失敗" value={stats.failed ?? 0} />
           </div>
-          <form
-            onSubmit={broadcast}
-            style={{ display: 'grid', gap: 8, border: '1px solid #eee', borderRadius: 8, padding: 12, margin: '8px 0' }}
-          >
-            <strong>廣播通知</strong>
-            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="標題" />
-            <textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="內容" style={{ minHeight: 60 }} />
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <select value={priority} onChange={(e) => setPriority(e.target.value)}>
-                <option value="normal">一般</option>
-                <option value="high">高</option>
-                <option value="urgent">緊急</option>
-              </select>
-              <button type="submit">發送廣播</button>
-            </div>
-          </form>
+          <Card title="廣播通知" style={{ marginBottom: 'var(--sp-5)' }}>
+            <form onSubmit={broadcast} style={{ display: 'grid', gap: 'var(--sp-3)' }}>
+              <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="標題" />
+              <textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="內容" style={{ minHeight: 60 }} />
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <select value={priority} onChange={(e) => setPriority(e.target.value)}>
+                  <option value="normal">一般</option>
+                  <option value="high">高</option>
+                  <option value="urgent">緊急</option>
+                </select>
+                <button type="submit">發送廣播</button>
+              </div>
+            </form>
+          </Card>
         </>
       )}
 
       {state.error && <p role="alert" style={{ color: 'crimson' }}>{state.error}</p>}
-      <button onClick={() => void markAllRead()} disabled={state.unread === 0}>
-        全部標示為已讀
-      </button>
-      <ul style={{ listStyle: 'none', padding: 0 }}>
-        {state.items.map((n) => (
-          <li
-            key={n.id}
-            onClick={() => {
-              if (!n.isRead) void markRead(n.id)
-            }}
-            style={{
-              padding: 8,
-              borderBottom: '1px solid #eee',
-              cursor: 'pointer',
-              fontWeight: n.isRead ? 'normal' : 'bold',
-            }}
-          >
-            <span>{n.title}</span>
-            {n.priority === 'high' || n.priority === 'urgent' ? ' ❗' : ''}
-            <div style={{ color: '#666', fontSize: 13, fontWeight: 'normal' }}>{n.content}</div>
-          </li>
-        ))}
-      </ul>
+
+      <Card>
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+          {state.items.map((n) => (
+            <li
+              key={n.id}
+              onClick={() => {
+                if (!n.isRead) void markRead(n.id)
+              }}
+              style={{
+                padding: '10px 0',
+                borderBottom: '1px solid var(--hairline)',
+                cursor: 'pointer',
+                fontWeight: n.isRead ? 'normal' : 'bold',
+              }}
+            >
+              <span>{n.title}</span>
+              {n.priority === 'high' || n.priority === 'urgent' ? ' ❗' : ''}
+              <div style={{ color: 'var(--muted)', fontSize: 13, fontWeight: 'normal' }}>{n.content}</div>
+            </li>
+          ))}
+        </ul>
+      </Card>
 
       <Toast message={toast} onDismiss={() => setToast(null)} />
-    </main>
+    </div>
   )
 }

@@ -22,6 +22,8 @@ import {
   cancelDelayed,
   type PendingDelayed,
 } from '../stores/delayedMessages'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 interface ConvMeta {
   platform?: string
@@ -173,25 +175,26 @@ export default function ConversationDetail() {
     meta.teamId ??
     ((conversationsStore.get().items.find((c) => c.id === id)?.teamId ?? null) as number | null)
 
+  const headerActions = (
+    <>
+      <button onClick={() => setShowFiles((v) => !v)}>
+        檔案{files.length > 0 ? ` (${files.length})` : ''}
+      </button>
+      <button onClick={() => setShowSchedule((v) => !v)}>
+        排程{pending.length > 0 ? ` (${pending.length})` : ''}
+      </button>
+      <button onClick={() => setAssignMode('assign')}>指派</button>
+      <button onClick={() => setAssignMode('transfer')}>轉接</button>
+      <button onClick={() => setAssignMode('unassign')}>取消指派</button>
+    </>
+  )
+
   return (
-    <main style={{ maxWidth: 720, margin: '3vh auto', fontFamily: 'sans-serif' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <h1 style={{ margin: 0 }}>對話 {id}</h1>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          <button onClick={() => setShowFiles((v) => !v)}>
-            檔案{files.length > 0 ? ` (${files.length})` : ''}
-          </button>
-          <button onClick={() => setShowSchedule((v) => !v)}>
-            排程{pending.length > 0 ? ` (${pending.length})` : ''}
-          </button>
-          <button onClick={() => setAssignMode('assign')}>指派</button>
-          <button onClick={() => setAssignMode('transfer')}>轉接</button>
-          <button onClick={() => setAssignMode('unassign')}>取消指派</button>
-        </div>
-      </div>
+    <div style={{ maxWidth: 720, margin: '0 auto' }}>
+      <PageHeader title={`對話 ${id ?? ''}`} actions={headerActions} />
 
       {showFiles && id && (
-        <div style={{ border: '1px solid #eee', borderRadius: 8, padding: 12, margin: '10px 0' }}>
+        <Card title="附件檔案" style={{ marginBottom: 'var(--sp-4)' }}>
           <FileUpload
             label="拖放或點選上傳檔案到此對話"
             onUpload={async (file) => {
@@ -201,7 +204,7 @@ export default function ConversationDetail() {
             }}
           />
           {files.length === 0 ? (
-            <p style={{ color: '#aaa', fontSize: 13, marginBottom: 0 }}>尚無檔案</p>
+            <p style={{ color: 'var(--muted)', fontSize: 13, marginBottom: 0 }}>尚無檔案</p>
           ) : (
             <ul style={{ listStyle: 'none', padding: 0, margin: '10px 0 0' }}>
               {files.map((f) => (
@@ -217,7 +220,7 @@ export default function ConversationDetail() {
                 >
                   <span>{f.originalName || f.filename || f.id}</span>
                   {f.size != null && (
-                    <span style={{ color: '#aaa', fontSize: 12 }}>
+                    <span style={{ color: 'var(--muted)', fontSize: 12 }}>
                       {Math.round(f.size / 1024)} KB
                     </span>
                   )}
@@ -234,11 +237,11 @@ export default function ConversationDetail() {
               ))}
             </ul>
           )}
-        </div>
+        </Card>
       )}
 
       {showSchedule && id && (
-        <div style={{ border: '1px solid #eee', borderRadius: 8, padding: 12, margin: '10px 0' }}>
+        <Card title="排程訊息" style={{ marginBottom: 'var(--sp-4)' }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <input
               value={schedDraft}
@@ -246,7 +249,7 @@ export default function ConversationDetail() {
               placeholder="排程訊息內容"
               style={{ flex: 1, minWidth: 200, padding: '6px 8px' }}
             />
-            <label style={{ fontSize: 13, color: '#555' }}>
+            <label style={{ fontSize: 13, color: 'var(--muted)' }}>
               延遲
               <input
                 type="number"
@@ -259,9 +262,9 @@ export default function ConversationDetail() {
             </label>
             <button onClick={() => void submitSchedule()}>排程送出</button>
           </div>
-          {schedMsg && <p style={{ fontSize: 13, color: '#666', margin: '6px 0 0' }}>{schedMsg}</p>}
+          {schedMsg && <p style={{ fontSize: 13, color: 'var(--muted)', margin: '6px 0 0' }}>{schedMsg}</p>}
           {pending.length === 0 ? (
-            <p style={{ color: '#aaa', fontSize: 13, marginBottom: 0 }}>無待送訊息</p>
+            <p style={{ color: 'var(--muted)', fontSize: 13, marginBottom: 0 }}>無待送訊息</p>
           ) : (
             <ul style={{ listStyle: 'none', padding: 0, margin: '10px 0 0' }}>
               {pending.map((p) => (
@@ -270,7 +273,7 @@ export default function ConversationDetail() {
                   style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '4px 0', fontSize: 14 }}
                 >
                   <span style={{ flex: 1 }}>{p.preview || '(無內容)'}</span>
-                  <span style={{ color: '#aaa', fontSize: 12 }}>
+                  <span style={{ color: 'var(--muted)', fontSize: 12 }}>
                     {p.remainingMs != null ? `${Math.ceil(p.remainingMs / 1000)}s` : ''}
                   </span>
                   <button
@@ -284,7 +287,7 @@ export default function ConversationDetail() {
               ))}
             </ul>
           )}
-        </div>
+        </Card>
       )}
 
       {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
@@ -297,31 +300,58 @@ export default function ConversationDetail() {
           onClose={() => setAssignMode(null)}
         />
       )}
-      <div style={{ height: '60vh', overflowY: 'auto', border: '1px solid #eee', padding: 8 }}>
-        {messages.map((m) => (
-          <div key={m.id} style={{
-            textAlign: m.senderType === 'customer' ? 'left' : 'right',
-            opacity: m.pending ? 0.5 : 1, margin: '4px 0',
-          }}>
-            <span style={{
-              display: 'inline-block', padding: '6px 10px', borderRadius: 12,
-              background: m.senderType === 'customer' ? '#f0f0f0' : '#d2e9ff',
-            }}>
-              {m.content}
-            </span>
-          </div>
-        ))}
-        <div ref={bottom} />
-      </div>
-      <form onSubmit={send} style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="輸入訊息…"
-          style={{ flex: 1 }}
-        />
-        <button type="submit">送出</button>
-      </form>
-    </main>
+
+      <Card style={{ padding: 0, overflow: 'hidden' }}>
+        <div
+          style={{
+            height: '60vh',
+            overflowY: 'auto',
+            padding: 'var(--sp-4)',
+          }}
+        >
+          {messages.map((m) => (
+            <div
+              key={m.id}
+              style={{
+                display: 'flex',
+                justifyContent: m.senderType === 'customer' ? 'flex-start' : 'flex-end',
+                opacity: m.pending ? 0.5 : 1,
+                margin: '6px 0',
+              }}
+            >
+              <span
+                style={{
+                  display: 'inline-block',
+                  padding: '8px 12px',
+                  borderRadius: 14,
+                  maxWidth: '70%',
+                  fontSize: 14,
+                  lineHeight: 1.4,
+                  background: m.senderType === 'customer'
+                    ? 'var(--surface)'
+                    : 'rgba(59,130,246,0.15)',
+                  border: '1px solid var(--hairline)',
+                  color: 'inherit',
+                }}
+              >
+                {m.content}
+              </span>
+            </div>
+          ))}
+          <div ref={bottom} />
+        </div>
+        <div style={{ borderTop: '1px solid var(--hairline)', padding: 'var(--sp-3)' }}>
+          <form onSubmit={send} style={{ display: 'flex', gap: 8 }}>
+            <input
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder="輸入訊息…"
+              style={{ flex: 1 }}
+            />
+            <button type="submit">送出</button>
+          </form>
+        </div>
+      </Card>
+    </div>
   )
 }

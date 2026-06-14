@@ -19,6 +19,7 @@ import {
   type CustomerTag,
 } from '../stores/customers'
 import type { Column } from '../components/DataTable'
+import { PageHeader } from '../components/PageHeader'
 
 const PAGE_SIZE = 20
 
@@ -68,19 +69,20 @@ export default function Customers() {
   ]
 
   return (
-    <main style={{ maxWidth: 1000, margin: '4vh auto', padding: '0 16px' }}>
-      <h1>客戶管理</h1>
+    <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 16px' }}>
+      <PageHeader title="客戶管理" subtitle={`共 ${filtered.length} 位`} />
+
       <FilterBar>
         <input
           placeholder="搜尋名稱 / Email / 電話"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          style={{ padding: '7px 9px', borderRadius: 6, border: '1px solid #ccc', minWidth: 240 }}
+          style={{ padding: '7px 9px', borderRadius: 6, border: '1px solid var(--hairline)', minWidth: 240 }}
         />
         <select
           value={platform}
           onChange={(e) => setPlatform(e.target.value)}
-          style={{ padding: '7px 9px', borderRadius: 6, border: '1px solid #ccc' }}
+          style={{ padding: '7px 9px', borderRadius: 6, border: '1px solid var(--hairline)' }}
         >
           <option value="">全部平台</option>
           {platforms.map((p) => (
@@ -89,7 +91,6 @@ export default function Customers() {
             </option>
           ))}
         </select>
-        <span style={{ color: '#888', fontSize: 14 }}>共 {filtered.length} 位</span>
       </FilterBar>
 
       <DataTable
@@ -104,7 +105,7 @@ export default function Customers() {
       <Pagination page={page} total={filtered.length} pageSize={PAGE_SIZE} onPage={setPage} />
 
       <CustomerDrawer id={selected} onClose={() => setSelected(null)} />
-    </main>
+    </div>
   )
 }
 
@@ -130,7 +131,7 @@ function CustomerDrawer({ id, onClose }: { id: number | null; onClose: () => voi
   const c = detail?.customer
   return (
     <Drawer open={id != null} title={c?.display_name || '客戶詳情'} onClose={onClose} width={460}>
-      {loading && <p style={{ color: '#888' }}>載入中…</p>}
+      {loading && <p style={{ color: 'var(--muted)' }}>載入中…</p>}
       {!loading && !detail && <EmptyState message="找不到客戶資料" />}
       {!loading && c && (
         <div>
@@ -148,7 +149,7 @@ function CustomerDrawer({ id, onClose }: { id: number | null; onClose: () => voi
 
           <h3 style={{ fontSize: 15, margin: '0 0 8px' }}>標籤</h3>
           {tags.length === 0 ? (
-            <p style={{ color: '#aaa', fontSize: 13 }}>尚無標籤</p>
+            <p style={{ color: 'var(--muted)', fontSize: 13 }}>尚無標籤</p>
           ) : (
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 16 }}>
               {tags.map((t) => (
@@ -163,7 +164,7 @@ function CustomerDrawer({ id, onClose }: { id: number | null; onClose: () => voi
             對話紀錄（{detail.conversationCount}）
           </h3>
           {detail.conversations.length === 0 ? (
-            <p style={{ color: '#aaa', fontSize: 13 }}>尚無對話</p>
+            <p style={{ color: 'var(--muted)', fontSize: 13 }}>尚無對話</p>
           ) : (
             <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
               {detail.conversations.map((conv) => (
@@ -174,14 +175,14 @@ function CustomerDrawer({ id, onClose }: { id: number | null; onClose: () => voi
                     gap: 8,
                     alignItems: 'center',
                     padding: '6px 0',
-                    borderBottom: '1px solid #f0f0f0',
+                    borderBottom: '1px solid var(--hairline)',
                   }}
                 >
                   <StatusPill status={conv.status} />
                   <Link to={`/conversations/${conv.id}`} onClick={onClose}>
                     對話 {conv.id.slice(0, 8)}
                   </Link>
-                  <span style={{ marginLeft: 'auto', fontSize: 12, color: '#aaa' }}>
+                  <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted)' }}>
                     {conv.last_message_at
                       ? new Date(conv.last_message_at).toLocaleDateString()
                       : ''}
@@ -199,7 +200,7 @@ function CustomerDrawer({ id, onClose }: { id: number | null; onClose: () => voi
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', gap: 8, padding: '4px 0', fontSize: 14 }}>
-      <span style={{ color: '#888', width: 80, flexShrink: 0 }}>{label}</span>
+      <span style={{ color: 'var(--muted)', width: 80, flexShrink: 0 }}>{label}</span>
       <span>{children}</span>
     </div>
   )
