@@ -1,7 +1,7 @@
 //! Auth & account-management handlers per CRD §1.1 (lines 126-293).
 
 use axum::extract::{Path, Query, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, HeaderValue};
 use axum::response::Response;
 use axum::{Extension, Json};
 use serde::Deserialize;
@@ -11,6 +11,7 @@ use std::sync::Arc;
 use crate::envelope;
 use crate::error::AppError;
 use crate::middleware::auth::{is_manager_or_admin, AuthUser};
+use crate::middleware::cookies;
 use crate::state::AppState;
 
 use super::store::{self, AgentRow};
@@ -155,13 +156,21 @@ pub async fn login(
     )
     .await;
 
-    Ok(envelope::ok(json!({
+    let csrf_token = uuid::Uuid::new_v4().simple().to_string();
+    let secure = state.config.is_production();
+    let mut response = envelope::ok(json!({
         "token": access_token,
         "refreshToken": refresh_token,
         "sessionId": session_id,
         "expiresIn": tokens::ACCESS_TTL_SECS,
         "agent": agent_view(&agent),
-    })))
+    }));
+    for cookie_str in cookies::auth_cookies(&access_token, &refresh_token, &csrf_token, secure) {
+        if let Ok(hv) = HeaderValue::from_str(&cookie_str) {
+            response.headers_mut().append(axum::http::header::SET_COOKIE, hv);
+        }
+    }
+    Ok(response)
 }
 
 // ------------------------------------------------------- Create Account (CRD 145-153)
@@ -340,7 +349,14 @@ pub async fn logout(
     )
     .await;
 
-    Ok(envelope::message_only("Logged out successfully"))
+    let secure = state.config.is_production();
+    let mut response = envelope::message_only("Logged out successfully");
+    for cookie_str in cookies::clear_auth_cookies(secure) {
+        if let Ok(hv) = HeaderValue::from_str(&cookie_str) {
+            response.headers_mut().append(axum::http::header::SET_COOKIE, hv);
+        }
+    }
+    Ok(response)
 }
 
 // ---------------------------------------------------------- Renew Credentials (CRD 165-172)
@@ -398,10 +414,18 @@ pub async fn refresh(
     store::consume_refresh_token(&state.db, &claims.jti).await?;
     let (access_token, refresh_token) = issue_token_pair(&state, &agent, &teams).await?;
 
-    Ok(envelope::ok(json!({
+    let csrf_token = uuid::Uuid::new_v4().simple().to_string();
+    let secure = state.config.is_production();
+    let mut response = envelope::ok(json!({
         "token": access_token,
         "refreshToken": refresh_token,
-    })))
+    }));
+    for cookie_str in cookies::auth_cookies(&access_token, &refresh_token, &csrf_token, secure) {
+        if let Ok(hv) = HeaderValue::from_str(&cookie_str) {
+            response.headers_mut().append(axum::http::header::SET_COOKIE, hv);
+        }
+    }
+    Ok(response)
 }
 
 // ------------------------------------------------ Profile & current user (CRD 174-197)

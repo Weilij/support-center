@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use crate::domain::auth::{store, tokens};
 use crate::error::AppError;
+use crate::middleware::cookies;
 use crate::state::{AppState, TeamMembership};
 
 pub const TEAM_CACHE_TTL: Duration = Duration::from_secs(60);
@@ -65,14 +66,24 @@ pub async fn authenticate(
     state: &Arc<AppState>,
     headers: &HeaderMap,
 ) -> Result<AuthUser, AppError> {
-    let header = headers
+    // Prefer Authorization: Bearer header; fall back to mcss_access cookie.
+    let token_str: String;
+    let token: &str = if let Some(header) = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| AppError::Unauthorized("Authentication required".into()))?;
-    let token = header
-        .strip_prefix("Bearer ")
-        .or_else(|| header.strip_prefix("bearer "))
-        .ok_or_else(|| AppError::Unauthorized("Authentication required".into()))?;
+    {
+        token_str = header
+            .strip_prefix("Bearer ")
+            .or_else(|| header.strip_prefix("bearer "))
+            .ok_or_else(|| AppError::Unauthorized("Authentication required".into()))?
+            .to_string();
+        &token_str
+    } else if let Some(cookie_tok) = cookies::cookie_value(headers, "mcss_access") {
+        token_str = cookie_tok;
+        &token_str
+    } else {
+        return Err(AppError::Unauthorized("Authentication required".into()));
+    };
 
     let claims = tokens::verify(token, &state.config.jwt_secret)
         .map_err(|_| AppError::Unauthorized("Invalid or expired token".into()))?;
@@ -180,7 +191,9 @@ pub async fn optional_auth(
     mut req: Request<Body>,
     next: Next,
 ) -> Response {
-    if req.headers().get("authorization").is_none() {
+    let has_bearer = req.headers().get("authorization").is_some();
+    let has_cookie = cookies::cookie_value(req.headers(), "mcss_access").is_some();
+    if !has_bearer && !has_cookie {
         return next.run(req).await;
     }
     let headers = req.headers().clone();
