@@ -193,9 +193,12 @@ export function unwrapList<T>(resp: Envelope<T[] | { items?: T[] }>, page = 1): 
 /// multipart/form-data upload — the JSON `api()` path can't carry binaries.
 /// Shares the bearer + team-context headers and the same envelope contract,
 /// but lets the browser set the multipart boundary (no Content-Type override).
+/// On 401: attempts one transparent single-flight token refresh + retry before
+/// redirecting to login, mirroring the behaviour of `api()`.
 export async function upload<T = unknown>(
   path: string,
   form: FormData,
+  isRetry = false,
 ): Promise<Envelope<T>> {
   const headers: Record<string, string> = {}
   const token = session.accessToken()
@@ -217,7 +220,14 @@ export async function upload<T = unknown>(
   if (resp.ok) {
     return parsed ?? { success: false, message: t('error.format'), status: resp.status }
   }
-  if (resp.status === 401) redirectToLoginOnce()
+  if (resp.status === 401) {
+    if (!isRetry && session.refreshToken()) {
+      if (await renewCredentials()) {
+        return upload(path, form, true)
+      }
+    }
+    redirectToLoginOnce()
+  }
   return {
     success: false,
     ...(parsed ?? {}),
@@ -234,11 +244,14 @@ export interface DownloadResult {
 /// Fetch a binary/report response and trigger a browser save, honouring the
 /// server's Content-Disposition filename. Centralises the blob dance the
 /// Reports screen previously hand-rolled.
+/// On 401: attempts one transparent single-flight token refresh + retry before
+/// redirecting to login, mirroring the behaviour of `api()`.
 export async function download(
   method: string,
   path: string,
   body?: unknown,
   fallbackName = 'download',
+  isRetry = false,
 ): Promise<DownloadResult> {
   const headers: Record<string, string> = {}
   const token = session.accessToken()
@@ -258,7 +271,14 @@ export async function download(
     return { ok: false, message: t('error.network') }
   }
   if (!resp.ok) {
-    if (resp.status === 401) redirectToLoginOnce()
+    if (resp.status === 401) {
+      if (!isRetry && session.refreshToken()) {
+        if (await renewCredentials()) {
+          return download(method, path, body, fallbackName, true)
+        }
+      }
+      redirectToLoginOnce()
+    }
     return { ok: false, message: statusMessage(resp.status) }
   }
   const name =
