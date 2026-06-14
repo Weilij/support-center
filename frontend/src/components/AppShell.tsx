@@ -82,8 +82,9 @@ export default function AppShell({
 
   const logout = async () => {
     // Server logout is best-effort (CRD §8.1 sign-out: failures ignored).
-    // The backend clears the HttpOnly cookies via the mcss_refresh cookie;
-    // we send X-CSRF-Token from the readable mcss_csrf cookie.
+    // The backend looks up the session by X-Session-ID (the sessionId is not a
+    // credential and is still kept), clears the HttpOnly cookies, and we send
+    // X-CSRF-Token from the readable mcss_csrf cookie for the CSRF gate.
     try {
       const csrf = document.cookie
         .split('; ')
@@ -94,8 +95,13 @@ export default function AppShell({
         credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
+          'X-Session-ID': session.sessionId() ?? '',
           ...(csrf ? { 'X-CSRF-Token': decodeURIComponent(csrf) } : {}),
         },
+        // Send an empty JSON object: with a JSON content-type the backend's
+        // Json extractor rejects an empty body (EOF). The refresh token is read
+        // from the mcss_refresh cookie, so no fields are needed here.
+        body: '{}',
       })
     } catch { /* ignored */ }
     session.clear()
