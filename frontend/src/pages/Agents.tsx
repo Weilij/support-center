@@ -5,6 +5,8 @@ import { useEffect, useState } from 'react'
 
 import { DataTable, Pagination } from '../components/DataTable'
 import { StatCard, StatusPill, Toast } from '../components/ui'
+import { PageHeader } from '../components/PageHeader'
+import { Card, StatGrid } from '../components/Card'
 import { useStore } from '../stores/store'
 import { teamsStore, loadTeams } from '../stores/teams'
 import {
@@ -144,47 +146,39 @@ export default function Agents() {
   ]
 
   return (
-    <main style={{ maxWidth: 1040, margin: '4vh auto', padding: '0 16px' }}>
-      <h1>客服人員管理</h1>
+    <div style={{ maxWidth: 1040, margin: '0 auto', padding: '0 16px' }}>
+      <PageHeader title="客服人員管理" />
 
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '12px 0' }}>
+      <StatGrid style={{ marginBottom: 'var(--sp-4)' }}>
         {PRESENCE_STATES.map((s) => (
           <StatCard key={s} label={PRESENCE_LABELS[s] ?? s} value={stats[s] ?? 0} />
         ))}
-      </div>
+      </StatGrid>
 
       {selected.size > 0 && (
-        <div
-          style={{
-            display: 'flex',
-            gap: 10,
-            alignItems: 'center',
-            padding: 10,
-            background: '#F1F5F9',
-            borderRadius: 8,
-            margin: '10px 0',
-          }}
-        >
-          <strong>{selected.size} 位已選</strong>
-          <select
-            defaultValue=""
-            onChange={(e) => {
-              if (e.target.value) void transfer(Number(e.target.value))
-              e.target.value = ''
-            }}
-            style={{ padding: '6px 8px', borderRadius: 6, border: '1px solid #ccc' }}
-          >
-            <option value="">批次轉移至團隊…</option>
-            {teams.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-          <button onClick={() => setSelected(new Set())} style={{ marginLeft: 'auto' }}>
-            取消選取
-          </button>
-        </div>
+        <Card style={{ marginBottom: 'var(--sp-3)' }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <strong>{selected.size} 位已選</strong>
+            <select
+              defaultValue=""
+              onChange={(e) => {
+                if (e.target.value) void transfer(Number(e.target.value))
+                e.target.value = ''
+              }}
+              style={{ padding: '6px 8px', borderRadius: 6, border: '1px solid #ccc' }}
+            >
+              <option value="">批次轉移至團隊…</option>
+              {teams.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+            <button onClick={() => setSelected(new Set())} style={{ marginLeft: 'auto' }}>
+              取消選取
+            </button>
+          </div>
+        </Card>
       )}
 
       <DataTable columns={columns} rows={agents} rowKey={(a) => a.id} busy={busy} empty="沒有客服人員" />
@@ -192,8 +186,7 @@ export default function Agents() {
 
       <Toast message={toast} onDismiss={() => setToast(null)} />
 
-      <section style={{ marginTop: 24 }}>
-        <h3>職位權限對照表</h3>
+      <Card title="職位權限對照表" style={{ marginTop: 'var(--sp-5)' }}>
         <table style={{ borderCollapse: 'collapse', fontSize: 14 }}>
           <thead>
             <tr>
@@ -205,7 +198,7 @@ export default function Agents() {
           </thead>
           <tbody>
             {(['daily', 'ops', 'analytics', 'system'] as const).map((area) => (
-              <tr key={area} style={{ borderTop: '1px solid #eee' }}>
+              <tr key={area} style={{ borderTop: '1px solid var(--hairline)' }}>
                 <td style={{ padding: '6px 12px' }}>{AREA_LABELS[area]}</td>
                 {(Object.keys(POSITION_LABELS) as Position[]).map((p) => (
                   <td key={p} style={{ textAlign: 'center', padding: '6px 12px' }}>
@@ -216,7 +209,7 @@ export default function Agents() {
             ))}
           </tbody>
         </table>
-      </section>
-    </main>
+      </Card>
+    </div>
   )
 }

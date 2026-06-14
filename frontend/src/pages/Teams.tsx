@@ -10,6 +10,8 @@ import { session } from '../auth/session'
 import { DataTable } from '../components/DataTable'
 import { Modal, ConfirmDialog } from '../components/Modal'
 import { StatusPill, Toast } from '../components/ui'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 import type { Column } from '../components/DataTable'
 
 interface Team {
@@ -183,53 +185,59 @@ export default function Teams() {
   ]
 
   return (
-    <main style={{ maxWidth: 920, margin: '4vh auto', padding: '0 16px' }}>
-      <h1>團隊管理</h1>
-      {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
-      <form onSubmit={create} style={{ display: 'flex', gap: 8 }}>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="新團隊名稱" />
-        <button type="submit">建立</button>
-      </form>
+    <div style={{ maxWidth: 920, margin: '0 auto', padding: '0 16px' }}>
+      <PageHeader title="團隊管理" />
 
-      <div style={{ display: 'flex', gap: 24, marginTop: 16, alignItems: 'flex-start' }}>
-        <ul style={{ listStyle: 'none', padding: 0, flex: '0 0 240px' }}>
-          {teams.map((team) => (
-            <li
-              key={team.id}
-              style={{
-                padding: 8,
-                borderRadius: 6,
-                cursor: 'pointer',
-                background: selected === team.id ? '#eef5ff' : undefined,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-              }}
-            >
-              <span style={{ flex: 1 }} onClick={() => void openTeam(team.id)}>
-                <strong>{team.name}</strong>
-                {team.memberCount !== undefined && <span>（{team.memberCount}）</span>}
-              </span>
-              <button onClick={() => void showQr(team.id)} title="加入 QR code">
-                QR
-              </button>
-            </li>
-          ))}
-        </ul>
+      {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
+
+      <Card style={{ marginBottom: 'var(--sp-4)' }}>
+        <form onSubmit={create} style={{ display: 'flex', gap: 8 }}>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="新團隊名稱" />
+          <button type="submit">建立</button>
+        </form>
+      </Card>
+
+      <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start' }}>
+        <Card style={{ flex: '0 0 240px' }}>
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+            {teams.map((team) => (
+              <li
+                key={team.id}
+                style={{
+                  padding: 8,
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                  background: selected === team.id ? 'var(--hairline)' : undefined,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                }}
+              >
+                <span style={{ flex: 1 }} onClick={() => void openTeam(team.id)}>
+                  <strong>{team.name}</strong>
+                  {team.memberCount !== undefined && <span>（{team.memberCount}）</span>}
+                </span>
+                <button onClick={() => void showQr(team.id)} title="加入 QR code">
+                  QR
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Card>
 
         <div style={{ flex: 1 }}>
           {selected !== null && (
-            <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <h2 style={{ margin: 0 }}>成員</h2>
+            <Card>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 'var(--sp-3)' }}>
+                <h3 style={{ margin: 0 }}>成員</h3>
                 {picked.size > 0 && (
-                  <button onClick={() => setConfirmDelete(true)} style={{ color: 'crimson' }}>
+                  <button onClick={() => setConfirmDelete(true)} style={{ color: 'crimson', marginLeft: 'auto' }}>
                     移除所選（{picked.size}）
                   </button>
                 )}
               </div>
               <DataTable columns={memberColumns} rows={members} rowKey={(m) => m.id} empty="此團隊沒有成員" />
-            </>
+            </Card>
           )}
         </div>
       </div>
@@ -262,6 +270,6 @@ export default function Teams() {
       />
 
       <Toast message={toast} onDismiss={() => setToast(null)} />
-    </main>
+    </div>
   )
 }

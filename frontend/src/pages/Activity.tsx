@@ -9,6 +9,8 @@ import { can } from '../auth/permissions'
 import { session } from '../auth/session'
 import { DataTable } from '../components/DataTable'
 import { StatCard, Toast } from '../components/ui'
+import { PageHeader } from '../components/PageHeader'
+import { StatGrid } from '../components/Card'
 import type { Column } from '../components/DataTable'
 
 interface Activity {
@@ -83,19 +85,19 @@ export default function ActivityLog() {
   ]
 
   return (
-    <main style={{ maxWidth: 920, margin: '4vh auto', padding: '0 16px' }}>
-      <h1>活動日誌</h1>
+    <div style={{ maxWidth: 920, margin: '0 auto', padding: '0 16px' }}>
+      <PageHeader title="活動日誌" />
       {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
 
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '12px 0' }}>
+      <StatGrid style={{ marginBottom: 'var(--sp-4)' }}>
         <StatCard label="總活動數" value={overview.totalActivities ?? 0} />
         {actionEntries.map(([action, count]) => (
           <StatCard key={action} label={action} value={count} />
         ))}
-      </div>
+      </StatGrid>
 
       {(overview.topUsers ?? []).length > 0 && (
-        <p style={{ fontSize: 14, color: '#555' }}>
+        <p style={{ fontSize: 14, color: 'var(--muted)', marginBottom: 'var(--sp-3)' }}>
           最活躍：
           {(overview.topUsers ?? [])
             .slice(0, 5)
@@ -107,6 +109,6 @@ export default function ActivityLog() {
       <DataTable columns={columns} rows={items} rowKey={(a) => a.id} busy={busy} empty="沒有活動紀錄" />
 
       <Toast message={toast} onDismiss={() => setToast(null)} />
-    </main>
+    </div>
   )
 }

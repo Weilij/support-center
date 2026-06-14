@@ -25,9 +25,9 @@ export function Card({ title, actions, children, style }: { title?: ReactNode; a
 
 export const Panel = Card
 
-export function StatGrid({ children, min = 160 }: { children: ReactNode; min?: number }) {
+export function StatGrid({ children, min = 160, style }: { children: ReactNode; min?: number; style?: React.CSSProperties }) {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fill, minmax(${min}px, 1fr))`, gap: 'var(--sp-4)' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fill, minmax(${min}px, 1fr))`, gap: 'var(--sp-4)', ...style }}>
       {children}
     </div>
   )

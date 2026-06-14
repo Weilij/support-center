@@ -9,6 +9,8 @@ import { can } from '../auth/permissions'
 import { session } from '../auth/session'
 import { MetricsView } from '../components/MetricsView'
 import { Toast } from '../components/ui'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 type Tab = 'optimization' | 'status' | 'experience'
 
@@ -55,45 +57,48 @@ export default function SystemMaintenance() {
     )
   }
 
+  const refreshBtn = (
+    <button onClick={() => void load()} disabled={busy}>
+      {busy ? '更新中…' : '重新整理'}
+    </button>
+  )
+
   return (
-    <main style={{ maxWidth: 980, margin: '4vh auto', padding: '0 16px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <h1 style={{ margin: 0 }}>系統維護</h1>
-        <button onClick={() => void load()} style={{ marginLeft: 'auto' }} disabled={busy}>
-          {busy ? '更新中…' : '重新整理'}
-        </button>
-      </div>
+    <div style={{ maxWidth: 980, margin: '0 auto', padding: '0 16px' }}>
+      <PageHeader title="系統維護" actions={refreshBtn} />
 
-      <div style={{ display: 'flex', gap: 8, borderBottom: '1px solid #ddd', margin: '12px 0 16px' }}>
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            style={{
-              border: 'none',
-              background: 'none',
-              padding: '8px 12px',
-              borderBottom: tab === t.key ? '2px solid #3B82F6' : '2px solid transparent',
-              fontWeight: tab === t.key ? 700 : 400,
-              cursor: 'pointer',
-            }}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {tab === 'optimization' && (
-        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-          <button onClick={() => void runAction('/api/data-optimization/cleanup', '清理')}>執行清理</button>
-          <button onClick={() => void runAction('/api/data-optimization/indexes', '索引重建')}>重建索引</button>
+      <Card>
+        <div style={{ display: 'flex', gap: 8, borderBottom: '1px solid var(--hairline)', marginBottom: 'var(--sp-4)' }}>
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              style={{
+                border: 'none',
+                background: 'none',
+                padding: '8px 12px',
+                borderBottom: tab === t.key ? '2px solid #3B82F6' : '2px solid transparent',
+                fontWeight: tab === t.key ? 700 : 400,
+                cursor: 'pointer',
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
-      )}
 
-      {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
-      {!busy && <MetricsView data={data} />}
+        {tab === 'optimization' && (
+          <div style={{ display: 'flex', gap: 8, marginBottom: 'var(--sp-3)' }}>
+            <button onClick={() => void runAction('/api/data-optimization/cleanup', '清理')}>執行清理</button>
+            <button onClick={() => void runAction('/api/data-optimization/indexes', '索引重建')}>重建索引</button>
+          </div>
+        )}
+
+        {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
+        {!busy && <MetricsView data={data} />}
+      </Card>
 
       <Toast message={toast} onDismiss={() => setToast(null)} />
-    </main>
+    </div>
   )
 }

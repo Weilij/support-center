@@ -8,6 +8,8 @@ import { can } from '../auth/permissions'
 import { session } from '../auth/session'
 import { Input } from '../components/Form'
 import { StatusPill, Toast } from '../components/ui'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 interface ChannelStatus {
   slack?: { configured?: boolean }
@@ -59,32 +61,31 @@ export default function AlertConfig() {
     )
   }
 
-  return (
-    <main style={{ maxWidth: 720, margin: '4vh auto', padding: '0 16px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <h1 style={{ margin: 0 }}>告警設定</h1>
-        <button onClick={() => void testAlert()} style={{ marginLeft: 'auto' }}>
-          發送測試告警
-        </button>
-      </div>
+  const testBtn = (
+    <button onClick={() => void testAlert()}>發送測試告警</button>
+  )
 
-      <div style={{ display: 'flex', gap: 10, margin: '12px 0' }}>
+  return (
+    <div style={{ maxWidth: 720, margin: '0 auto', padding: '0 16px' }}>
+      <PageHeader title="告警設定" actions={testBtn} />
+
+      <div style={{ display: 'flex', gap: 10, marginBottom: 'var(--sp-4)' }}>
         <StatusPill status={status.slack?.configured ? 'active' : 'inactive'} label={`Slack ${status.slack?.configured ? '已設定' : '未設定'}`} />
         <StatusPill status={status.email?.configured ? 'active' : 'inactive'} label={`Email ${status.email?.configured ? '已設定' : '未設定'}`} />
         <StatusPill status={status.webhook?.configured ? 'active' : 'inactive'} label={`Webhook ${status.webhook?.configured ? '已設定' : '未設定'}`} />
       </div>
 
-      <Card title="Slack">
+      <Card title="Slack" style={{ marginBottom: 'var(--sp-3)' }}>
         <Input label="Webhook URL" value={slackUrl} onChange={(e) => setSlackUrl(e.target.value)} placeholder="https://hooks.slack.com/..." />
         <button onClick={() => void saveSlack()}>儲存 Slack</button>
       </Card>
 
-      <Card title="Webhook">
+      <Card title="Webhook" style={{ marginBottom: 'var(--sp-3)' }}>
         <Input label="Webhook URL" value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} placeholder="https://..." />
         <button onClick={() => void saveWebhook()}>儲存 Webhook</button>
       </Card>
 
-      <Card title="Email (SMTP)">
+      <Card title="Email (SMTP)" style={{ marginBottom: 'var(--sp-3)' }}>
         <Input label="SMTP 主機" value={email.host} onChange={(e) => setEmail({ ...email, host: e.target.value })} />
         <Input label="Port" type="number" value={email.port} onChange={(e) => setEmail({ ...email, port: Number(e.target.value) })} />
         <Input label="寄件者" value={email.sender} onChange={(e) => setEmail({ ...email, sender: e.target.value })} />
@@ -94,15 +95,6 @@ export default function AlertConfig() {
       </Card>
 
       <Toast message={toast} onDismiss={() => setToast(null)} />
-    </main>
-  )
-}
-
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section style={{ border: '1px solid #eee', borderRadius: 8, padding: 14, marginBottom: 14 }}>
-      <h3 style={{ marginTop: 0 }}>{title}</h3>
-      {children}
-    </section>
+    </div>
   )
 }

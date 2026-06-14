@@ -6,6 +6,8 @@ import { useEffect, useState } from 'react'
 import { get, post } from '../api/client'
 import { can } from '../auth/permissions'
 import { session } from '../auth/session'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 interface Channel {
   id: number
@@ -43,25 +45,28 @@ export default function Channels() {
     return <main style={{ margin: '10vh auto', maxWidth: 480 }}><p>權限不足</p></main>
   }
   return (
-    <main style={{ maxWidth: 720, margin: '5vh auto' }}>
-      <h1>頻道管理</h1>
+    <div style={{ maxWidth: 720, margin: '0 auto', padding: '0 16px' }}>
+      <PageHeader title="頻道管理" />
       {message && <p style={{ color: 'seagreen' }}>{message}</p>}
       {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
-      {channels.length === 0 && <p>尚未設定任何頻道連接。</p>}
-      <ul style={{ listStyle: 'none', padding: 0 }}>
-        {channels.map((c) => (
-          <li key={c.id} style={{ display: 'flex', gap: 12, padding: 8, alignItems: 'center',
-                                  borderBottom: '1px solid #f0f0f0' }}>
-            <strong>{c.platform}</strong>
-            <small>{c.isActive ? '啟用' : '停用'}</small>
-            <small style={{ color: c.isVerified ? 'seagreen' : 'orange' }}>
-              {c.isVerified ? '已驗證' : '未驗證'}
-            </small>
-            {(c.errorCount ?? 0) > 0 && <small style={{ color: 'crimson' }}>錯誤 {c.errorCount}</small>}
-            <button onClick={() => void verify(c.id)} style={{ marginLeft: 'auto' }}>驗證</button>
-          </li>
-        ))}
-      </ul>
-    </main>
+
+      <Card>
+        {channels.length === 0 && <p style={{ color: 'var(--muted)', margin: 0 }}>尚未設定任何頻道連接。</p>}
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+          {channels.map((c) => (
+            <li key={c.id} style={{ display: 'flex', gap: 12, padding: '8px 0', alignItems: 'center',
+                                    borderBottom: '1px solid var(--hairline)' }}>
+              <strong>{c.platform}</strong>
+              <small style={{ color: 'var(--muted)' }}>{c.isActive ? '啟用' : '停用'}</small>
+              <small style={{ color: c.isVerified ? 'seagreen' : 'orange' }}>
+                {c.isVerified ? '已驗證' : '未驗證'}
+              </small>
+              {(c.errorCount ?? 0) > 0 && <small style={{ color: 'crimson' }}>錯誤 {c.errorCount}</small>}
+              <button onClick={() => void verify(c.id)} style={{ marginLeft: 'auto' }}>驗證</button>
+            </li>
+          ))}
+        </ul>
+      </Card>
+    </div>
   )
 }

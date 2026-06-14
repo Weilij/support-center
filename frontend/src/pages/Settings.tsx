@@ -6,6 +6,8 @@ import { useEffect, useState } from 'react'
 import { get, put } from '../api/client'
 import { can } from '../auth/permissions'
 import { session } from '../auth/session'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 interface GeneralSettings {
   systemName?: string
@@ -51,29 +53,31 @@ export default function Settings() {
     return <main style={{ margin: '10vh auto', maxWidth: 480 }}><p>權限不足</p></main>
   }
   return (
-    <main style={{ maxWidth: 480, margin: '5vh auto' }}>
-      <h1>系統設定</h1>
+    <div style={{ maxWidth: 480, margin: '0 auto', padding: '0 16px' }}>
+      <PageHeader title="系統設定" />
       {message && <p style={{ color: 'seagreen' }}>{message}</p>}
       {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
-      <form onSubmit={save}>
-        {field('systemName', '系統名稱')}
-        {field('contactEmail', '聯絡信箱')}
-        {field('timezone', '時區')}
-        <label style={{ display: 'block', marginBottom: 8 }}>
-          語言
-          <select
-            value={general.language ?? 'zh-TW'}
-            onChange={(e) => setGeneral({ ...general, language: e.target.value })}
-            style={{ width: '100%' }}
-          >
-            <option value="zh-TW">繁體中文</option>
-            <option value="zh-CN">简体中文</option>
-            <option value="en">English</option>
-            <option value="ja">日本語</option>
-          </select>
-        </label>
-        <button type="submit">儲存</button>
-      </form>
-    </main>
+      <Card title="一般設定">
+        <form onSubmit={save}>
+          {field('systemName', '系統名稱')}
+          {field('contactEmail', '聯絡信箱')}
+          {field('timezone', '時區')}
+          <label style={{ display: 'block', marginBottom: 8 }}>
+            語言
+            <select
+              value={general.language ?? 'zh-TW'}
+              onChange={(e) => setGeneral({ ...general, language: e.target.value })}
+              style={{ width: '100%' }}
+            >
+              <option value="zh-TW">繁體中文</option>
+              <option value="zh-CN">简体中文</option>
+              <option value="en">English</option>
+              <option value="ja">日本語</option>
+            </select>
+          </label>
+          <button type="submit">儲存</button>
+        </form>
+      </Card>
+    </div>
   )
 }

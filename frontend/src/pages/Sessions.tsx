@@ -10,6 +10,8 @@ import { DataTable, Pagination } from '../components/DataTable'
 import { Modal } from '../components/Modal'
 import { Input } from '../components/Form'
 import { StatCard, StatusPill, Toast } from '../components/ui'
+import { PageHeader } from '../components/PageHeader'
+import { StatGrid } from '../components/Card'
 import {
   loadSessions,
   loadSessionStats,
@@ -109,13 +111,14 @@ export default function Sessions() {
   ]
 
   return (
-    <main style={{ maxWidth: 1040, margin: '4vh auto', padding: '0 16px' }}>
-      <h1>工作階段</h1>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '12px 0' }}>
+    <div style={{ maxWidth: 1040, margin: '0 auto', padding: '0 16px' }}>
+      <PageHeader title="工作階段" />
+
+      <StatGrid style={{ marginBottom: 'var(--sp-4)' }}>
         <StatCard label="總計" value={stats.total ?? 0} />
         <StatCard label="進行中" value={stats.active ?? 0} />
         <StatCard label="已結束" value={stats.inactive ?? 0} />
-      </div>
+      </StatGrid>
 
       <DataTable columns={columns} rows={rows} rowKey={(s) => s.id} busy={busy} empty="沒有工作階段" />
       <Pagination page={page} total={total} pageSize={PAGE_SIZE} onPage={(p) => void load(p)} />
@@ -134,6 +137,6 @@ export default function Sessions() {
       </Modal>
 
       <Toast message={toast} onDismiss={() => setToast(null)} />
-    </main>
+    </div>
   )
 }

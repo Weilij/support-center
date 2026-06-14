@@ -4,6 +4,8 @@
 import { useEffect, useState } from 'react'
 
 import { get, put, post } from '../api/client'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 interface Profile {
   id?: string
@@ -51,33 +53,40 @@ export default function ProfilePage() {
   }
 
   return (
-    <main style={{ maxWidth: 480, margin: '5vh auto' }}>
-      <h1>個人資料</h1>
-      <p>{profile.email} <small>{profile.role}{profile.teamName ? ` · ${profile.teamName}` : ''}</small></p>
+    <div style={{ maxWidth: 480, margin: '0 auto', padding: '0 16px' }}>
+      <PageHeader
+        title="個人資料"
+        subtitle={profile.email ? `${profile.email}${profile.role ? ` · ${profile.role}` : ''}${profile.teamName ? ` · ${profile.teamName}` : ''}` : undefined}
+      />
       {message && <p style={{ color: 'seagreen' }}>{message}</p>}
       {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
-      <form onSubmit={saveName} style={{ marginBottom: 24 }}>
-        <label style={{ display: 'block', marginBottom: 8 }}>
-          顯示名稱
-          <input value={displayName} onChange={(e) => setDisplayName(e.target.value)}
-                 maxLength={50} style={{ width: '100%' }} />
-        </label>
-        <button type="submit">更新名稱</button>
-      </form>
-      <h2>變更密碼</h2>
-      <form onSubmit={changePassword}>
-        <label style={{ display: 'block', marginBottom: 8 }}>
-          目前密碼
-          <input type="password" value={currentPassword}
-                 onChange={(e) => setCurrentPassword(e.target.value)} required style={{ width: '100%' }} />
-        </label>
-        <label style={{ display: 'block', marginBottom: 8 }}>
-          新密碼
-          <input type="password" value={newPassword}
-                 onChange={(e) => setNewPassword(e.target.value)} required style={{ width: '100%' }} />
-        </label>
-        <button type="submit">變更密碼</button>
-      </form>
-    </main>
+
+      <Card title="顯示名稱" style={{ marginBottom: 'var(--sp-4)' }}>
+        <form onSubmit={saveName}>
+          <label style={{ display: 'block', marginBottom: 8 }}>
+            顯示名稱
+            <input value={displayName} onChange={(e) => setDisplayName(e.target.value)}
+                   maxLength={50} style={{ width: '100%' }} />
+          </label>
+          <button type="submit">更新名稱</button>
+        </form>
+      </Card>
+
+      <Card title="變更密碼">
+        <form onSubmit={changePassword}>
+          <label style={{ display: 'block', marginBottom: 8 }}>
+            目前密碼
+            <input type="password" value={currentPassword}
+                   onChange={(e) => setCurrentPassword(e.target.value)} required style={{ width: '100%' }} />
+          </label>
+          <label style={{ display: 'block', marginBottom: 8 }}>
+            新密碼
+            <input type="password" value={newPassword}
+                   onChange={(e) => setNewPassword(e.target.value)} required style={{ width: '100%' }} />
+          </label>
+          <button type="submit">變更密碼</button>
+        </form>
+      </Card>
+    </div>
   )
 }

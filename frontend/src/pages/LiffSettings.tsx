@@ -9,6 +9,8 @@ import { can } from '../auth/permissions'
 import { session } from '../auth/session'
 import { DataTable } from '../components/DataTable'
 import { StatCard, StatusPill, Toast } from '../components/ui'
+import { PageHeader } from '../components/PageHeader'
+import { Card, StatGrid } from '../components/Card'
 import type { Column } from '../components/DataTable'
 
 interface LiffConfig {
@@ -81,44 +83,40 @@ export default function LiffSettings() {
   ]
 
   return (
-    <main style={{ maxWidth: 880, margin: '4vh auto', padding: '0 16px' }}>
-      <h1>LIFF 設定</h1>
+    <div style={{ maxWidth: 880, margin: '0 auto', padding: '0 16px' }}>
+      <PageHeader title="LIFF 設定" />
 
-      <section
-        style={{ border: '1px solid #eee', borderRadius: 10, padding: 16, margin: '12px 0' }}
-      >
-        <h3 style={{ marginTop: 0 }}>LINE / LIFF 組態</h3>
+      <Card title="LINE / LIFF 組態" style={{ marginBottom: 'var(--sp-4)' }}>
         <Row label="LIFF ID">{config.liffId || '—'}</Row>
         <Row label="LINE Bot ID">{config.lineBotId || '—'}</Row>
         <Row label="官方帳號">{config.lineOaId || '—'}</Row>
         <Row label="API Endpoint">{config.apiEndpoint || '—'}</Row>
         <Row label="版本">{config.version || '—'}</Row>
-      </section>
+      </Card>
 
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '12px 0' }}>
-        <StatCard label="團隊總數" value={coverage.totalTeams ?? 0} />
-        <StatCard label="已有 QR" value={coverage.teamsWithLiffQR ?? 0} />
-        <StatCard label="缺少 QR" value={coverage.teamsWithoutLiffQR ?? 0} />
-        <StatCard label="覆蓋率" value={coverage.coverage ?? '—'} />
-      </div>
+      <Card title="QR 覆蓋率" style={{ marginBottom: 'var(--sp-4)' }}>
+        <StatGrid style={{ marginBottom: 'var(--sp-3)' }}>
+          <StatCard label="團隊總數" value={coverage.totalTeams ?? 0} />
+          <StatCard label="已有 QR" value={coverage.teamsWithLiffQR ?? 0} />
+          <StatCard label="缺少 QR" value={coverage.teamsWithoutLiffQR ?? 0} />
+          <StatCard label="覆蓋率" value={coverage.coverage ?? '—'} />
+        </StatGrid>
+        <button onClick={() => void batchGenerate()} disabled={busy}>
+          {busy ? '產生中…' : '批次產生缺少的 LIFF QR'}
+        </button>
+      </Card>
 
-      <button onClick={() => void batchGenerate()} disabled={busy}>
-        {busy ? '產生中…' : '批次產生缺少的 LIFF QR'}
-      </button>
-
-      <div style={{ marginTop: 16 }}>
-        <DataTable columns={columns} rows={coverage.teams ?? []} rowKey={(t) => t.id} empty="沒有團隊" />
-      </div>
+      <DataTable columns={columns} rows={coverage.teams ?? []} rowKey={(t) => t.id} empty="沒有團隊" />
 
       <Toast message={toast} onDismiss={() => setToast(null)} />
-    </main>
+    </div>
   )
 }
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', gap: 8, padding: '4px 0', fontSize: 14 }}>
-      <span style={{ color: '#888', width: 120, flexShrink: 0 }}>{label}</span>
+      <span style={{ color: 'var(--muted)', width: 120, flexShrink: 0 }}>{label}</span>
       <span style={{ wordBreak: 'break-all' }}>{children}</span>
     </div>
   )
