@@ -332,7 +332,10 @@ pub async fn logout(
             let _ = store::revoke_jti(&state.db, &claims.jti, Some(&claims.sub), Some(claims.exp)).await;
         }
     }
-    if let Some(rt) = body.and_then(|Json(b)| b.refresh_token) {
+    let rt_opt = body
+        .and_then(|Json(b)| b.refresh_token)
+        .or_else(|| cookies::cookie_value(&headers, "mcss_refresh"));
+    if let Some(rt) = rt_opt {
         if let Ok(claims) = tokens::verify(&rt, &state.config.jwt_secret) {
             // Only revoked when it belongs to the same signed-in user (CRD 159).
             if claims.token_type == "refresh" && claims.sub == agent_id {
@@ -375,6 +378,7 @@ pub async fn refresh(
     let raw = body
         .refresh_token
         .filter(|t| !t.is_empty())
+        .or_else(|| cookies::cookie_value(&headers, "mcss_refresh"))
         .ok_or_else(|| AppError::BadRequest("refreshToken is required".into()))?;
 
     let claims = tokens::verify(&raw, &state.config.jwt_secret)
