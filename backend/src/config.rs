@@ -25,6 +25,9 @@ pub struct Config {
     pub line_bot_id: Option<String>,
     /// LINE push credential (required by the LIFF welcome flow).
     pub line_channel_access_token: Option<String>,
+    /// Separate HMAC secret for signing/verifying file download URLs (review #8).
+    /// Falls back to `jwt_secret` when unset so existing deployments keep working.
+    pub file_signing_secret: Option<String>,
 }
 
 impl Config {
@@ -72,11 +75,20 @@ impl Config {
             facebook_verify_token: std::env::var("FACEBOOK_VERIFY_TOKEN")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            file_signing_secret: std::env::var("FILE_SIGNING_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
 
     pub fn is_production(&self) -> bool {
         self.environment == "production"
+    }
+
+    /// Key used to sign/verify file download URLs (review #8). Falls back to the
+    /// JWT secret for backward compatibility when FILE_SIGNING_SECRET is unset.
+    pub fn file_signing_key(&self) -> &str {
+        self.file_signing_secret.as_deref().unwrap_or(&self.jwt_secret)
     }
 
     /// Reject insecure production configuration (review #1/#2). No-op outside production.
@@ -139,6 +151,7 @@ pub fn test_config() -> Config {
         liff_id: None,
         line_bot_id: None,
         line_channel_access_token: None,
+        file_signing_secret: None,
     }
 }
 

@@ -87,6 +87,7 @@ pub async fn spawn_app_custom(customize: impl FnOnce(&mut Config)) -> TestApp {
         line_channel_access_token: Some("test-push-token".into()),
         facebook_app_secret: Some("test-fb-secret".into()),
         facebook_verify_token: Some("test-verify-token".into()),
+        file_signing_secret: None,
     };
     customize(&mut config);
     let state = AppState::new(pool, config);

@@ -9,6 +9,7 @@ pub mod sign;
 pub mod store;
 pub mod validate;
 
+use axum::extract::DefaultBodyLimit;
 use axum::middleware::from_fn_with_state;
 use axum::routing::{get, post, put};
 use axum::Router;
@@ -16,6 +17,10 @@ use std::sync::Arc;
 
 use crate::middleware::auth::require_auth;
 use crate::state::AppState;
+
+/// Body-size ceiling for multipart upload endpoints (review #4).
+/// Largest per-file cap is ADMIN_MAX (50 MB) + 1 MB multipart overhead.
+const MAX_UPLOAD_BYTES: usize = 51 * 1024 * 1024;
 
 pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let public = Router::new()
@@ -26,16 +31,23 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/files/direct/{fileId}", put(handlers::direct_upload))
         .route("/api/r2-public/{folder}/{filename}", get(handlers::r2_public));
 
+    // Upload routes get a body-size cap so oversized multipart bodies are
+    // rejected by axum before the handler reads them into memory (review #4).
+    let upload = Router::new()
+        .route("/api/files", post(handlers::upload))
+        .route("/api/files/upload-multiple", post(handlers::upload_multiple))
+        .route("/api/files/upload/{platform}", post(handlers::upload_platform))
+        .route("/api/files/chunked/{sessionId}/chunk", post(handlers::chunked_chunk))
+        .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES));
+
     let authed = Router::new()
-        .route("/api/files", post(handlers::upload).get(handlers::list))
+        .route("/api/files", get(handlers::list))
         .route("/api/files/info", get(handlers::info))
         // Static segments are registered alongside {fileId}; axum gives static
         // routes precedence so stats/search/batch are never captured (CRD 3066).
         .route("/api/files/stats/summary", get(handlers::stats_summary))
         .route("/api/files/search", get(handlers::search))
         .route("/api/files/batch", post(handlers::batch))
-        .route("/api/files/upload-multiple", post(handlers::upload_multiple))
-        .route("/api/files/upload/{platform}", post(handlers::upload_platform))
         .route("/api/files/conversation/{conversationId}", get(handlers::conversation_files))
         .route("/api/files/message/{messageId}", get(handlers::message_files))
         .route(
@@ -44,13 +56,13 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/api/files/presigned-url/status", get(handlers::presigned_status))
         .route("/api/files/chunked/init", post(handlers::chunked_init))
-        .route("/api/files/chunked/{sessionId}/chunk", post(handlers::chunked_chunk))
         .route("/api/files/chunked/{sessionId}/complete", post(handlers::chunked_complete))
         .route("/api/files/chunked/{sessionId}/cancel", post(handlers::chunked_cancel))
         .route("/api/files/{fileId}", get(handlers::get_file).delete(handlers::delete_file))
         .route("/api/files/{fileId}/confirm", post(handlers::confirm_upload))
         .route("/api/files/{fileId}/status", get(handlers::upload_status))
         .route("/api/files/{fileId}/download-url", get(handlers::download_url))
+        .merge(upload)
         .layer(from_fn_with_state(state, require_auth));
 
     public.merge(authed)

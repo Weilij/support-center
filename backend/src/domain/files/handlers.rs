@@ -40,14 +40,14 @@ fn require_file_id(id: &str) -> Result<()> {
 }
 
 fn signed_download_url(state: &AppState, file_id: &str, key: &str, ttl: i64) -> (String, i64) {
-    let (sig, expires) = sign::sign(&state.config.jwt_secret, key, ttl);
+    let (sig, expires) = sign::sign(state.config.file_signing_key(), key, ttl);
     let base = state.config.backend_url.clone().unwrap_or_default();
     (format!("{base}/api/files/download/{file_id}?expires={expires}&sig={sig}"), expires)
 }
 
 fn signed_public_url(state: &AppState, key: &str, ttl: i64) -> String {
     let base = state.config.backend_url.clone().unwrap_or_default();
-    let (sig, expires) = sign::sign(&state.config.jwt_secret, key, ttl);
+    let (sig, expires) = sign::sign(state.config.file_signing_key(), key, ttl);
     format!("{base}/api/files/public/{key}?expires={expires}&sig={sig}")
 }
 
@@ -74,7 +74,7 @@ pub struct SignedQuery {
 fn verify_signature(state: &AppState, key: &str, q: &SignedQuery) -> bool {
     match (&q.sig, q.expires) {
         (Some(sig), Some(expires)) => {
-            sign::verify(&state.config.jwt_secret, key, sig, expires)
+            sign::verify(state.config.file_signing_key(), key, sig, expires)
         }
         _ => false,
     }
@@ -913,7 +913,7 @@ pub async fn presigned_url(
     let sanitized = validate::sanitize_filename(filename);
     let file_type = validate::file_category(content_type);
     let key = store::storage_key("system", file_type, validate::extension_of(&sanitized).as_deref());
-    let (sig, expires) = sign::sign(&state.config.jwt_secret, &key, PRESIGNED_TTL);
+    let (sig, expires) = sign::sign(state.config.file_signing_key(), &key, PRESIGNED_TTL);
     let base = state.config.backend_url.clone().unwrap_or_default();
     let upload_url = format!("{base}/api/files/direct/{file_id}?expires={expires}&sig={sig}");
     let public_url = signed_public_url(&state, &key, PROXY_URL_TTL);
