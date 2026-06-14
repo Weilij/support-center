@@ -10,6 +10,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let config = Config::from_env();
+    if let Err(e) = config.validate_for_production() {
+        tracing::error!("insecure production configuration: {e}");
+        return Err(e.into());
+    }
     let pool = db::init_pool(&config.database_url).await?;
     let port = config.port;
     let state = AppState::new(pool, config);
@@ -29,13 +33,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ticks += 1;
                 // Scheduled reminder processing (CRD 5048): once a minute.
                 if ticks.is_multiple_of(60) {
-                    let _ =
-                        mcss_backend::domain::notifications::reminders::process_due(&state).await;
+                    mcss_backend::domain::notifications::reminders::process_due(&state).await;
                 }
                 if ticks.is_multiple_of(3600) {
-                    let _ =
+                    if let Err(e) =
                         mcss_backend::domain::messaging::service::archive_stale_failed(&state.db)
-                            .await;
+                            .await
+                    {
+                        tracing::error!("archive_stale_failed failed: {e}");
+                    }
                 }
             }
         });

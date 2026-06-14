@@ -79,6 +79,23 @@ impl Config {
         self.environment == "production"
     }
 
+    /// Reject insecure production configuration (review #1/#2). No-op outside production.
+    pub fn validate_for_production(&self) -> Result<(), String> {
+        if !self.is_production() {
+            return Ok(());
+        }
+        if self.jwt_secret == "dev-only-insecure-secret" {
+            return Err("JWT_SECRET must be set in production (refusing the insecure default)".into());
+        }
+        if self.jwt_secret.len() < 32 {
+            return Err("JWT_SECRET is too short for production (require >= 32 chars)".into());
+        }
+        if self.encryption_key.is_none() {
+            return Err("ENCRYPTION_KEY must be set in production to protect integration credentials".into());
+        }
+        Ok(())
+    }
+
     /// Allowed browser origins per CRD §7.1 "Allowed-origins policy" (line 5656).
     pub fn allowed_origins(&self) -> Vec<String> {
         let mut origins: Vec<String> = Vec::new();
@@ -122,5 +139,69 @@ pub fn test_config() -> Config {
         liff_id: None,
         line_bot_id: None,
         line_channel_access_token: None,
+    }
+}
+
+#[cfg(test)]
+mod validate_production_tests {
+    use super::*;
+
+    /// Development config (test_config) must always pass — guard is a no-op.
+    #[test]
+    fn dev_config_passes() {
+        let cfg = test_config();
+        assert_eq!(cfg.environment, "development");
+        assert!(cfg.validate_for_production().is_ok());
+    }
+
+    /// Production config using the insecure default secret must be rejected.
+    #[test]
+    fn production_default_secret_rejected() {
+        let cfg = Config {
+            environment: "production".into(),
+            jwt_secret: "dev-only-insecure-secret".into(),
+            encryption_key: Some("some-key".into()),
+            ..test_config()
+        };
+        let err = cfg.validate_for_production().unwrap_err();
+        assert!(err.contains("JWT_SECRET must be set"), "unexpected error: {err}");
+    }
+
+    /// Production config with a short (< 32 char) secret must be rejected.
+    #[test]
+    fn production_short_secret_rejected() {
+        let cfg = Config {
+            environment: "production".into(),
+            jwt_secret: "tooshort".into(),
+            encryption_key: Some("some-key".into()),
+            ..test_config()
+        };
+        let err = cfg.validate_for_production().unwrap_err();
+        assert!(err.contains("too short"), "unexpected error: {err}");
+    }
+
+    /// Production config missing ENCRYPTION_KEY must be rejected.
+    #[test]
+    fn production_missing_encryption_key_rejected() {
+        let cfg = Config {
+            environment: "production".into(),
+            jwt_secret: "a-sufficiently-long-production-secret-key".into(),
+            encryption_key: None,
+            ..test_config()
+        };
+        let err = cfg.validate_for_production().unwrap_err();
+        assert!(err.contains("ENCRYPTION_KEY"), "unexpected error: {err}");
+    }
+
+    /// Production config with a 32+ char secret AND an encryption key must pass.
+    #[test]
+    fn production_valid_config_passes() {
+        let cfg = Config {
+            environment: "production".into(),
+            jwt_secret: "a-sufficiently-long-production-secret-key".into(),
+            encryption_key: Some("my-encryption-key".into()),
+            ..test_config()
+        };
+        assert!(cfg.validate_for_production().is_ok());
     }
 }
