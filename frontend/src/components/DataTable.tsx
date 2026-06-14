@@ -26,7 +26,7 @@ export interface DataTableProps<T> {
 
 const cell: React.CSSProperties = {
   padding: '8px 10px',
-  borderBottom: '1px solid rgba(0,0,0,0.05)',
+  borderBottom: '1px solid var(--hairline)',
   textAlign: 'left',
   fontSize: 14,
 }
@@ -41,7 +41,7 @@ export function DataTable<T>({
   onRowClick,
 }: DataTableProps<T>) {
   return (
-    <div style={{ overflowX: 'auto', background: 'var(--glass-bg)', backdropFilter: 'blur(var(--glass-blur))', WebkitBackdropFilter: 'blur(var(--glass-blur))', border: '1px solid var(--glass-border)', borderRadius: 'var(--radius)', boxShadow: 'var(--shadow)' }}>
+    <div style={{ overflowX: 'auto', overflowY: 'auto', background: 'var(--surface)', backdropFilter: 'blur(var(--blur))', WebkitBackdropFilter: 'blur(var(--blur))', border: '1px solid var(--surface-border)', borderRadius: 'var(--radius)', boxShadow: 'var(--shadow)' }}>
       {error && (
         <p role="alert" style={{ color: 'crimson', margin: '8px 0' }}>
           {error}
@@ -57,8 +57,8 @@ export function DataTable<T>({
                   ...cell,
                   width: c.width,
                   textAlign: c.align ?? 'left',
-                  borderBottom: '2px solid rgba(0,0,0,0.08)',
-                  color: '#555',
+                  borderBottom: '2px solid rgba(0,0,0,.06)',
+                  color: 'var(--muted)',
                   fontWeight: 600,
                 }}
               >

@@ -7,15 +7,13 @@ import type { ReactNode } from 'react'
 const labelStyle: React.CSSProperties = {
   display: 'block',
   fontSize: 13,
-  color: '#555',
+  color: 'var(--muted)',
   marginBottom: 4,
 }
 
 const controlStyle: React.CSSProperties = {
   width: '100%',
   padding: '7px 9px',
-  borderRadius: 6,
-  border: '1px solid #ccc',
   fontSize: 14,
   boxSizing: 'border-box',
 }
@@ -28,7 +26,7 @@ export interface FieldProps {
 
 export function Field({ label, error, children }: FieldProps) {
   return (
-    <div style={{ marginBottom: 14 }}>
+    <div style={{ marginBottom: 'var(--sp-3)' }}>
       {label && <label style={labelStyle}>{label}</label>}
       {children}
       {error && (

@@ -9,19 +9,19 @@ export function StatCard({ label, value, hint }: { label: ReactNode; value: Reac
   return (
     <div
       style={{
-        background: 'var(--glass-bg)',
-        backdropFilter: 'blur(var(--glass-blur))',
-        WebkitBackdropFilter: 'blur(var(--glass-blur))',
-        border: '1px solid var(--glass-border)',
+        background: 'var(--surface)',
+        backdropFilter: 'blur(var(--blur))',
+        WebkitBackdropFilter: 'blur(var(--blur))',
+        border: '1px solid var(--surface-border)',
         borderRadius: 'var(--radius)',
         boxShadow: 'var(--shadow)',
-        padding: 16,
+        padding: 'var(--sp-4)',
         minWidth: 140,
       }}
     >
-      <div style={{ fontSize: 13, color: '#888' }}>{label}</div>
+      <div style={{ fontSize: 13, color: 'var(--muted)' }}>{label}</div>
       <div style={{ fontSize: 26, fontWeight: 700, margin: '4px 0' }}>{value}</div>
-      {hint && <div style={{ fontSize: 12, color: '#aaa' }}>{hint}</div>}
+      {hint && <div style={{ fontSize: 12, color: 'var(--muted)' }}>{hint}</div>}
     </div>
   )
 }
@@ -75,12 +75,12 @@ export function FilterBar({ children }: { children: ReactNode }) {
         alignItems: 'center',
         flexWrap: 'wrap',
         margin: '12px 0',
-        background: 'var(--glass-bg)',
-        backdropFilter: 'blur(var(--glass-blur))',
-        WebkitBackdropFilter: 'blur(var(--glass-blur))',
-        border: '1px solid var(--glass-border)',
+        background: 'var(--surface)',
+        backdropFilter: 'blur(var(--blur))',
+        WebkitBackdropFilter: 'blur(var(--blur))',
+        border: '1px solid var(--surface-border)',
         borderRadius: 'var(--radius)',
-        padding: 10,
+        padding: 'var(--sp-3) var(--sp-4)',
       }}
     >
       {children}
@@ -107,7 +107,7 @@ export function Toast({ message, onDismiss, ms = 3000 }: { message: string | nul
         bottom: 24,
         left: '50%',
         transform: 'translateX(-50%)',
-        background: 'rgba(17,17,17,0.78)',
+        background: 'rgba(17,17,17,.82)',
         backdropFilter: 'blur(12px)',
         WebkitBackdropFilter: 'blur(12px)',
         color: 'white',
