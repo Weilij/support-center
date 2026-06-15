@@ -277,7 +277,7 @@ input:focus, select:focus, textarea:focus {
   transition: background .14s, border-color .14s;
 }
 .cs-icon-btn:hover { background: var(--line-2); }
-.cs-icon-btn svg { width: 18px; height: 18px; }
+.cs-icon-btn svg { width: 20px; height: 20px; }
 .cs-dot-alert {
   position: absolute; top: 8px; right: 9px;
   width: 7px; height: 7px; border-radius: 50%;
@@ -401,9 +401,9 @@ input:focus, select:focus, textarea:focus {
 .cs-composer-box { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; background: var(--surface); }
 .cs-composer-input { font-size: 13.5px; color: var(--muted); min-height: 22px; }
 .cs-composer-tools { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
-.cs-composer-ico { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--muted); background: transparent; border: none; }
+.cs-composer-ico { width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--muted); background: transparent; border: none; }
 .cs-composer-ico:hover { background: var(--line-2); color: var(--ink-2); }
-.cs-composer-ico svg { width: 17px; height: 17px; }
+.cs-composer-ico svg { width: 20px; height: 20px; }
 
 /* 客戶資訊面板 */
 .cs-cust { width: 300px; flex-shrink: 0; background: var(--surface); border-left: 1px solid var(--line); padding: 24px 22px; display: flex; flex-direction: column; gap: 20px; overflow: hidden; }

@@ -31,6 +31,7 @@ import { AssignDialog, type AssignMode } from '../components/ConversationAssign'
 import { channelOf, CHANNELS } from '../components/channels'
 import { Drawer } from '../components/Modal'
 import { FileUpload } from '../components/FileUpload'
+import { Toast } from '../components/ui'
 import {
   loadConversationFiles,
   uploadConversationFile,
@@ -198,8 +199,8 @@ function ConvList({
       <div className="cs-conv-head">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
           <span style={{ fontSize: 17, fontWeight: 700, color: 'var(--ink)' }}>對話收件匣</span>
-          <button className="cs-icon-btn" aria-label="篩選" style={{ width: 34, height: 34 }}>
-            <Icon name="filter" w={17} />
+          <button className="cs-icon-btn" aria-label="篩選" title="篩選" style={{ width: 34, height: 34 }}>
+            <Icon name="filter" w={18} />
           </button>
         </div>
         {/* Search */}
@@ -278,15 +279,22 @@ function Thread({
   convId,
   meta,
   onMetaLoaded,
+  onBack,
+  onToggleCustPanel,
+  showCustToggle,
 }: {
   convId: string | undefined
   meta: ConvMeta
   onMetaLoaded: (m: ConvMeta) => void
+  onBack?: () => void
+  onToggleCustPanel?: () => void
+  showCustToggle?: boolean
 }) {
   const [messages, setMessages] = useState<Message[]>([])
   const [draft, setDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [assignMode, setAssignMode] = useState<AssignMode | null>(null)
+  const [toast, setToast] = useState<string | null>(null)
   const bottom = useRef<HTMLDivElement>(null)
 
   // ── Files drawer state ──────────────────────────────────────────────────────
@@ -335,6 +343,29 @@ function Thread({
     if (res.ok) {
       setSchedDraft('')
       await refreshPending()
+    }
+  }
+
+  // ── Drag-drop state ─────────────────────────────────────────────────────────
+  const [dragOver, setDragOver] = useState(false)
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(true)
+  }
+  const handleDragLeave = () => setDragOver(false)
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    if (!convId) return
+    const file = e.dataTransfer.files[0]
+    if (!file) return
+    const { error: uploadErr } = await uploadConversationFile(convId, file)
+    if (!uploadErr) {
+      await refreshFiles()
+      setToast(`已上傳 ${file.name}`)
+    } else {
+      setToast(`上傳失敗：${uploadErr}`)
     }
   }
 
@@ -450,6 +481,18 @@ function Thread({
     <div className="cs-thread">
       {/* Thread head */}
       <div className="cs-thread-head">
+        {/* Back button — narrow layout only */}
+        {onBack && (
+          <button
+            className="cs-icon-btn"
+            aria-label="返回列表"
+            title="返回列表"
+            onClick={onBack}
+            style={{ width: 38, height: 38, marginRight: 4, transform: 'scaleX(-1)' }}
+          >
+            <Icon name="arrowRight" w={19} />
+          </button>
+        )}
         {/* Left: avatar + channel + name */}
         <div style={{ position: 'relative', flexShrink: 0 }}>
           <Avatar name={customerName || '?'} size="md" />
@@ -467,29 +510,23 @@ function Thread({
             透過 {chanDef?.name ?? chanKey}
           </div>
         </div>
-        {/* Right: action buttons */}
+        {/* Right: action buttons — only functional ones */}
         <div style={{ display: 'flex', gap: 6 }}>
-          <button className="cs-icon-btn" aria-label="電話" style={{ width: 36, height: 36 }}>
-            <Icon name="phone" w={17} />
-          </button>
-          <button className="cs-icon-btn" aria-label="星號" style={{ width: 36, height: 36 }}>
-            <Icon name="star" w={17} />
-          </button>
           {/* Files drawer button */}
           <button
             className="cs-icon-btn"
-            aria-label="附件檔案"
-            title="附件檔案"
-            style={{ width: 36, height: 36, position: 'relative' }}
+            aria-label="檔案"
+            title="檔案"
+            style={{ width: 38, height: 38, position: 'relative' }}
             onClick={() => setShowFiles((v) => !v)}
           >
-            <Icon name="paperclip" w={17} />
+            <Icon name="paperclip" w={19} />
             {files.length > 0 && (
               <span style={{
                 position: 'absolute',
                 top: 4,
                 right: 4,
-                background: 'var(--brand)',
+                background: 'var(--brand, var(--blue-600))',
                 color: '#fff',
                 fontSize: 10,
                 fontWeight: 700,
@@ -507,18 +544,18 @@ function Thread({
           {/* Schedule drawer button */}
           <button
             className="cs-icon-btn"
-            aria-label="排程訊息"
-            title="排程訊息"
-            style={{ width: 36, height: 36, position: 'relative' }}
+            aria-label="排程"
+            title="排程"
+            style={{ width: 38, height: 38, position: 'relative' }}
             onClick={() => setShowSchedule((v) => !v)}
           >
-            <Icon name="clock" w={17} />
+            <Icon name="clock" w={19} />
             {pending.length > 0 && (
               <span style={{
                 position: 'absolute',
                 top: 4,
                 right: 4,
-                background: 'var(--brand)',
+                background: 'var(--brand, var(--blue-600))',
                 color: '#fff',
                 fontSize: 10,
                 fontWeight: 700,
@@ -533,18 +570,38 @@ function Thread({
               </span>
             )}
           </button>
+          {/* Assign button */}
           <button
             className="cs-icon-btn"
             aria-label="指派"
             title="指派"
-            style={{ width: 36, height: 36 }}
+            style={{ width: 38, height: 38 }}
             onClick={() => setAssignMode('assign')}
           >
-            <Icon name="user" w={17} />
+            <Icon name="user" w={19} />
           </button>
-          <button className="cs-icon-btn" aria-label="更多" style={{ width: 36, height: 36 }}>
-            <Icon name="dots" w={17} />
+          {/* Transfer button */}
+          <button
+            className="cs-icon-btn"
+            aria-label="轉接"
+            title="轉接"
+            style={{ width: 38, height: 38 }}
+            onClick={() => setAssignMode('transfer')}
+          >
+            <Icon name="arrowRight" w={19} />
           </button>
+          {/* Customer panel toggle — medium/narrow layouts only */}
+          {showCustToggle && (
+            <button
+              className="cs-icon-btn"
+              aria-label="客戶資訊"
+              title="客戶資訊"
+              style={{ width: 38, height: 38 }}
+              onClick={onToggleCustPanel}
+            >
+              <Icon name="pin" w={19} />
+            </button>
+          )}
         </div>
       </div>
 
@@ -593,9 +650,38 @@ function Thread({
       </div>
 
       {/* Composer */}
-      <div className="cs-composer">
+      <div
+        className="cs-composer"
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={(e) => void handleDrop(e)}
+      >
         <form onSubmit={(e) => void send(e)}>
-          <div className="cs-composer-box">
+          <div
+            className="cs-composer-box"
+            style={dragOver ? {
+              border: '2px dashed var(--blue-500)',
+              position: 'relative',
+            } : undefined}
+          >
+            {dragOver && (
+              <div style={{
+                position: 'absolute',
+                inset: 0,
+                background: 'rgba(14,165,233,.08)',
+                borderRadius: 'inherit',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 10,
+                fontSize: 14,
+                fontWeight: 600,
+                color: 'var(--blue-600)',
+                pointerEvents: 'none',
+              }}>
+                放開以上傳檔案到此對話
+              </div>
+            )}
             <textarea
               className="cs-composer-input"
               value={draft}
@@ -619,13 +705,13 @@ function Thread({
             />
             <div className="cs-composer-tools">
               <button type="button" className="cs-composer-ico" aria-label="附件">
-                <Icon name="paperclip" w={17} />
+                <Icon name="paperclip" w={20} />
               </button>
               <button type="button" className="cs-composer-ico" aria-label="表情">
-                <Icon name="emoji" w={17} />
+                <Icon name="emoji" w={20} />
               </button>
               <button type="button" className="cs-composer-ico" aria-label="快捷回覆">
-                <Icon name="zap" w={17} />
+                <Icon name="zap" w={20} />
               </button>
               <span style={{ flex: 1 }} />
               <button
@@ -642,7 +728,7 @@ function Thread({
                 disabled={!draft.trim()}
                 style={{ display: 'flex', alignItems: 'center', gap: 6 }}
               >
-                <Icon name="send" w={15} />
+                <Icon name="send" w={18} />
                 傳送
               </button>
             </div>
@@ -650,7 +736,7 @@ function Thread({
         </form>
       </div>
 
-      {/* Assign dialog */}
+      {/* Assign / Transfer dialog */}
       {convId && assignMode && (
         <AssignDialog
           open
@@ -819,13 +905,16 @@ function Thread({
           </>
         )}
       </Drawer>
+
+      {/* Toast for drag-drop upload feedback */}
+      <Toast message={toast} onDismiss={() => setToast(null)} />
     </div>
   )
 }
 
 // ── Column 3: Customer panel ──────────────────────────────────────────────────
 
-function CustPanel({ meta }: { meta: ConvMeta }) {
+function CustPanel({ meta, overlay, onClose }: { meta: ConvMeta; overlay?: boolean; onClose?: () => void }) {
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [tags, setTags] = useState<CustomerTag[]>([])
   const [convCount, setConvCount] = useState<number | null>(null)
@@ -850,7 +939,24 @@ function CustPanel({ meta }: { meta: ConvMeta }) {
   // If no meta yet, show a placeholder
   if (!meta.platform && !meta.customerName) {
     return (
-      <div className="cs-cust" style={{ alignItems: 'center', justifyContent: 'center' }}>
+      <div
+        className="cs-cust"
+        style={{
+          alignItems: 'center',
+          justifyContent: 'center',
+          ...(overlay ? overlayPanelStyle : {}),
+        }}
+      >
+        {overlay && onClose && (
+          <button
+            className="cs-icon-btn"
+            onClick={onClose}
+            style={{ position: 'absolute', top: 12, right: 12, width: 32, height: 32 }}
+            title="關閉"
+          >
+            <Icon name="plus" w={16} style={{ transform: 'rotate(45deg)' }} />
+          </button>
+        )}
         <span style={{ color: 'var(--muted)', fontSize: 13 }}>選擇對話以查看客戶資訊</span>
       </div>
     )
@@ -865,7 +971,25 @@ function CustPanel({ meta }: { meta: ConvMeta }) {
   const chanDef = CHANNELS[chanKey]
 
   return (
-    <div className="cs-cust" style={{ overflowY: 'auto' }}>
+    <div
+      className="cs-cust"
+      style={{
+        overflowY: 'auto',
+        ...(overlay ? overlayPanelStyle : {}),
+      }}
+    >
+      {/* Close button for overlay mode */}
+      {overlay && onClose && (
+        <button
+          className="cs-icon-btn"
+          onClick={onClose}
+          style={{ position: 'absolute', top: 12, right: 12, width: 32, height: 32 }}
+          title="關閉"
+        >
+          <Icon name="plus" w={16} style={{ transform: 'rotate(45deg)' }} />
+        </button>
+      )}
+
       {/* Top: avatar + name + ID */}
       <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
         <Avatar name={name || '?'} size="lg" ring />
@@ -932,6 +1056,17 @@ function CustPanel({ meta }: { meta: ConvMeta }) {
   )
 }
 
+// Overlay style for the customer panel when used as a drawer (medium/narrow breakpoints)
+const overlayPanelStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  right: 0,
+  bottom: 0,
+  zIndex: 100,
+  boxShadow: 'var(--shadow-lg)',
+  borderLeft: '1px solid var(--line)',
+}
+
 // ── Main Inbox page ───────────────────────────────────────────────────────────
 
 export default function Inbox() {
@@ -940,6 +1075,31 @@ export default function Inbox() {
   const { items, busy } = useStore(conversationsStore)
   const [selectedId, setSelectedId] = useState<string | undefined>(paramId)
   const [meta, setMeta] = useState<ConvMeta>({})
+
+  // ── RWD breakpoints ─────────────────────────────────────────────────────────
+  const [isWide, setIsWide] = useState(() => window.matchMedia('(min-width: 1101px)').matches)
+  const [isMedium, setIsMedium] = useState(() => window.matchMedia('(max-width: 1100px) and (min-width: 769px)').matches)
+  const [isNarrow, setIsNarrow] = useState(() => window.matchMedia('(max-width: 768px)').matches)
+  const [custPanelOpen, setCustPanelOpen] = useState(false)
+
+  useEffect(() => {
+    const wide   = window.matchMedia('(min-width: 1101px)')
+    const medium = window.matchMedia('(max-width: 1100px) and (min-width: 769px)')
+    const narrow = window.matchMedia('(max-width: 768px)')
+
+    const onWide   = (e: MediaQueryListEvent) => { setIsWide(e.matches);   if (e.matches) { setIsMedium(false); setIsNarrow(false) } }
+    const onMedium = (e: MediaQueryListEvent) => { setIsMedium(e.matches); if (e.matches) { setIsWide(false); setIsNarrow(false) } }
+    const onNarrow = (e: MediaQueryListEvent) => { setIsNarrow(e.matches); if (e.matches) { setIsWide(false); setIsMedium(false) } }
+
+    wide.addEventListener('change', onWide)
+    medium.addEventListener('change', onMedium)
+    narrow.addEventListener('change', onNarrow)
+    return () => {
+      wide.removeEventListener('change', onWide)
+      medium.removeEventListener('change', onMedium)
+      narrow.removeEventListener('change', onNarrow)
+    }
+  }, [])
 
   // Load conversation list on mount
   useEffect(() => {
@@ -962,10 +1122,109 @@ export default function Inbox() {
     setMeta(m)
   }, [])
 
+  const handleBack = useCallback(() => {
+    setSelectedId(undefined)
+    navigate('/conversations', { replace: true })
+  }, [navigate])
+
+  // ── Layout helpers ──────────────────────────────────────────────────────────
+
+  // Narrow: show list or thread, never both
+  if (isNarrow) {
+    const showList = !selectedId
+    return (
+      <div
+        className="cs-inbox"
+        style={{ margin: '-28px -32px', height: 'calc(100% + 56px)', position: 'relative' }}
+      >
+        {showList ? (
+          <ConvList
+            items={items}
+            busy={busy}
+            selectedId={selectedId}
+            onSelect={handleSelect}
+          />
+        ) : (
+          <Thread
+            convId={selectedId}
+            meta={meta}
+            onMetaLoaded={handleMetaLoaded}
+            onBack={handleBack}
+            onToggleCustPanel={() => setCustPanelOpen((v) => !v)}
+            showCustToggle
+          />
+        )}
+        {/* Customer panel as overlay drawer */}
+        {custPanelOpen && selectedId && (
+          <>
+            {/* Dim backdrop */}
+            <div
+              onClick={() => setCustPanelOpen(false)}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                background: 'rgba(15,23,42,.32)',
+                zIndex: 99,
+              }}
+            />
+            <CustPanel
+              meta={meta}
+              overlay
+              onClose={() => setCustPanelOpen(false)}
+            />
+          </>
+        )}
+      </div>
+    )
+  }
+
+  // Medium (≤ 1100px): conv list + thread side by side; customer panel as overlay
+  if (isMedium) {
+    return (
+      <div
+        className="cs-inbox"
+        style={{ margin: '-28px -32px', height: 'calc(100% + 56px)', position: 'relative' }}
+      >
+        <ConvList
+          items={items}
+          busy={busy}
+          selectedId={selectedId}
+          onSelect={handleSelect}
+        />
+        <Thread
+          convId={selectedId}
+          meta={meta}
+          onMetaLoaded={handleMetaLoaded}
+          onToggleCustPanel={() => setCustPanelOpen((v) => !v)}
+          showCustToggle
+        />
+        {/* Customer panel overlay drawer */}
+        {custPanelOpen && (
+          <>
+            <div
+              onClick={() => setCustPanelOpen(false)}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                background: 'rgba(15,23,42,.32)',
+                zIndex: 99,
+              }}
+            />
+            <CustPanel
+              meta={meta}
+              overlay
+              onClose={() => setCustPanelOpen(false)}
+            />
+          </>
+        )}
+      </div>
+    )
+  }
+
+  // Wide (> 1100px, including default): 3-column layout
+  // isWide may be true OR both isMedium and isNarrow are false (SSR/init safety)
+  void isWide // suppress unused-var lint in some setups
   return (
-    // .cs-inbox escapes .cs-content's 28px/32px padding so it can fill the
-    // full available viewport height without extra whitespace. The negative
-    // margins + extra size exactly cancel the parent padding on all four sides.
     <div
       className="cs-inbox"
       style={{
