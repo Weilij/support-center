@@ -39,7 +39,7 @@ pub fn auth_cookies(access: &str, refresh: &str, csrf: &str, secure: bool) -> Ve
             refresh,
             tokens::REFRESH_TTL_SECS,
             true,
-            "/api/auth/refresh",
+            "/api/auth",
             secure,
         ),
         build_cookie("mcss_csrf", csrf, tokens::REFRESH_TTL_SECS, false, "/", secure),
@@ -50,7 +50,7 @@ pub fn auth_cookies(access: &str, refresh: &str, csrf: &str, secure: bool) -> Ve
 pub fn clear_auth_cookies(secure: bool) -> Vec<String> {
     vec![
         build_cookie("mcss_access", "", 0, true, "/", secure),
-        build_cookie("mcss_refresh", "", 0, true, "/api/auth/refresh", secure),
+        build_cookie("mcss_refresh", "", 0, true, "/api/auth", secure),
         build_cookie("mcss_csrf", "", 0, false, "/", secure),
     ]
 }
@@ -85,7 +85,7 @@ mod tests {
 
         assert!(cookies[1].contains("mcss_refresh=refresh_tok"));
         assert!(cookies[1].contains("HttpOnly"));
-        assert!(cookies[1].contains("Path=/api/auth/refresh"));
+        assert!(cookies[1].contains("Path=/api/auth"));
 
         assert!(cookies[2].contains("mcss_csrf=csrf_tok"));
         assert!(!cookies[2].contains("HttpOnly"));

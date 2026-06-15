@@ -13,7 +13,7 @@ use crate::state::AppState;
 
 const ALLOWED_METHODS: &str = "GET, POST, PUT, DELETE, OPTIONS, PATCH";
 const ALLOWED_HEADERS: &str =
-    "Content-Type, Authorization, X-Requested-With, Accept, X-Session-ID, X-Conversation-ID, X-Context-Team-ID";
+    "Content-Type, Authorization, X-Requested-With, Accept, X-Session-ID, X-Conversation-ID, X-Context-Team-ID, X-CSRF-Token";
 
 pub async fn cors_layer(
     State(state): State<Arc<AppState>>,

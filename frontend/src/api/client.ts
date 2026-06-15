@@ -45,7 +45,7 @@ function csrfToken(): string | undefined {
   const match = document.cookie
     .split('; ')
     .find((row) => row.startsWith('mcss_csrf='))
-  return match ? decodeURIComponent(match.split('=')[1]) : undefined
+  return match ? decodeURIComponent(match.split('=').slice(1).join('=')) : undefined
 }
 
 /// Single-flight renewal: concurrent unauthorized calls share one attempt.
@@ -61,6 +61,7 @@ async function renewCredentials(): Promise<boolean> {
           method: 'POST',
           credentials: 'include',
           headers,
+          body: '{}',
         })
         const body = await resp.json().catch(() => null)
         if (resp.ok && body?.success) {

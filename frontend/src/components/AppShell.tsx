@@ -236,7 +236,7 @@ export default function AppShell({
       const csrf = document.cookie
         .split('; ')
         .find((row) => row.startsWith('mcss_csrf='))
-        ?.split('=')[1]
+        ?.split('=').slice(1).join('=')
       await fetch('/api/auth/logout', {
         method: 'POST',
         credentials: 'include',

@@ -332,6 +332,12 @@ pub async fn logout(
             let _ = store::revoke_jti(&state.db, &claims.jti, Some(&claims.sub), Some(claims.exp)).await;
         }
     }
+    // Cookie-auth clients: revoke the access token carried by the HttpOnly cookie.
+    if let Some(at) = cookies::cookie_value(&headers, "mcss_access") {
+        if let Ok(claims) = tokens::verify(&at, &state.config.jwt_secret) {
+            let _ = store::revoke_jti(&state.db, &claims.jti, Some(&claims.sub), Some(claims.exp)).await;
+        }
+    }
     let rt_opt = body
         .and_then(|Json(b)| b.refresh_token)
         .or_else(|| cookies::cookie_value(&headers, "mcss_refresh"));
