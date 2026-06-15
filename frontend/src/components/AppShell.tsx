@@ -1,10 +1,11 @@
-// Sidebar + header app shell (visual redesign Task R2).
-// Replaces the top-nav Shell with a fixed-height "refined glass" layout:
-//   - Left sidebar (~240px): brand, grouped nav (position-gated, unread badge)
-//   - Top header bar: page title, notifications pill, user avatar + name, logout
-//   - Content area: children on gradient background (no extra card)
-// Review #9: responsive — narrow (≤768px) collapses sidebar to a hamburger-toggled
-//   slide-in overlay drawer; desktop layout is unchanged.
+// AppShell — light sidebar + topbar layout (clean-light redesign Task N2).
+// Layout: fixed left sidebar (.cs-side) + main column (.cs-main) with topbar (.cs-topbar).
+// All behaviour from previous version is preserved:
+//   - NAV_GROUPS with position gating via can(pos, area)
+//   - Active nav detection (exact + /conversations/:id → /conversations)
+//   - Unread badge from notificationsStore
+//   - logout (CSRF-safe, best-effort server call)
+//   - Responsive isNarrow / drawerOpen mobile drawer
 
 import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
@@ -13,6 +14,30 @@ import { can, type Area } from '../auth/permissions'
 import { session, authChanged } from '../auth/session'
 import { notificationsStore } from '../stores/notifications'
 import { useStore } from '../stores/store'
+import { Icon } from './Icon'
+
+// ── Icon mapping per route ──────────────────────────────────────────────────
+const ROUTE_ICON: Record<string, string> = {
+  '/dashboard':        'grid',
+  '/conversations':    'inbox',
+  '/customers':        'users',
+  '/messages/search':  'search',
+  '/reminders':        'clock',
+  '/auto-reply':       'bot',
+  '/tags':             'tag',
+  '/notifications':    'bell',
+  '/agents':           'user',
+  '/teams':            'users',
+  '/sessions':         'chat',
+  '/analytics':        'chart',
+  '/reports':          'chart',
+  '/activity':         'dots',
+  '/system/monitoring':'chart',
+  '/system/alerts':    'bell',
+  '/system/maintenance':'settings',
+  '/liff':             'channels',
+  '/settings':         'settings',
+}
 
 interface NavItem {
   to: string
@@ -25,21 +50,21 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
   {
     title: '日常',
     items: [
-      { to: '/dashboard', label: '儀表板', area: 'daily' },
-      { to: '/conversations', label: '對話', area: 'daily' },
-      { to: '/customers', label: '客戶', area: 'daily' },
+      { to: '/dashboard',       label: '儀表板',   area: 'daily' },
+      { to: '/conversations',   label: '對話',     area: 'daily' },
+      { to: '/customers',       label: '客戶',     area: 'daily' },
       { to: '/messages/search', label: '訊息搜尋', area: 'daily' },
-      { to: '/reminders', label: '提醒', area: 'daily' },
-      { to: '/auto-reply', label: '自動回覆', area: 'daily' },
-      { to: '/tags', label: '標籤', area: 'daily' },
-      { to: '/notifications', label: '通知', area: 'daily', badge: 'unread' },
+      { to: '/reminders',       label: '提醒',     area: 'daily' },
+      { to: '/auto-reply',      label: '自動回覆', area: 'daily' },
+      { to: '/tags',            label: '標籤',     area: 'daily' },
+      { to: '/notifications',   label: '通知',     area: 'daily', badge: 'unread' },
     ],
   },
   {
     title: '營運管理',
     items: [
-      { to: '/agents', label: '客服人員', area: 'ops' },
-      { to: '/teams', label: '團隊', area: 'ops' },
+      { to: '/agents',  label: '客服人員',   area: 'ops' },
+      { to: '/teams',   label: '團隊',       area: 'ops' },
       { to: '/sessions', label: '工作階段', area: 'ops' },
     ],
   },
@@ -47,18 +72,18 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
     title: '分析',
     items: [
       { to: '/analytics', label: '數據分析', area: 'analytics' },
-      { to: '/reports', label: '報表', area: 'analytics' },
-      { to: '/activity', label: '活動日誌', area: 'analytics' },
+      { to: '/reports',   label: '報表',     area: 'analytics' },
+      { to: '/activity',  label: '活動日誌', area: 'analytics' },
     ],
   },
   {
     title: '系統',
     items: [
-      { to: '/system/monitoring', label: '監控', area: 'system' },
-      { to: '/system/alerts', label: '告警', area: 'system' },
+      { to: '/system/monitoring',  label: '監控', area: 'system' },
+      { to: '/system/alerts',      label: '告警', area: 'system' },
       { to: '/system/maintenance', label: '維護', area: 'system' },
-      { to: '/liff', label: 'LIFF', area: 'system' },
-      { to: '/settings', label: '設定', area: 'system' },
+      { to: '/liff',               label: 'LIFF', area: 'system' },
+      { to: '/settings',           label: '設定', area: 'system' },
     ],
   },
 ]
@@ -70,16 +95,34 @@ function isActive(pathname: string, to: string): boolean {
   return false
 }
 
-// ── NavList: shared nav groups markup used in both sidebar and mobile drawer ──
-function NavList({
+// Avatar — simple initials span using cs-av classes.
+// Uses last-two chars of name as initials (matches handoff Avatar behaviour).
+const AV_COLORS = ['#0284c7','#0d9488','#7c3aed','#db2777','#ea580c','#4f46e5','#0891b2','#65a30d']
+function avColor(name: string): string {
+  let h = 0
+  for (const ch of name) h = ((h * 31 + ch.charCodeAt(0)) >>> 0)
+  return AV_COLORS[h % AV_COLORS.length]
+}
+
+function SidebarAvatar({ name, size = 'sm' }: { name: string; size?: 'sm' | 'md' | 'lg' }) {
+  const initials = name.slice(-2)
+  return (
+    <span className={`cs-av cs-av-${size}`} style={{ background: avColor(name) }}>
+      {initials}
+    </span>
+  )
+}
+
+// ── NavGroups: shared nav groups used in sidebar and mobile drawer ──────────
+function NavGroups({
   pathname,
   pos,
-  notifications,
+  unread,
   onLinkClick,
 }: {
   pathname: string
   pos: ReturnType<typeof session.position>
-  notifications: { unread: number }
+  unread: number
   onLinkClick?: () => void
 }) {
   return (
@@ -88,64 +131,23 @@ function NavList({
         const visible = group.items.filter((i) => can(pos, i.area))
         if (visible.length === 0) return null
         return (
-          <div key={group.title} style={{ marginBottom: 20 }}>
-            {/* Group label */}
-            <div
-              style={{
-                fontSize: 11,
-                color: 'var(--muted)',
-                textTransform: 'uppercase',
-                letterSpacing: '0.08em',
-                fontWeight: 600,
-                padding: '0 10px',
-                marginBottom: 4,
-              }}
-            >
-              {group.title}
-            </div>
-            {/* Nav items */}
+          <div key={group.title}>
+            <div className="cs-nav-label">{group.title}</div>
             {visible.map((item) => {
               const active = isActive(pathname, item.to)
-              const unreadCount =
-                item.badge === 'unread' && notifications.unread > 0
-                  ? notifications.unread
-                  : 0
+              const unreadCount = item.badge === 'unread' && unread > 0 ? unread : 0
+              const iconName = ROUTE_ICON[item.to] ?? 'dots'
               return (
                 <Link
                   key={item.to}
                   to={item.to}
                   onClick={onLinkClick}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '8px 10px',
-                    borderRadius: 'var(--radius-sm)',
-                    textDecoration: 'none',
-                    color: active ? 'var(--accent)' : 'var(--muted)',
-                    background: active ? 'var(--surface-strong)' : 'transparent',
-                    fontWeight: active ? 600 : 400,
-                    fontSize: 14,
-                    marginBottom: 2,
-                    transition: 'background 0.12s ease, color 0.12s ease',
-                  }}
+                  className={`cs-nav${active ? ' cs-nav--active' : ''}`}
                 >
+                  <Icon name={iconName} w={19} />
                   <span>{item.label}</span>
                   {unreadCount > 0 && (
-                    <span
-                      style={{
-                        background: 'var(--accent)',
-                        color: '#fff',
-                        borderRadius: 999,
-                        fontSize: 11,
-                        fontWeight: 700,
-                        padding: '1px 6px',
-                        minWidth: 18,
-                        textAlign: 'center',
-                      }}
-                    >
-                      {unreadCount}
-                    </span>
+                    <span className="cs-nav-badge">{unreadCount}</span>
                   )}
                 </Link>
               )
@@ -157,37 +159,59 @@ function NavList({
   )
 }
 
-// ── Brand mark shared between desktop sidebar and mobile drawer ──
-function BrandMark() {
+// ── SidebarContent: brand + nav + footer ───────────────────────────────────
+function SidebarContent({
+  pathname,
+  pos,
+  unread,
+  who,
+  onLinkClick,
+}: {
+  pathname: string
+  pos: ReturnType<typeof session.position>
+  unread: number
+  who: ReturnType<typeof session.identity>
+  onLinkClick?: () => void
+}) {
+  const displayName = who?.displayName ?? ''
+  const posLabel = pos ?? ''
+
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        marginBottom: 24,
-        paddingLeft: 4,
-      }}
-    >
-      <div
-        style={{
-          width: 30,
-          height: 30,
-          borderRadius: 8,
-          background: 'linear-gradient(135deg,#6366f1,#3b82f6)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          color: '#fff',
-          fontWeight: 700,
-          fontSize: 15,
-          flexShrink: 0,
-        }}
-      >
-        客
+    <>
+      {/* Brand row */}
+      <div className="cs-brand">
+        <span className="cs-brand-mark">
+          <Icon name="chat" w={19} />
+        </span>
+        <div>
+          <div className="cs-brand-name">客服中心</div>
+          <div className="cs-brand-sub">Omnichannel Desk</div>
+        </div>
       </div>
-      <span style={{ fontWeight: 700, fontSize: 15, color: 'var(--text)' }}>客服中心</span>
-    </div>
+
+      {/* Nav groups */}
+      <NavGroups
+        pathname={pathname}
+        pos={pos}
+        unread={unread}
+        onLinkClick={onLinkClick}
+      />
+
+      {/* Sidebar footer — avatar + name + position */}
+      <div className="cs-side-foot">
+        {displayName ? (
+          <SidebarAvatar name={displayName} size="sm" />
+        ) : (
+          <span className="cs-av cs-av-sm" style={{ background: avColor('?') }}>?</span>
+        )}
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {displayName}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--muted)' }}>{posLabel}</div>
+        </div>
+      </div>
+    </>
   )
 }
 
@@ -203,6 +227,7 @@ export default function AppShell({
   const notifications = useStore(notificationsStore)
   const who = session.identity()
   const pos = session.position()
+  const unread = notifications.unread
 
   // ── Responsive state ──
   const [isNarrow, setIsNarrow] = useState(
@@ -256,64 +281,20 @@ export default function AppShell({
     navigate('/login', { replace: true })
   }
 
-  // Sidebar glass surface styles (frosted floating card) — desktop only.
-  const sidebarStyle: React.CSSProperties = {
-    width: 240,
-    flexShrink: 0,
-    margin: 16,
-    borderRadius: 20,
-    background: 'var(--surface)',
-    backdropFilter: 'blur(var(--blur))',
-    WebkitBackdropFilter: 'blur(var(--blur))',
-    border: '1px solid var(--surface-border)',
-    boxShadow: 'var(--shadow)',
-    display: 'flex',
-    flexDirection: 'column',
-    overflowY: 'auto',
-    padding: '20px 12px',
-    gap: 0,
-  }
-
-  // Drawer styles — mobile overlay sidebar.
-  const drawerStyle: React.CSSProperties = {
-    position: 'fixed',
-    top: 0,
-    left: 0,
-    height: '100vh',
-    width: 260,
-    zIndex: 1000,
-    borderRadius: '0 20px 20px 0',
-    background: 'var(--surface)',
-    backdropFilter: 'blur(var(--blur))',
-    WebkitBackdropFilter: 'blur(var(--blur))',
-    border: '1px solid var(--surface-border)',
-    boxShadow: 'var(--shadow)',
-    display: 'flex',
-    flexDirection: 'column',
-    overflowY: 'auto',
-    padding: '20px 12px',
-    gap: 0,
-    transform: drawerOpen ? 'translateX(0)' : 'translateX(-110%)',
-    transition: 'transform 0.25s ease',
-  }
+  const displayName = who?.displayName ?? ''
 
   return (
     // Full-viewport fixed-height flex wrapper
-    <div
-      style={{
-        display: 'flex',
-        height: '100vh',
-        overflow: 'hidden',
-      }}
-    >
+    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
+
       {/* ── Desktop Sidebar (in-flow, only on wide screens) ── */}
       {!isNarrow && (
-        <aside style={sidebarStyle}>
-          <BrandMark />
-          <NavList
+        <aside className="cs-side">
+          <SidebarContent
             pathname={location.pathname}
             pos={pos}
-            notifications={notifications}
+            unread={unread}
+            who={who}
           />
         </aside>
       )}
@@ -333,13 +314,26 @@ export default function AppShell({
               }}
             />
           )}
-          {/* Slide-in drawer */}
-          <aside style={drawerStyle}>
-            <BrandMark />
-            <NavList
+          {/* Slide-in drawer — mirrors .cs-side but positioned as overlay */}
+          <aside
+            className="cs-side"
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              height: '100vh',
+              zIndex: 1000,
+              transform: drawerOpen ? 'translateX(0)' : 'translateX(-110%)',
+              transition: 'transform 0.25s ease',
+              borderRadius: '0 16px 16px 0',
+              boxShadow: 'var(--shadow-lg)',
+            }}
+          >
+            <SidebarContent
               pathname={location.pathname}
               pos={pos}
-              notifications={notifications}
+              unread={unread}
+              who={who}
               onLinkClick={() => setDrawerOpen(false)}
             />
           </aside>
@@ -347,120 +341,58 @@ export default function AppShell({
       )}
 
       {/* ── Main column ── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
-        {/* Header bar */}
-        <header
-          style={{
-            margin: '16px 16px 0',
-            borderRadius: 18,
-            background: 'var(--surface)',
-            backdropFilter: 'blur(var(--blur))',
-            WebkitBackdropFilter: 'blur(var(--blur))',
-            border: '1px solid var(--surface-border)',
-            boxShadow: 'var(--shadow)',
-            padding: '0 22px',
-            height: 60,
-            display: 'flex',
-            alignItems: 'center',
-            flexShrink: 0,
-            gap: 12,
-          }}
-        >
+      <div className="cs-main">
+        {/* Topbar */}
+        <header className="cs-topbar">
           {/* Hamburger — narrow only, far left */}
           {isNarrow && (
             <button
+              className="cs-icon-btn"
               onClick={() => setDrawerOpen((o) => !o)}
               aria-label="開啟選單"
-              style={{
-                fontSize: 20,
-                lineHeight: 1,
-                padding: '4px 8px',
-                marginRight: 4,
-                flexShrink: 0,
-              }}
+              style={{ marginRight: 4, flexShrink: 0 }}
             >
-              ☰
+              <Icon name="filter" w={18} />
             </button>
           )}
 
-          {/* Page title */}
-          <h1
-            style={{
-              margin: 0,
-              fontSize: 18,
-              fontWeight: 700,
-              color: 'var(--text)',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {title ?? ''}
-          </h1>
-
-          {/* Right side */}
-          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
-            {/* Notifications pill */}
-            {notifications.unread > 0 && (
-              <Link
-                to="/notifications"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 5,
-                  padding: '5px 12px',
-                  borderRadius: 999,
-                  background: 'var(--accent-soft)',
-                  color: 'var(--accent)',
-                  fontWeight: 600,
-                  fontSize: 13,
-                  textDecoration: 'none',
-                }}
-              >
-                🔔 {notifications.unread}
-              </Link>
-            )}
-
-            {/* User avatar + display name */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div
-                style={{
-                  width: 30,
-                  height: 30,
-                  borderRadius: '50%',
-                  background: 'linear-gradient(135deg,#6366f1,#3b82f6)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: '#fff',
-                  fontWeight: 700,
-                  fontSize: 13,
-                  flexShrink: 0,
-                }}
-              >
-                {who?.displayName?.[0] ?? '?'}
-              </div>
-              <span style={{ fontSize: 14, color: 'var(--text)', fontWeight: 500 }}>
-                {who?.displayName}
-              </span>
-            </div>
-
-            {/* Logout button */}
-            <button
-              onClick={() => void logout()}
-              style={{ fontSize: 13, padding: '5px 12px' }}
-            >
-              登出
-            </button>
+          {/* Page title (+ optional subtitle) */}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="cs-page-title">{title ?? ''}</div>
           </div>
+
+          {/* Bell icon — links to /notifications, shows alert dot when unread > 0 */}
+          <Link to="/notifications" style={{ textDecoration: 'none' }}>
+            <button className="cs-icon-btn" aria-label="通知">
+              <Icon name="bell" w={18} />
+              {unread > 0 && <span className="cs-dot-alert" />}
+            </button>
+          </Link>
+
+          {/* User avatar + display name */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {displayName ? (
+              <SidebarAvatar name={displayName} size="sm" />
+            ) : (
+              <span className="cs-av cs-av-sm" style={{ background: avColor('?') }}>?</span>
+            )}
+            <span style={{ fontSize: 14, color: 'var(--ink)', fontWeight: 500, whiteSpace: 'nowrap' }}>
+              {displayName}
+            </span>
+          </div>
+
+          {/* Logout button */}
+          <button
+            className="cs-btn cs-btn--ghost"
+            onClick={() => void logout()}
+            style={{ fontSize: 13, padding: '5px 12px' }}
+          >
+            登出
+          </button>
         </header>
 
         {/* Content area */}
-        <main
-          style={{
-            flex: 1,
-            overflowY: 'auto',
-            padding: isNarrow ? 12 : 16,
-          }}
-        >
+        <main className="cs-content" style={{ overflowY: 'auto', padding: isNarrow ? 12 : undefined }}>
           {children}
         </main>
       </div>
