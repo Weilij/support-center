@@ -400,7 +400,7 @@ input:focus, select:focus, textarea:focus {
 .cs-composer-box { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; background: var(--surface); }
 .cs-composer-input { font-size: 13.5px; color: var(--muted); min-height: 22px; }
 .cs-composer-tools { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
-.cs-composer-ico { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.cs-composer-ico { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--muted); background: transparent; border: none; }
 .cs-composer-ico:hover { background: var(--line-2); color: var(--ink-2); }
 .cs-composer-ico svg { width: 17px; height: 17px; }
 
