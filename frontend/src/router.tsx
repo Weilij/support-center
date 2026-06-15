@@ -16,6 +16,7 @@ import { t } from './i18n'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import NotFound from './pages/NotFound'
+import Inbox from './pages/Inbox'
 import Conversations from './pages/Conversations'
 import ConversationDetail from './pages/ConversationDetail'
 import Customers from './pages/Customers'
@@ -127,11 +128,11 @@ export const router = createBrowserRouter([
   // daily-area destinations (all authenticated positions).
   {
     path: '/conversations',
-    element: page({ title: '對話', area: 'daily' }, <Conversations />),
+    element: page({ title: '對話收件匣', area: 'daily' }, <Inbox />),
   },
   {
     path: '/conversations/:id',
-    element: page({ title: '對話', area: 'daily' }, <ConversationDetail />),
+    element: page({ title: '對話收件匣', area: 'daily' }, <Inbox />),
   },
   {
     path: '/customers',

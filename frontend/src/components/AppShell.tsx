@@ -51,7 +51,7 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
     title: '日常',
     items: [
       { to: '/dashboard',       label: '儀表板',   area: 'daily' },
-      { to: '/conversations',   label: '對話',     area: 'daily' },
+      { to: '/conversations',   label: '對話收件匣', area: 'daily' },
       { to: '/customers',       label: '客戶',     area: 'daily' },
       { to: '/messages/search', label: '訊息搜尋', area: 'daily' },
       { to: '/reminders',       label: '提醒',     area: 'daily' },
