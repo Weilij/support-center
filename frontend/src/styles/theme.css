@@ -170,6 +170,7 @@ input:focus, select:focus, textarea:focus {
   flex-direction: column;
   padding: 24px 16px;
   gap: 4px;
+  overflow-y: auto;
 }
 .cs-side--dark {
   background: #0c2840;
