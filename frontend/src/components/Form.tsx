@@ -7,13 +7,14 @@ import type { ReactNode } from 'react'
 const labelStyle: React.CSSProperties = {
   display: 'block',
   fontSize: 13,
+  fontWeight: 500,
   color: 'var(--muted)',
   marginBottom: 4,
 }
 
 const controlStyle: React.CSSProperties = {
   width: '100%',
-  padding: '7px 9px',
+  padding: '9px 14px',
   fontSize: 14,
   boxSizing: 'border-box',
 }

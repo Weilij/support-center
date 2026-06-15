@@ -8,7 +8,7 @@ import type { ReactNode } from 'react'
 const backdrop: React.CSSProperties = {
   position: 'fixed',
   inset: 0,
-  background: 'rgba(0,0,0,0.4)',
+  background: 'rgba(15,23,42,0.4)',
   display: 'flex',
   zIndex: 1000,
 }
@@ -41,17 +41,15 @@ export function Modal({ open, title, onClose, children, width = 480 }: ModalProp
         aria-modal="true"
         onClick={(e) => e.stopPropagation()}
         style={{
-          background: 'var(--surface-strong)',
-          backdropFilter: 'blur(var(--blur))',
-          WebkitBackdropFilter: 'blur(var(--blur))',
-          border: '1px solid var(--surface-border)',
-          borderRadius: 10,
+          background: 'var(--surface)',
+          border: '1px solid var(--line)',
+          borderRadius: 'var(--radius-lg)',
           padding: 20,
           width,
           maxWidth: '92vw',
           maxHeight: '88vh',
           overflowY: 'auto',
-          boxShadow: '0 10px 40px rgba(0,0,0,0.2)',
+          boxShadow: 'var(--shadow-lg)',
         }}
       >
         {title && <h2 style={{ marginTop: 0, fontSize: 18 }}>{title}</h2>}
@@ -79,16 +77,14 @@ export function Drawer({ open, title, onClose, children, width = 420 }: DrawerPr
         aria-modal="true"
         onClick={(e) => e.stopPropagation()}
         style={{
-          background: 'var(--surface-strong)',
-          backdropFilter: 'blur(var(--blur))',
-          WebkitBackdropFilter: 'blur(var(--blur))',
-          border: '1px solid var(--surface-border)',
+          background: 'var(--surface)',
+          border: '1px solid var(--line)',
           width,
           maxWidth: '92vw',
           height: '100%',
           overflowY: 'auto',
           padding: 20,
-          boxShadow: '-6px 0 24px rgba(0,0,0,0.15)',
+          boxShadow: 'var(--shadow-lg)',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center' }}>

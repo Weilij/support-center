@@ -1,20 +1,23 @@
 import type { ReactNode } from 'react'
 
-const glass: React.CSSProperties = {
+// Clean-light card surface: solid white, 1px --line border, --radius-lg, --shadow-sm
+const cardBase: React.CSSProperties = {
   background: 'var(--surface)',
-  backdropFilter: 'blur(var(--blur))',
-  WebkitBackdropFilter: 'blur(var(--blur))',
-  border: '1px solid var(--surface-border)',
-  borderRadius: 'var(--radius)',
-  boxShadow: 'var(--shadow)',
+  border: '1px solid var(--line)',
+  borderRadius: 'var(--radius-lg)',
+  boxShadow: 'var(--shadow-sm)',
 }
 
 export function Card({ title, actions, children, style }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; style?: React.CSSProperties }) {
   return (
-    <section style={{ ...glass, padding: 'var(--sp-5)', ...style }}>
+    <section style={{ ...cardBase, padding: 'var(--sp-5)', ...style }}>
       {(title || actions) && (
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 'var(--sp-3)' }}>
-          {title && <h3 style={{ margin: 0 }}>{title}</h3>}
+          {title && (
+            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, letterSpacing: '-.01em' }}>
+              {title}
+            </h3>
+          )}
           {actions && <div style={{ marginLeft: 'auto' }}>{actions}</div>}
         </div>
       )}
