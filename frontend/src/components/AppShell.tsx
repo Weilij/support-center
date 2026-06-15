@@ -184,8 +184,8 @@ function SidebarContent({
           <Icon name="chat" w={19} />
         </span>
         <div>
-          <div className="cs-brand-name">客服中心</div>
-          <div className="cs-brand-sub">Omnichannel Desk</div>
+          <div className="cs-brand-name">客服系統</div>
+          <div className="cs-brand-sub">Support Center</div>
         </div>
       </div>
 

@@ -88,7 +88,23 @@ h3 { font-size: 15px; font-weight: 700; }
 a { color: var(--blue-600); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-button { font: inherit; cursor: pointer; }
+/* Sensible default for plain <button>s (clean light "ghost" look). Components
+   with their own class (.cs-btn, .cs-icon-btn, .cs-conv-tab, .cs-composer-ico…)
+   set their own background/border/padding and override this. */
+button {
+  font: inherit;
+  cursor: pointer;
+  background: var(--surface);
+  color: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px 14px;
+  font-size: 13.5px;
+  font-weight: 500;
+  transition: background .14s, border-color .14s;
+}
+button:hover:not(:disabled) { background: var(--line-2); }
+button:disabled { opacity: .5; cursor: default; }
 
 /* ===== Buttons ===== */
 .cs-btn {
