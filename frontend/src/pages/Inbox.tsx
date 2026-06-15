@@ -164,11 +164,13 @@ function ConvList({
   busy,
   selectedId,
   onSelect,
+  fullWidth,
 }: {
   items: Conversation[]
   busy: boolean
   selectedId: string | undefined
   onSelect: (id: string) => void
+  fullWidth?: boolean
 }) {
   const [tab, setTab] = useState<TabKey>('all')
   const [search, setSearch] = useState('')
@@ -194,7 +196,7 @@ function ConvList({
   })
 
   return (
-    <div className="cs-conv-list">
+    <div className="cs-conv-list" style={fullWidth ? { width: '100%', flexShrink: 1 } : undefined}>
       {/* Head */}
       <div className="cs-conv-head">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
@@ -1143,6 +1145,7 @@ export default function Inbox() {
             busy={busy}
             selectedId={selectedId}
             onSelect={handleSelect}
+            fullWidth
           />
         ) : (
           <Thread
