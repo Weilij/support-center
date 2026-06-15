@@ -29,6 +29,20 @@ import { Tag } from '../components/Chip'
 import { Icon } from '../components/Icon'
 import { AssignDialog, type AssignMode } from '../components/ConversationAssign'
 import { channelOf, CHANNELS } from '../components/channels'
+import { Drawer } from '../components/Modal'
+import { FileUpload } from '../components/FileUpload'
+import {
+  loadConversationFiles,
+  uploadConversationFile,
+  fileDownloadUrl,
+  type Attachment,
+} from '../stores/files'
+import {
+  loadPendingDelayed,
+  scheduleDelayed,
+  cancelDelayed,
+  type PendingDelayed,
+} from '../stores/delayedMessages'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -275,6 +289,55 @@ function Thread({
   const [assignMode, setAssignMode] = useState<AssignMode | null>(null)
   const bottom = useRef<HTMLDivElement>(null)
 
+  // ── Files drawer state ──────────────────────────────────────────────────────
+  const [showFiles, setShowFiles] = useState(false)
+  const [files, setFiles] = useState<Attachment[]>([])
+
+  const refreshFiles = useCallback(async () => {
+    if (!convId) return
+    setFiles(await loadConversationFiles(convId))
+  }, [convId])
+
+  useEffect(() => {
+    if (showFiles) void refreshFiles()
+  }, [showFiles, convId, refreshFiles])
+
+  // ── Schedule drawer state ───────────────────────────────────────────────────
+  const [showSchedule, setShowSchedule] = useState(false)
+  const [pending, setPending] = useState<PendingDelayed[]>([])
+  const [schedDraft, setSchedDraft] = useState('')
+  const [delayMin, setDelayMin] = useState(5)
+  const [schedMsg, setSchedMsg] = useState<string | null>(null)
+
+  const refreshPending = useCallback(async () => {
+    if (!convId) return
+    setPending(await loadPendingDelayed(convId))
+  }, [convId])
+
+  useEffect(() => {
+    if (showSchedule) void refreshPending()
+  }, [showSchedule, convId, refreshPending])
+
+  const submitSchedule = async () => {
+    if (!convId || !schedDraft.trim()) return
+    if (!meta.platform || !meta.platformUserId) {
+      setSchedMsg('缺少客戶平台資訊，無法排程')
+      return
+    }
+    const res = await scheduleDelayed({
+      conversationId: convId,
+      content: schedDraft.trim(),
+      platform: meta.platform,
+      userId: meta.platformUserId,
+      delaySeconds: Math.max(1, Math.round(delayMin * 60)),
+    })
+    setSchedMsg(res.ok ? '已排程' : res.message ?? '排程失敗')
+    if (res.ok) {
+      setSchedDraft('')
+      await refreshPending()
+    }
+  }
+
   // Load conversation meta + messages on convId change
   useEffect(() => {
     if (!convId) { setMessages([]); return }
@@ -412,6 +475,64 @@ function Thread({
           <button className="cs-icon-btn" aria-label="星號" style={{ width: 36, height: 36 }}>
             <Icon name="star" w={17} />
           </button>
+          {/* Files drawer button */}
+          <button
+            className="cs-icon-btn"
+            aria-label="附件檔案"
+            title="附件檔案"
+            style={{ width: 36, height: 36, position: 'relative' }}
+            onClick={() => setShowFiles((v) => !v)}
+          >
+            <Icon name="paperclip" w={17} />
+            {files.length > 0 && (
+              <span style={{
+                position: 'absolute',
+                top: 4,
+                right: 4,
+                background: 'var(--brand)',
+                color: '#fff',
+                fontSize: 10,
+                fontWeight: 700,
+                borderRadius: 8,
+                minWidth: 14,
+                height: 14,
+                lineHeight: '14px',
+                textAlign: 'center',
+                padding: '0 3px',
+              }}>
+                {files.length}
+              </span>
+            )}
+          </button>
+          {/* Schedule drawer button */}
+          <button
+            className="cs-icon-btn"
+            aria-label="排程訊息"
+            title="排程訊息"
+            style={{ width: 36, height: 36, position: 'relative' }}
+            onClick={() => setShowSchedule((v) => !v)}
+          >
+            <Icon name="clock" w={17} />
+            {pending.length > 0 && (
+              <span style={{
+                position: 'absolute',
+                top: 4,
+                right: 4,
+                background: 'var(--brand)',
+                color: '#fff',
+                fontSize: 10,
+                fontWeight: 700,
+                borderRadius: 8,
+                minWidth: 14,
+                height: 14,
+                lineHeight: '14px',
+                textAlign: 'center',
+                padding: '0 3px',
+              }}>
+                {pending.length}
+              </span>
+            )}
+          </button>
           <button
             className="cs-icon-btn"
             aria-label="指派"
@@ -539,6 +660,165 @@ function Thread({
           onClose={() => setAssignMode(null)}
         />
       )}
+
+      {/* Files drawer */}
+      <Drawer
+        open={showFiles}
+        title="附件檔案"
+        onClose={() => setShowFiles(false)}
+        width={420}
+      >
+        {convId && (
+          <>
+            <FileUpload
+              label="拖放或點選上傳檔案到此對話"
+              onUpload={async (file) => {
+                const { error } = await uploadConversationFile(convId, file)
+                if (!error) await refreshFiles()
+                return error ?? null
+              }}
+            />
+            <div style={{ marginTop: 12 }}>
+              {files.length === 0 ? (
+                <p style={{ color: 'var(--muted)', fontSize: 13, margin: 0 }}>尚無檔案</p>
+              ) : (
+                <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                  {files.map((f) => (
+                    <li
+                      key={f.id}
+                      style={{
+                        display: 'flex',
+                        gap: 8,
+                        alignItems: 'center',
+                        padding: '6px 0',
+                        fontSize: 14,
+                        borderBottom: '1px solid var(--line)',
+                      }}
+                    >
+                      <Icon name="paperclip" w={14} style={{ flexShrink: 0, color: 'var(--muted)' }} />
+                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {f.originalName || f.filename || f.id}
+                      </span>
+                      {f.size != null && (
+                        <span style={{ color: 'var(--muted)', fontSize: 12, flexShrink: 0 }}>
+                          {Math.round(f.size / 1024)} KB
+                        </span>
+                      )}
+                      <button
+                        className="cs-btn"
+                        style={{ flexShrink: 0, fontSize: 12, padding: '3px 10px' }}
+                        onClick={async () => {
+                          const url = (await fileDownloadUrl(f.id)) ?? f.publicUrl ?? f.url
+                          if (url) window.open(url, '_blank')
+                        }}
+                      >
+                        下載
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </>
+        )}
+      </Drawer>
+
+      {/* Schedule drawer */}
+      <Drawer
+        open={showSchedule}
+        title="排程訊息"
+        onClose={() => setShowSchedule(false)}
+        width={420}
+      >
+        {convId && (
+          <>
+            {(!meta.platform || !meta.platformUserId) ? (
+              <p style={{ color: 'var(--muted)', fontSize: 13, margin: '0 0 12px' }}>
+                缺少客戶平台資訊，無法排程
+              </p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+                <textarea
+                  value={schedDraft}
+                  onChange={(e) => setSchedDraft(e.target.value)}
+                  placeholder="排程訊息內容"
+                  rows={3}
+                  style={{
+                    width: '100%',
+                    padding: '6px 8px',
+                    fontSize: 14,
+                    border: '1px solid var(--line)',
+                    borderRadius: 8,
+                    resize: 'vertical',
+                    fontFamily: 'inherit',
+                    boxSizing: 'border-box',
+                  }}
+                />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <label style={{ fontSize: 13, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    延遲
+                    <input
+                      type="number"
+                      min={1}
+                      value={delayMin}
+                      onChange={(e) => setDelayMin(Number(e.target.value))}
+                      style={{ width: 60, padding: '4px 6px', border: '1px solid var(--line)', borderRadius: 6, textAlign: 'center' }}
+                    />
+                    分鐘
+                  </label>
+                  <button
+                    className="cs-btn cs-btn--primary"
+                    disabled={!schedDraft.trim()}
+                    style={{ marginLeft: 'auto' }}
+                    onClick={() => void submitSchedule()}
+                  >
+                    排程送出
+                  </button>
+                </div>
+                {schedMsg && (
+                  <p style={{ fontSize: 13, color: 'var(--muted)', margin: 0 }}>{schedMsg}</p>
+                )}
+              </div>
+            )}
+            <hr style={{ border: 'none', borderTop: '1px solid var(--line)', margin: '0 0 12px' }} />
+            {pending.length === 0 ? (
+              <p style={{ color: 'var(--muted)', fontSize: 13, margin: 0 }}>無待送訊息</p>
+            ) : (
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                {pending.map((p) => (
+                  <li
+                    key={p.messageId}
+                    style={{
+                      display: 'flex',
+                      gap: 8,
+                      alignItems: 'center',
+                      padding: '6px 0',
+                      fontSize: 14,
+                      borderBottom: '1px solid var(--line)',
+                    }}
+                  >
+                    <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {p.preview || '(無內容)'}
+                    </span>
+                    <span style={{ color: 'var(--muted)', fontSize: 12, flexShrink: 0 }}>
+                      {p.remainingMs != null ? `${Math.ceil(p.remainingMs / 1000)}s` : ''}
+                    </span>
+                    <button
+                      className="cs-btn"
+                      style={{ flexShrink: 0, fontSize: 12, padding: '3px 10px' }}
+                      onClick={async () => {
+                        if (await cancelDelayed(p.messageId)) await refreshPending()
+                      }}
+                    >
+                      取消
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </Drawer>
     </div>
   )
 }
