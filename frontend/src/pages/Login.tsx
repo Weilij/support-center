@@ -7,6 +7,7 @@ import { useNavigate } from 'react-router-dom'
 import { post } from '../api/client'
 import { session } from '../auth/session'
 import { t } from '../i18n'
+import { Icon } from '../components/Icon'
 
 interface LoginData {
   // token / refreshToken are set as HttpOnly cookies by the backend;
@@ -51,33 +52,30 @@ export default function Login() {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
+    background: 'var(--bg)',
     padding: '24px',
   }
 
   const cardStyle: React.CSSProperties = {
     width: '100%',
     maxWidth: 380,
-    background: 'var(--surface-strong)',
-    backdropFilter: 'blur(var(--blur))',
-    WebkitBackdropFilter: 'blur(var(--blur))',
-    border: '1px solid var(--surface-border)',
-    borderRadius: 'var(--radius)',
+    background: 'var(--surface)',
+    border: '1px solid var(--line)',
+    borderRadius: 'var(--radius-lg)',
     boxShadow: 'var(--shadow-lg)',
-    padding: 'var(--sp-6)',
+    padding: '36px 32px',
   }
 
   const logoStyle: React.CSSProperties = {
     width: 44,
     height: 44,
     borderRadius: 12,
-    background: 'linear-gradient(135deg,#6366f1,#3b82f6)',
+    background: 'linear-gradient(150deg, var(--blue-400), var(--blue-600))',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     color: '#fff',
-    fontWeight: 700,
-    fontSize: 22,
-    boxShadow: '0 4px 16px rgba(99,102,241,0.35)',
+    boxShadow: '0 4px 16px rgba(2,132,199,0.30)',
     margin: '0 auto var(--sp-3)',
   }
 
@@ -90,7 +88,7 @@ export default function Login() {
     margin: '0 0 4px',
     fontSize: 20,
     fontWeight: 700,
-    color: 'var(--text)',
+    color: 'var(--ink)',
   }
 
   const subtitleStyle: React.CSSProperties = {
@@ -117,7 +115,9 @@ export default function Login() {
     <div style={outerStyle}>
       <div style={cardStyle}>
         <div style={brandBlockStyle}>
-          <div style={logoStyle}>客</div>
+          <div style={logoStyle}>
+            <Icon name="chat" w={22} />
+          </div>
           <h1 style={titleStyle}>{t('login.title')}</h1>
           <p style={subtitleStyle}>登入以繼續</p>
         </div>
@@ -144,7 +144,7 @@ export default function Login() {
             />
           </label>
           {error && <p role="alert" style={{ color: 'crimson', margin: '0 0 var(--sp-4)', fontSize: 13 }}>{error}</p>}
-          <button type="submit" disabled={busy} className="btn-primary" style={{ width: '100%' }}>
+          <button type="submit" disabled={busy} className="cs-btn cs-btn--primary" style={{ width: '100%', justifyContent: 'center' }}>
             {t('login.submit')}
           </button>
         </form>
