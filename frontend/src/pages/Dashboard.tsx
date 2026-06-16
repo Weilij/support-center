@@ -79,13 +79,7 @@ function KpiRow({
   agentTotal: number
 }) {
   return (
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(4, 1fr)',
-        gap: 18,
-      }}
-    >
+    <div className="grid-auto">
       <KpiCard
         icon="chat"
         iconBg="#e0f2fe"
@@ -241,7 +235,7 @@ function QueueCard({ items }: { items: Conversation[] }) {
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(4, 1fr)',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
           }}
         >
           {queue.map((c, idx) => {
@@ -376,13 +370,7 @@ export default function Dashboard() {
       />
 
       {/* 2. Two-column row: channel distribution + team status */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '1.55fr 1fr',
-          gap: 20,
-        }}
-      >
+      <div className="row-2col">
         <ChannelCard items={conversations} />
         <TeamCard agents={agents} presenceOnline={presenceOnline} />
       </div>

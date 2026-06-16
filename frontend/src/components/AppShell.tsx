@@ -233,7 +233,13 @@ export default function AppShell({
   const [isNarrow, setIsNarrow] = useState(
     () =>
       typeof window !== 'undefined' && window.matchMedia
-        ? window.matchMedia('(max-width: 768px)').matches
+        ? window.matchMedia('(max-width: 1024px)').matches
+        : false,
+  )
+  const [isMobile, setIsMobile] = useState(
+    () =>
+      typeof window !== 'undefined' && window.matchMedia
+        ? window.matchMedia('(max-width: 640px)').matches
         : false,
   )
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -241,10 +247,16 @@ export default function AppShell({
   // Subscribe to viewport width changes.
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return
-    const mq = window.matchMedia('(max-width: 768px)')
+    const mq = window.matchMedia('(max-width: 1024px)')
     const handler = (e: MediaQueryListEvent) => setIsNarrow(e.matches)
     mq.addEventListener('change', handler)
-    return () => mq.removeEventListener('change', handler)
+    const mqMobile = window.matchMedia('(max-width: 640px)')
+    const handlerMobile = (e: MediaQueryListEvent) => setIsMobile(e.matches)
+    mqMobile.addEventListener('change', handlerMobile)
+    return () => {
+      mq.removeEventListener('change', handler)
+      mqMobile.removeEventListener('change', handlerMobile)
+    }
   }, [])
 
   // Close the drawer on route change.
@@ -369,16 +381,18 @@ export default function AppShell({
             </button>
           </Link>
 
-          {/* User avatar + display name */}
+          {/* User avatar + display name (name hidden on mobile ≤640px) */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {displayName ? (
               <SidebarAvatar name={displayName} size="sm" />
             ) : (
               <span className="cs-av cs-av-sm" style={{ background: avColor('?') }}>?</span>
             )}
-            <span style={{ fontSize: 14, color: 'var(--ink)', fontWeight: 500, whiteSpace: 'nowrap' }}>
-              {displayName}
-            </span>
+            {!isMobile && (
+              <span style={{ fontSize: 14, color: 'var(--ink)', fontWeight: 500, whiteSpace: 'nowrap' }}>
+                {displayName}
+              </span>
+            )}
           </div>
 
           {/* Logout button */}
@@ -392,7 +406,7 @@ export default function AppShell({
         </header>
 
         {/* Content area */}
-        <main className="cs-content" style={{ overflowY: 'auto', padding: isNarrow ? 12 : undefined }}>
+        <main className="cs-content" style={{ overflowY: 'auto' }}>
           {children}
         </main>
       </div>

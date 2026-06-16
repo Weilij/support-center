@@ -416,3 +416,14 @@ input:focus, select:focus, textarea:focus {
 .cs-divider { height: 1px; background: var(--line); }
 .cs-mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .cs-scroll-fade { position: relative; }
+
+/* ===== Responsive ===== */
+@media (max-width: 640px) {
+  .cs-content { padding: 16px; }
+  .cs-topbar { padding: 0 16px; gap: 12px; }
+}
+/* Auto-reflowing equal-column grid utility */
+.grid-auto { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+/* Asymmetric 2-col that stacks when cramped */
+.row-2col { display: grid; gap: 20px; grid-template-columns: 1.55fr 1fr; }
+@media (max-width: 900px) { .row-2col { grid-template-columns: 1fr; } }
