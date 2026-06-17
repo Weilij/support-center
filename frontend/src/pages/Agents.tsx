@@ -7,7 +7,7 @@ import { DataTable, Pagination } from '../components/DataTable'
 import { StatCard, StatusPill, Toast } from '../components/ui'
 import { PageHeader } from '../components/PageHeader'
 import { Card, StatGrid } from '../components/Card'
-import { Modal } from '../components/Modal'
+import { Modal, ConfirmDialog } from '../components/Modal'
 import { Input, Select } from '../components/Form'
 import { useStore } from '../stores/store'
 import { teamsStore, loadTeams } from '../stores/teams'
@@ -17,6 +17,7 @@ import {
   batchTransferAgents,
   setAgentPosition,
   createAgent,
+  deleteAgent,
   PRESENCE_STATES,
   type Agent,
 } from '../stores/agents'
@@ -61,6 +62,8 @@ export default function Agents() {
   const [createError, setCreateError] = useState<string | null>(null)
   const [createBusy, setCreateBusy] = useState(false)
 
+  const [toDelete, setToDelete] = useState<Agent | null>(null)
+
   const load = async (p: number) => {
     setBusy(true)
     const res = await loadAgents(p, PAGE_SIZE)
@@ -101,6 +104,14 @@ export default function Agents() {
     const res = await setAgentPosition(agentId, position)
     setToast(res.ok ? '職位已更新' : res.message ?? '更新失敗')
     if (res.ok) setAgents((as) => as.map((a) => (a.id === agentId ? { ...a, position } : a)))
+  }
+
+  const confirmDelete = async () => {
+    if (!toDelete) return
+    const res = await deleteAgent(toDelete.id)
+    setToast(res.ok ? '帳號已刪除' : res.message ?? '刪除失敗')
+    setToDelete(null)
+    if (res.ok) void load(page)
   }
 
   const resetCreateForm = () => {
@@ -191,6 +202,15 @@ export default function Agents() {
       key: 'lastActiveAt',
       header: '最後活動',
       render: (a) => (a.lastActiveAt ? new Date(a.lastActiveAt).toLocaleString() : '—'),
+    },
+    {
+      key: 'del',
+      header: '',
+      width: 70,
+      render: (a) =>
+        session.position() === 'system_admin' && a.id !== session.identity()?.sub ? (
+          <button onClick={() => setToDelete(a)} style={{ color: 'var(--busy)' }}>刪除</button>
+        ) : null,
     },
   ]
 
@@ -302,6 +322,16 @@ export default function Agents() {
           </div>
         </form>
       </Modal>
+
+      <ConfirmDialog
+        open={!!toDelete}
+        title="刪除帳號"
+        message={`確定要刪除「${toDelete?.displayName || toDelete?.email}」這個帳號嗎？此動作會移除其團隊關聯。`}
+        confirmLabel="刪除"
+        danger
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => setToDelete(null)}
+      />
 
       <Card title="職位權限對照表" style={{ marginTop: 'var(--sp-5)' }}>
         <table style={{ borderCollapse: 'collapse', fontSize: 14 }}>

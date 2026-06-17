@@ -1,7 +1,7 @@
 // Agents (operators) directory & presence (Phase 2.1). Server-paginated roster
 // plus a presence-status histogram and a batch team-transfer action.
 
-import { get, post, put, buildQuery, unwrapList } from '../api/client'
+import { get, post, put, del, buildQuery, unwrapList } from '../api/client'
 
 export interface Agent {
   id: string
@@ -51,6 +51,12 @@ export async function batchTransferAgents(
   toTeamId: number,
 ): Promise<{ ok: boolean; message?: string }> {
   const resp = await put('/api/agents/batch/transfer', { agentIds, toTeamId })
+  return { ok: resp.success, message: resp.message }
+}
+
+/// System-admin-only: delete (soft) an agent account.
+export async function deleteAgent(agentId: string): Promise<{ ok: boolean; message?: string }> {
+  const resp = await del(`/api/agents/${agentId}`)
   return { ok: resp.success, message: resp.message }
 }
 
