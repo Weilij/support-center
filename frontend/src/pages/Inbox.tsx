@@ -175,7 +175,7 @@ function ConvList({
   const [tab, setTab] = useState<TabKey>('all')
   const [search, setSearch] = useState('')
 
-  const myId = session.identity()?.sub
+  const myId = session.identity()?.id
 
   const filtered = items.filter((c) => {
     // Tab filter

@@ -208,7 +208,7 @@ export default function Agents() {
       header: '',
       width: 70,
       render: (a) =>
-        session.position() === 'system_admin' && a.id !== session.identity()?.sub ? (
+        session.position() === 'system_admin' && a.id !== session.identity()?.id ? (
           <button onClick={() => setToDelete(a)} style={{ color: 'var(--busy)' }}>刪除</button>
         ) : null,
     },
