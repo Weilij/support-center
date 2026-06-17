@@ -7,6 +7,8 @@ import { DataTable, Pagination } from '../components/DataTable'
 import { StatCard, StatusPill, Toast } from '../components/ui'
 import { PageHeader } from '../components/PageHeader'
 import { Card, StatGrid } from '../components/Card'
+import { Modal } from '../components/Modal'
+import { Input, Select } from '../components/Form'
 import { useStore } from '../stores/store'
 import { teamsStore, loadTeams } from '../stores/teams'
 import {
@@ -14,6 +16,7 @@ import {
   loadStatusStatistics,
   batchTransferAgents,
   setAgentPosition,
+  createAgent,
   PRESENCE_STATES,
   type Agent,
 } from '../stores/agents'
@@ -48,6 +51,15 @@ export default function Agents() {
   const [stats, setStats] = useState<Record<string, number>>({})
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [toast, setToast] = useState<string | null>(null)
+
+  // Create-account modal state
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createName, setCreateName] = useState('')
+  const [createEmail, setCreateEmail] = useState('')
+  const [createPassword, setCreatePassword] = useState('')
+  const [createRole, setCreateRole] = useState<'agent' | 'admin'>('agent')
+  const [createError, setCreateError] = useState<string | null>(null)
+  const [createBusy, setCreateBusy] = useState(false)
 
   const load = async (p: number) => {
     setBusy(true)
@@ -89,6 +101,43 @@ export default function Agents() {
     const res = await setAgentPosition(agentId, position)
     setToast(res.ok ? '職位已更新' : res.message ?? '更新失敗')
     if (res.ok) setAgents((as) => as.map((a) => (a.id === agentId ? { ...a, position } : a)))
+  }
+
+  const resetCreateForm = () => {
+    setCreateName('')
+    setCreateEmail('')
+    setCreatePassword('')
+    setCreateRole('agent')
+    setCreateError(null)
+  }
+
+  const handleCreateSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!createName.trim() || !createEmail.trim() || !createPassword.trim()) {
+      setCreateError('請填寫所有欄位')
+      return
+    }
+    if (createPassword.length < 6) {
+      setCreateError('密碼至少需要 6 個字元')
+      return
+    }
+    setCreateError(null)
+    setCreateBusy(true)
+    const res = await createAgent({
+      email: createEmail.trim(),
+      password: createPassword,
+      displayName: createName.trim(),
+      role: createRole,
+    })
+    setCreateBusy(false)
+    if (res.ok) {
+      setCreateOpen(false)
+      resetCreateForm()
+      setToast('帳號已建立')
+      void load(page)
+    } else {
+      setCreateError(res.message ?? '建立失敗')
+    }
   }
 
   if (!can(session.position(), 'ops')) {
@@ -147,7 +196,19 @@ export default function Agents() {
 
   return (
     <div style={{ maxWidth: 1040, margin: '0 auto', padding: '0 16px' }}>
-      <PageHeader title="客服人員管理" />
+      <PageHeader
+        title="客服人員管理"
+        actions={
+          canEditPosition ? (
+            <button
+              className="cs-btn cs-btn--primary"
+              onClick={() => { resetCreateForm(); setCreateOpen(true) }}
+            >
+              新增帳號
+            </button>
+          ) : undefined
+        }
+      />
 
       <StatGrid style={{ marginBottom: 'var(--sp-4)' }}>
         {PRESENCE_STATES.map((s) => (
@@ -185,6 +246,62 @@ export default function Agents() {
       <Pagination page={page} total={total} pageSize={PAGE_SIZE} onPage={(p) => void load(p)} />
 
       <Toast message={toast} onDismiss={() => setToast(null)} />
+
+      <Modal
+        open={createOpen}
+        title="新增帳號"
+        onClose={() => { setCreateOpen(false); resetCreateForm() }}
+      >
+        <form onSubmit={(e) => void handleCreateSubmit(e)}>
+          <Input
+            label="顯示名稱"
+            value={createName}
+            onChange={(e) => setCreateName(e.target.value)}
+            autoFocus
+          />
+          <Input
+            label="電子郵件"
+            type="email"
+            value={createEmail}
+            onChange={(e) => setCreateEmail(e.target.value)}
+          />
+          <Input
+            label="密碼"
+            type="password"
+            value={createPassword}
+            onChange={(e) => setCreatePassword(e.target.value)}
+          />
+          <Select
+            label="角色"
+            value={createRole}
+            onChange={(e) => setCreateRole(e.target.value as 'agent' | 'admin')}
+            options={[
+              { value: 'agent', label: '客服' },
+              { value: 'admin', label: '管理員' },
+            ]}
+          />
+          {createError && (
+            <p role="alert" style={{ color: 'crimson', fontSize: 13, margin: '0 0 12px' }}>
+              {createError}
+            </p>
+          )}
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button
+              type="button"
+              onClick={() => { setCreateOpen(false); resetCreateForm() }}
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              className="cs-btn cs-btn--primary"
+              disabled={createBusy}
+            >
+              {createBusy ? '建立中…' : '建立'}
+            </button>
+          </div>
+        </form>
+      </Modal>
 
       <Card title="職位權限對照表" style={{ marginTop: 'var(--sp-5)' }}>
         <table style={{ borderCollapse: 'collapse', fontSize: 14 }}>

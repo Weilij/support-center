@@ -1,7 +1,7 @@
 // Agents (operators) directory & presence (Phase 2.1). Server-paginated roster
 // plus a presence-status histogram and a batch team-transfer action.
 
-import { get, put, buildQuery, unwrapList } from '../api/client'
+import { get, post, put, buildQuery, unwrapList } from '../api/client'
 
 export interface Agent {
   id: string
@@ -51,5 +51,21 @@ export async function batchTransferAgents(
   toTeamId: number,
 ): Promise<{ ok: boolean; message?: string }> {
   const resp = await put('/api/agents/batch/transfer', { agentIds, toTeamId })
+  return { ok: resp.success, message: resp.message }
+}
+
+/// System-admin-only: create a new agent account. Returns ok + optional message.
+export async function createAgent(input: {
+  email: string
+  password: string
+  displayName: string
+  role: 'admin' | 'agent'
+}): Promise<{ ok: boolean; message?: string }> {
+  const resp = await post('/api/auth/register', {
+    email: input.email,
+    password: input.password,
+    displayName: input.displayName,
+    role: input.role,
+  })
   return { ok: resp.success, message: resp.message }
 }
