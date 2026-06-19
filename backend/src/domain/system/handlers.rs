@@ -27,8 +27,6 @@ pub async fn basic_health(State(state): State<Arc<AppState>>) -> Response {
     let body = json!({
         "status": if ok { "healthy" } else { "unhealthy" },
         "timestamp": now_iso(),
-        "database": if ok { "connected" } else { "disconnected" },
-        "version": env!("CARGO_PKG_VERSION"),
     });
     let code = if ok { StatusCode::OK } else { StatusCode::INTERNAL_SERVER_ERROR };
     (code, Json(body)).into_response()
@@ -501,7 +499,6 @@ pub async fn health_health(State(state): State<Arc<AppState>>) -> Response {
         StatusCode::OK,
         Json(json!({
             "status": "healthy", "service": "mcss-backend", "timestamp": now_iso(),
-            "version": env!("CARGO_PKG_VERSION"), "environment": state.config.environment,
         })),
     )
         .into_response()
@@ -530,6 +527,19 @@ fn status_code_for(verdict: &str) -> StatusCode {
 }
 
 pub async fn health_status(State(state): State<Arc<AppState>>) -> Response {
+    let (_report, verdict) = full_report(&state).await;
+    (
+        status_code_for(verdict),
+        Json(json!({
+            "success": verdict != "critical",
+            "data": {"overall": verdict, "timestamp": now_iso()},
+        })),
+    )
+        .into_response()
+}
+
+/// Detailed health report (with `components`) — for the authenticated tier only.
+pub async fn health_status_detailed(State(state): State<Arc<AppState>>) -> Response {
     let (report, verdict) = full_report(&state).await;
     (status_code_for(verdict), Json(json!({"success": verdict != "critical", "data": report})))
         .into_response()
@@ -539,7 +549,7 @@ pub async fn health_system(
     State(state): State<Arc<AppState>>,
     Extension(_user): Extension<AuthUser>,
 ) -> Response {
-    health_status(State(state)).await
+    health_status_detailed(State(state)).await
 }
 
 pub async fn health_infrastructure(
@@ -554,7 +564,7 @@ pub async fn health_services(
     State(state): State<Arc<AppState>>,
     Extension(_user): Extension<AuthUser>,
 ) -> Response {
-    health_status(State(state)).await
+    health_status_detailed(State(state)).await
 }
 
 pub async fn health_stats(

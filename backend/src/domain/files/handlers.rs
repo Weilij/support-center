@@ -6,6 +6,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 use crate::db::now_iso;
@@ -37,6 +38,17 @@ fn require_file_id(id: &str) -> Result<()> {
     } else {
         Err(AppError::BadRequest("Invalid file identifier".into()))
     }
+}
+
+/// Marks an attachment record as failed (shared by the direct-upload and
+/// confirm rejection branches).
+async fn mark_upload_failed(state: &AppState, file_id: &str) -> Result<()> {
+    sqlx::query("UPDATE attachments SET upload_status = 'failed', updated_at = $1 WHERE id = $2")
+        .bind(now_iso())
+        .bind(file_id)
+        .execute(&state.db)
+        .await?;
+    Ok(())
 }
 
 /// Single-resource ownership rule: admins access any file; everyone else only
@@ -248,6 +260,21 @@ pub async fn direct_upload(
     let key = row.storage_key.clone().unwrap_or_default();
     if !verify_signature(&state, &key, &q) {
         return Err(AppError::NotFound("File not found".into()));
+    }
+    let content_type = row.content_type.as_deref().unwrap_or("application/octet-stream");
+    let platform = row.platform.as_deref().unwrap_or("system");
+    let reject = if !validate::allowed_types(platform).contains(&content_type) {
+        Some(format!("Content type '{content_type}' is not allowed"))
+    } else if body.len() > validate::size_cap(content_type, platform) {
+        Some("File exceeds the maximum allowed size".to_string())
+    } else if let Err(e) = validate::check_signature(content_type, &body) {
+        Some(e)
+    } else {
+        None
+    };
+    if let Some(message) = reject {
+        mark_upload_failed(&state, &file_id).await?;
+        return Err(AppError::BadRequest(message));
     }
     store::put_object(&state.config.upload_dir, &key, &body)
         .await
@@ -1007,7 +1034,6 @@ pub async fn confirm_upload(
     if size <= 0 {
         return Err(AppError::BadRequest("size must be a positive number".into()));
     }
-    let _ = body.checksum;
     let row = store::find(&state.db, &file_id)
         .await?
         .ok_or_else(|| AppError::NotFound("File not found".into()))?;
@@ -1023,15 +1049,20 @@ pub async fn confirm_upload(
     let key = row.storage_key.clone().unwrap_or_default();
     let object = store::get_object(&state.config.upload_dir, &key).await;
     let Some(bytes) = object else {
-        sqlx::query("UPDATE attachments SET upload_status = 'failed', updated_at = $1 WHERE id = $2")
-            .bind(now_iso())
-            .bind(&file_id)
-            .execute(&state.db)
-            .await?;
+        mark_upload_failed(&state, &file_id).await?;
         return Err(AppError::BadRequest("Uploaded object not found in store".into()));
     };
     if bytes.len() as i64 != size {
-        tracing::warn!(file = %file_id, expected = size, actual = bytes.len(), "confirm size mismatch");
+        mark_upload_failed(&state, &file_id).await?;
+        return Err(AppError::BadRequest("Uploaded size does not match the confirmed size".into()));
+    }
+    if let Some(expected) = body.checksum.as_deref().filter(|c| !c.is_empty()) {
+        let digest = Sha256::digest(&bytes);
+        let actual = digest.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        if !actual.eq_ignore_ascii_case(expected) {
+            mark_upload_failed(&state, &file_id).await?;
+            return Err(AppError::BadRequest("Uploaded checksum does not match".into()));
+        }
     }
     sqlx::query(
         "UPDATE attachments SET upload_status = 'completed', file_size = $1, updated_at = $2 WHERE id = $3",

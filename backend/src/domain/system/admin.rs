@@ -336,14 +336,11 @@ pub async fn opt_query_index(
 }
 
 pub async fn opt_health(State(state): State<Arc<AppState>>) -> Result {
-    let config = get_setting(&state, "optimization.config").await.unwrap_or_else(default_optimization);
+    let _ = &state;
     Ok(envelope::ok(json!({
-        "status": "healthy", "score": 95, "grade": "A",
-        "components": {"cache": "healthy", "batching": "healthy"},
-        "statistics": {"cacheEntries": 0},
-        "recommendations": [],
-        "nextSteps": [],
-        "config": config,
+        "status": "healthy",
+        "module": "data-optimization",
+        "timestamp": now_iso(),
     })))
 }
 

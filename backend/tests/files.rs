@@ -425,6 +425,101 @@ async fn direct_upload_flow_pending_confirm_completed() {
     let _ = upload_url;
 }
 
+/// Mint a presigned direct-upload target; returns (file_id, upload_path).
+async fn presign_direct(app: &TestApp, token: &str, filename: &str, content_type: &str, size: usize) -> (String, String) {
+    let (status, body, _) = app
+        .request("POST", "/api/files/presigned-url", Some(token),
+            Some(json!({"filename": filename, "contentType": content_type, "size": size})))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let file_id = body["data"]["fileId"].as_str().unwrap().to_string();
+    let upload_path = body["data"]["uploadUrl"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches(app.state.config.backend_url.as_deref().unwrap_or(""))
+        .to_string();
+    (file_id, upload_path)
+}
+
+async fn direct_put(app: &TestApp, upload_path: &str, bytes: Vec<u8>) -> StatusCode {
+    let req = Request::builder()
+        .method("PUT")
+        .uri(upload_path)
+        .body(Body::from(bytes))
+        .unwrap();
+    app.router.clone().oneshot(req).await.unwrap().status()
+}
+
+#[tokio::test]
+async fn direct_upload_rejects_magic_byte_mismatch() {
+    let app = spawn_app().await;
+    let token = agent(&app).await;
+
+    // Presign as PNG but PUT non-PNG bytes.
+    let (file_id, upload_path) = presign_direct(&app, &token, "fake.png", "image/png", 9).await;
+    let status = direct_put(&app, &upload_path, b"not a png".to_vec()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "magic-byte mismatch rejected");
+
+    // Record marked failed.
+    let (_, sbody, _) = app
+        .request("GET", &format!("/api/files/{file_id}/status"), Some(&token), None)
+        .await;
+    assert_eq!(sbody["data"]["uploadStatus"], "failed");
+}
+
+#[tokio::test]
+async fn confirm_upload_rejects_size_mismatch() {
+    let app = spawn_app().await;
+    let token = agent(&app).await;
+
+    let (file_id, upload_path) = presign_direct(&app, &token, "size.png", "image/png", PNG.len()).await;
+    let status = direct_put(&app, &upload_path, PNG.to_vec()).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Confirm with the wrong size -> BAD_REQUEST, record failed.
+    let (status, _, _) = app
+        .request("POST", &format!("/api/files/{file_id}/confirm"), Some(&token),
+            Some(json!({"size": PNG.len() + 100})))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (_, sbody, _) = app
+        .request("GET", &format!("/api/files/{file_id}/status"), Some(&token), None)
+        .await;
+    assert_eq!(sbody["data"]["uploadStatus"], "failed");
+}
+
+#[tokio::test]
+async fn confirm_upload_validates_checksum() {
+    use sha2::{Digest, Sha256};
+    let app = spawn_app().await;
+    let token = agent(&app).await;
+
+    let good = Sha256::digest(PNG).iter().map(|b| format!("{b:02x}")).collect::<String>();
+
+    // Correct checksum -> completed.
+    let (file_id, upload_path) = presign_direct(&app, &token, "ck1.png", "image/png", PNG.len()).await;
+    assert_eq!(direct_put(&app, &upload_path, PNG.to_vec()).await, StatusCode::OK);
+    let (status, cbody, _) = app
+        .request("POST", &format!("/api/files/{file_id}/confirm"), Some(&token),
+            Some(json!({"size": PNG.len(), "checksum": good})))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{cbody}");
+    assert_eq!(cbody["data"]["uploadStatus"], "completed");
+
+    // Wrong checksum -> BAD_REQUEST.
+    let (file_id, upload_path) = presign_direct(&app, &token, "ck2.png", "image/png", PNG.len()).await;
+    assert_eq!(direct_put(&app, &upload_path, PNG.to_vec()).await, StatusCode::OK);
+    let (status, _, _) = app
+        .request("POST", &format!("/api/files/{file_id}/confirm"), Some(&token),
+            Some(json!({"size": PNG.len(), "checksum": "deadbeef"})))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (_, sbody, _) = app
+        .request("GET", &format!("/api/files/{file_id}/status"), Some(&token), None)
+        .await;
+    assert_eq!(sbody["data"]["uploadStatus"], "failed");
+}
+
 // ---------------------------------------------------------------- richer ops
 
 #[tokio::test]

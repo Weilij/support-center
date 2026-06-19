@@ -20,11 +20,27 @@ async fn public_probes_and_descriptor() {
     let (status, body, _) = app.request("GET", "/api/system/health", None, None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "healthy");
-    assert_eq!(body["database"], "connected");
+    // M3: public liveness must not leak DB status or version.
+    assert!(body.get("database").is_none() || body["database"].is_null());
+    assert!(body.get("version").is_none() || body["version"].is_null());
 
     let (status, body, _) = app.request("GET", "/api/system/api", None, None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["endpoints"]["auth"].is_string());
+
+    // M3: public /api/health/health hides version/environment.
+    let (_, body, _) = app.request("GET", "/api/health/health", None, None).await;
+    assert!(body.get("version").is_none() || body["version"].is_null());
+    assert!(body.get("environment").is_none() || body["environment"].is_null());
+
+    // M3: public /api/health/status hides the component breakdown.
+    let (_, body, _) = app.request("GET", "/api/health/status", None, None).await;
+    assert!(body["data"].get("components").is_none() || body["data"]["components"].is_null());
+
+    // M3: public data-optimization health hides config.
+    let (_, body, _) = app.request("GET", "/api/data-optimization/health", None, None).await;
+    let opt = if body.get("data").is_some() { &body["data"] } else { &body };
+    assert!(opt.get("config").is_none() || opt["config"].is_null());
 
     for path in ["/api/health/health", "/api/health/status", "/api/health/ready",
                  "/api/health/live", "/api/reminders/health", "/api/data-optimization/health"] {
@@ -173,6 +189,9 @@ async fn unified_health_family() {
         let (status, _, _) = app.request("GET", path, Some(&agent), None).await;
         assert_eq!(status, StatusCode::OK, "{path}");
     }
+    // M3: detail (components) preserved behind auth.
+    let (_, body, _) = app.request("GET", "/api/health/system", Some(&agent), None).await;
+    assert!(body["data"]["components"].is_array(), "authed detail retained");
     let (status, body, _) = app
         .request("GET", "/api/health/component/database", Some(&agent), None)
         .await;
