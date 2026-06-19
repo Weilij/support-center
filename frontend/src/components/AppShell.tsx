@@ -15,6 +15,7 @@ import { session, authChanged } from '../auth/session'
 import { notificationsStore } from '../stores/notifications'
 import { useStore } from '../stores/store'
 import { Icon } from './Icon'
+import { ThemeToggle } from './ThemeToggle'
 
 // ── Icon mapping per route ──────────────────────────────────────────────────
 const ROUTE_ICON: Record<string, string> = {
@@ -372,6 +373,9 @@ export default function AppShell({
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="cs-page-title">{title ?? ''}</div>
           </div>
+
+          {/* Light/dark toggle */}
+          <ThemeToggle />
 
           {/* Bell icon — links to /notifications, shows alert dot when unread > 0 */}
           <Link to="/notifications" style={{ textDecoration: 'none' }}>
