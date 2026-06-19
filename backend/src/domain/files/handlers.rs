@@ -39,6 +39,12 @@ fn require_file_id(id: &str) -> Result<()> {
     }
 }
 
+/// Single-resource ownership rule: admins access any file; everyone else only
+/// their own uploads. Denials surface as 404 (never 403) to avoid id enumeration.
+fn user_can_access_file(user: &AuthUser, row: &FileRow) -> bool {
+    user.is_admin() || row.uploaded_by.as_deref() == Some(user.id.as_str())
+}
+
 fn signed_download_url(state: &AppState, file_id: &str, key: &str, ttl: i64) -> (String, i64) {
     let (sig, expires) = sign::sign(state.config.file_signing_key(), key, ttl);
     let base = state.config.backend_url.clone().unwrap_or_default();
@@ -642,7 +648,7 @@ pub async fn stats_summary(
 /// GET /api/files/{fileId} (CRD 3046-3054): url mode or raw stream.
 pub async fn get_file(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(file_id): Path<String>,
     Query(q): Query<ListQuery>,
 ) -> Result {
@@ -650,6 +656,9 @@ pub async fn get_file(
     let row = store::find(&state.db, &file_id)
         .await?
         .ok_or_else(|| AppError::NotFound("File not found".into()))?;
+    if !user_can_access_file(&user, &row) {
+        return Err(AppError::NotFound("File not found".into()));
+    }
     let url_mode = q.url_only.unwrap_or(false) || q.mode.as_deref() == Some("url");
     if url_mode {
         let url = match row.storage_key.as_deref().filter(|k| !k.is_empty()) {
@@ -680,13 +689,16 @@ pub async fn get_file(
 /// DELETE /api/files/{fileId} (CRD 3056-3063): hard delete, idempotent object removal.
 pub async fn delete_file(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(file_id): Path<String>,
 ) -> Result {
     require_file_id(&file_id)?;
     let row = store::find(&state.db, &file_id)
         .await?
         .ok_or_else(|| AppError::NotFound("File not found".into()))?;
+    if !user_can_access_file(&user, &row) {
+        return Err(AppError::NotFound("File not found".into()));
+    }
     if let Some(key) = row.storage_key.as_deref().filter(|k| !k.is_empty()) {
         store::delete_object(&state.config.upload_dir, key).await;
     }
@@ -700,7 +712,7 @@ pub async fn delete_file(
 /// GET /api/files/{fileId}/download-url (CRD 3178-3180).
 pub async fn download_url(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(file_id): Path<String>,
     Query(q): Query<ListQuery>,
 ) -> Result {
@@ -708,6 +720,9 @@ pub async fn download_url(
     let row = store::find(&state.db, &file_id)
         .await?
         .ok_or_else(|| AppError::NotFound("File not found".into()))?;
+    if !user_can_access_file(&user, &row) {
+        return Err(AppError::NotFound("File not found".into()));
+    }
     let key = row
         .storage_key
         .clone()
@@ -732,16 +747,21 @@ pub async fn conversation_files(
 
 pub async fn message_files(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(message_id): Path<String>,
 ) -> Result {
+    let scope_user = (!user.is_admin()).then_some(user.id.clone());
     let rows: Vec<FileRow> = sqlx::query_as(
         "SELECT id, message_id, conversation_id, file_name, original_name, content_type,
                 file_size, file_url, public_url, storage_key, upload_status, uploaded_by,
                 platform, file_type, created_at, updated_at
-         FROM attachments WHERE message_id = $1 ORDER BY created_at DESC LIMIT 50",
+         FROM attachments
+         WHERE message_id = $1 AND ($2 IS NULL OR uploaded_by = $3)
+         ORDER BY created_at DESC LIMIT 50",
     )
     .bind(&message_id)
+    .bind(&scope_user)
+    .bind(&scope_user)
     .fetch_all(&state.db)
     .await?;
     Ok(envelope::ok(rows.iter().map(store::file_view).collect::<Vec<_>>()))
@@ -816,7 +836,7 @@ pub struct BatchBody {
 /// POST /api/files/batch (CRD 3173-3176): delete is the supported operation.
 pub async fn batch(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Json(body): Json<BatchBody>,
 ) -> Result {
     let started = std::time::Instant::now();
@@ -839,6 +859,11 @@ pub async fn batch(
         }
         match store::find(&state.db, id).await {
             Ok(Some(row)) => {
+                // Non-owners can't delete (and we don't reveal the file exists).
+                if !user_can_access_file(&user, &row) {
+                    failed.push(json!({"id": id, "error": "File not found"}));
+                    continue;
+                }
                 if let Some(key) = row.storage_key.as_deref().filter(|k| !k.is_empty()) {
                     store::delete_object(&state.config.upload_dir, key).await;
                 }
@@ -973,7 +998,7 @@ pub struct ConfirmBody {
 /// POST /api/files/{fileId}/confirm (CRD 3093-3101).
 pub async fn confirm_upload(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(file_id): Path<String>,
     Json(body): Json<ConfirmBody>,
 ) -> Result {
@@ -986,6 +1011,9 @@ pub async fn confirm_upload(
     let row = store::find(&state.db, &file_id)
         .await?
         .ok_or_else(|| AppError::NotFound("File not found".into()))?;
+    if !user_can_access_file(&user, &row) {
+        return Err(AppError::NotFound("File not found".into()));
+    }
     if row.upload_status == "completed" {
         // Confirming an already-completed record is idempotent (CRD 3101).
         let mut view = store::file_view(&row);
@@ -1022,13 +1050,16 @@ pub async fn confirm_upload(
 /// GET /api/files/{fileId}/status (CRD 3103-3109).
 pub async fn upload_status(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(file_id): Path<String>,
 ) -> Result {
     require_file_id(&file_id)?;
     let row = store::find(&state.db, &file_id)
         .await?
         .ok_or_else(|| AppError::NotFound("File not found".into()))?;
+    if !user_can_access_file(&user, &row) {
+        return Err(AppError::NotFound("File not found".into()));
+    }
     Ok(envelope::ok(store::file_view(&row)))
 }
 

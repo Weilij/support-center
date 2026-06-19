@@ -292,10 +292,28 @@ async fn r2_public_proxy_serves_signed_objects_with_long_cache() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+async fn get_raw_authed(app: &TestApp, path: &str, token: &str) -> (StatusCode, Vec<u8>) {
+    let req = Request::builder()
+        .uri(path)
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.router.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes().to_vec();
+    (status, bytes)
+}
+
 #[tokio::test]
 async fn line_proxy_serves_stored_media_and_validates_id() {
     let app = spawn_app().await;
-    let (status, _) = get_raw(&app, "/api/files/line-proxy/not-digits").await;
+    let token = agent(&app).await;
+
+    // H2: unauthenticated requests are now rejected (route is auth-gated).
+    let (status, _) = get_raw(&app, "/api/files/line-proxy/12345").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, _) = get_raw_authed(&app, "/api/files/line-proxy/not-digits", &token).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     // Fast path: stored copy exists.
@@ -304,12 +322,12 @@ async fn line_proxy_serves_stored_media_and_validates_id() {
     )
     .await
     .unwrap();
-    let (status, bytes) = get_raw(&app, "/api/files/line-proxy/12345").await;
+    let (status, bytes) = get_raw_authed(&app, "/api/files/line-proxy/12345", &token).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(bytes, PNG);
 
     // No stored copy: stubbed upstream reports bad-gateway (CRD 3138).
-    let (status, _) = get_raw(&app, "/api/files/line-proxy/99999").await;
+    let (status, _) = get_raw_authed(&app, "/api/files/line-proxy/99999", &token).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
 }
 
@@ -533,4 +551,146 @@ async fn conversation_and_message_scoped_listings() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"].as_array().unwrap().len(), 0);
+}
+
+// ---------------------------------------------------------------- IDOR scoping (H1)
+
+#[tokio::test]
+async fn single_file_access_is_owner_or_admin_scoped() {
+    let app = spawn_app().await;
+    let token = agent(&app).await; // owner
+    app.seed_agent("intruder@test.dev", "pw123456", "agent").await;
+    let (intruder, _, _) = app.login("intruder@test.dev", "pw123456").await;
+    app.seed_agent("admin@test.dev", "pw123456", "admin").await;
+    let (admin, _, _) = app.login("admin@test.dev", "pw123456").await;
+
+    // Owner uploads two files (one reserved for the delete assertions).
+    let (_, a) = upload(&app, &token, "/api/files", "owned.png", "image/png", PNG, &[]).await;
+    let id = a["data"]["id"].as_str().unwrap().to_string();
+    let (_, b) = upload(&app, &token, "/api/files", "owned2.png", "image/png", PNG, &[]).await;
+    let id2 = b["data"]["id"].as_str().unwrap().to_string();
+
+    // A different non-admin agent is denied on all single-resource routes (404).
+    let (status, _, _) = app
+        .request("GET", &format!("/api/files/{id}?mode=url"), Some(&intruder), None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "non-owner get url");
+    let (status, _, _) = app
+        .request("GET", &format!("/api/files/{id}/download-url"), Some(&intruder), None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "non-owner download-url");
+    let (status, _, _) = app
+        .request("DELETE", &format!("/api/files/{id2}"), Some(&intruder), None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "non-owner delete");
+
+    // The denied delete did not actually delete: the owner can still read it.
+    let (status, _, _) = app
+        .request("GET", &format!("/api/files/{id2}?mode=url"), Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "denied delete left the file intact");
+
+    // Owner succeeds on read paths.
+    let (status, _, _) = app
+        .request("GET", &format!("/api/files/{id}?mode=url"), Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "owner get url");
+    let (status, _, _) = app
+        .request("GET", &format!("/api/files/{id}/download-url"), Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "owner download-url");
+
+    // Admin can reach the owner's file.
+    let (status, _, _) = app
+        .request("GET", &format!("/api/files/{id}/download-url"), Some(&admin), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "admin download-url on owner's file");
+
+    // status + confirm single-resource routes are owner/admin-scoped too (404 for non-owner).
+    let (status, _, _) = app
+        .request("GET", &format!("/api/files/{id}/status"), Some(&intruder), None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "non-owner status");
+    let (status, _, _) = app
+        .request("POST", &format!("/api/files/{id}/confirm"), Some(&intruder),
+            Some(json!({"size": 1})))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "non-owner confirm");
+
+    // Owner can read the status endpoint.
+    let (status, _, _) = app
+        .request("GET", &format!("/api/files/{id}/status"), Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "owner status");
+
+    // Owner can delete their own file (do this last so prior reads still pass).
+    let (status, _, _) = app
+        .request("DELETE", &format!("/api/files/{id2}"), Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "owner delete");
+}
+
+#[tokio::test]
+async fn batch_delete_is_owner_or_admin_scoped() {
+    let app = spawn_app().await;
+    let token = agent(&app).await; // owner
+    app.seed_agent("intruder@test.dev", "pw123456", "agent").await;
+    let (intruder, _, _) = app.login("intruder@test.dev", "pw123456").await;
+    app.seed_agent("admin@test.dev", "pw123456", "admin").await;
+    let (admin, _, _) = app.login("admin@test.dev", "pw123456").await;
+
+    let (_, a) = upload(&app, &token, "/api/files", "batch.png", "image/png", PNG, &[]).await;
+    let id = a["data"]["id"].as_str().unwrap().to_string();
+
+    // A non-owner's batch delete reports the id under `failed`, deletes nothing.
+    let (status, body, _) = app
+        .request("POST", "/api/files/batch", Some(&intruder),
+            Some(json!({"operation": "delete", "fileIds": [id]})))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["summary"]["successCount"], 0);
+    assert_eq!(body["data"]["summary"]["failedCount"], 1);
+    assert_eq!(body["data"]["failed"][0]["id"], id);
+
+    // The file still exists for the owner.
+    let (status, _, _) = app
+        .request("GET", &format!("/api/files/{id}?mode=url"), Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "non-owner batch delete left the file intact");
+
+    // An admin batch-delete of the same id succeeds.
+    let (status, body, _) = app
+        .request("POST", "/api/files/batch", Some(&admin),
+            Some(json!({"operation": "delete", "fileIds": [id]})))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["summary"]["successCount"], 1);
+}
+
+#[tokio::test]
+async fn message_files_is_scoped_to_uploader_for_non_admins() {
+    let app = spawn_app().await;
+    let token = agent(&app).await; // owner
+    app.seed_agent("intruder@test.dev", "pw123456", "agent").await;
+    let (intruder, _, _) = app.login("intruder@test.dev", "pw123456").await;
+
+    // The attachments.message_id FK requires a real message to link against.
+    let customer = app.seed_customer("line", "U-m", "M", None).await;
+    let conversation = app.seed_conversation(customer, None, "active").await;
+    let message_id = app.seed_message(&conversation, "customer", "hi", None).await;
+
+    upload(&app, &token, "/api/files", "msg.png", "image/png", PNG,
+        &[("messageId", message_id.as_str())]).await;
+
+    let (status, body, _) = app
+        .request("GET", &format!("/api/files/message/{message_id}"), Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"].as_array().unwrap().len(), 1, "owner sees the file");
+
+    let (status, body, _) = app
+        .request("GET", &format!("/api/files/message/{message_id}"), Some(&intruder), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"].as_array().unwrap().len(), 0, "non-owner sees nothing");
 }

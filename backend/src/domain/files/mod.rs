@@ -27,7 +27,6 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/files/health", get(handlers::health))
         .route("/api/files/public/{*path}", get(handlers::public_proxy))
         .route("/api/files/download/{attachmentId}", get(handlers::public_download))
-        .route("/api/files/line-proxy/{lineMessageId}", get(handlers::line_proxy))
         .route("/api/files/direct/{fileId}", put(handlers::direct_upload))
         .route("/api/r2-public/{folder}/{filename}", get(handlers::r2_public));
 
@@ -50,6 +49,8 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/files/batch", post(handlers::batch))
         .route("/api/files/conversation/{conversationId}", get(handlers::conversation_files))
         .route("/api/files/message/{messageId}", get(handlers::message_files))
+        // LINE media carries no HMAC signature, so it must be auth-gated (H2).
+        .route("/api/files/line-proxy/{lineMessageId}", get(handlers::line_proxy))
         .route(
             "/api/files/presigned-url",
             post(handlers::presigned_url).get(handlers::presigned_status),
