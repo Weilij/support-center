@@ -520,6 +520,30 @@ async fn confirm_upload_validates_checksum() {
     assert_eq!(sbody["data"]["uploadStatus"], "failed");
 }
 
+#[tokio::test]
+async fn direct_upload_accepts_body_over_2mb() {
+    // The direct-upload route must carry the same body-size cap as the
+    // multipart routes; under axum's 2 MB default this 3 MB PUT would be
+    // rejected with 413 before the handler's own validation runs.
+    let app = spawn_app().await;
+    let token = agent(&app).await;
+
+    let size = 3 * 1024 * 1024; // 3 MB, under the 5 MB image cap
+    let mut bytes = PNG.to_vec(); // valid PNG magic header
+    bytes.resize(size, 0);
+
+    let (file_id, upload_path) = presign_direct(&app, &token, "big.png", "image/png", size).await;
+    assert_eq!(
+        direct_put(&app, &upload_path, bytes).await,
+        StatusCode::OK,
+        "a 3 MB direct upload is accepted (not 413)"
+    );
+    let (_, sbody, _) = app
+        .request("GET", &format!("/api/files/{file_id}/status"), Some(&token), None)
+        .await;
+    assert_ne!(sbody["data"]["uploadStatus"], "failed");
+}
+
 // ---------------------------------------------------------------- richer ops
 
 #[tokio::test]

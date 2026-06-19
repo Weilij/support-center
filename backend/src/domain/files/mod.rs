@@ -23,12 +23,20 @@ use crate::state::AppState;
 const MAX_UPLOAD_BYTES: usize = 51 * 1024 * 1024;
 
 pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
+    // The signed direct-upload PUT carries a raw body up to ADMIN_MAX (50 MB),
+    // so it needs the same body-size cap as the multipart routes — otherwise
+    // axum's 2 MB default rejects legitimate larger uploads with 413 before the
+    // handler's own size validation runs.
+    let direct = Router::new()
+        .route("/api/files/direct/{fileId}", put(handlers::direct_upload))
+        .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES));
+
     let public = Router::new()
         .route("/api/files/health", get(handlers::health))
         .route("/api/files/public/{*path}", get(handlers::public_proxy))
         .route("/api/files/download/{attachmentId}", get(handlers::public_download))
-        .route("/api/files/direct/{fileId}", put(handlers::direct_upload))
-        .route("/api/r2-public/{folder}/{filename}", get(handlers::r2_public));
+        .route("/api/r2-public/{folder}/{filename}", get(handlers::r2_public))
+        .merge(direct);
 
     // Upload routes get a body-size cap so oversized multipart bodies are
     // rejected by axum before the handler reads them into memory (review #4).
