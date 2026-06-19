@@ -69,6 +69,47 @@
   /* --shadow already defined above; alias to shadow-sm for compat */
 }
 
+/* ===== Skywork design-system tokens (additive, Track A1) ===== */
+:root {
+  /* Platform brand colors (identity — stay fixed in dark mode) */
+  --brand-line: #06C755;   --brand-line-ink: #fff;
+  --brand-fb: #1877F2;     --brand-fb-ink: #fff;
+  --brand-shopee: #EE4D2D; --brand-shopee-ink: #fff;
+  --brand-ig: #E1306C;     --brand-ig-ink: #fff;
+  --brand-ig-gradient: linear-gradient(135deg, #833AB4 0%, #FD1D1D 55%, #FCAF45 100%);
+
+  /* Semantic status colors (strong value + soft tint for badge backgrounds) */
+  --status-unread: #0EA5E9;  --status-unread-soft: #E0F2FE;
+  --status-online: #16A34A;  --status-online-soft: #DCFCE7;
+  --status-event: #D97706;   --status-event-soft: #FEF3C7;
+  --status-urgent: #DC2626;  --status-urgent-soft: #FEE2E2;
+
+  /* Elevation — formal aliases of the existing shadows */
+  --elevation-1: var(--shadow-sm);
+  --elevation-2: var(--shadow);
+  --elevation-3: var(--shadow-lg);
+
+  /* Radius scale — NEW namespace (non-breaking vs legacy --radius-sm/--radius/--radius-lg) */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-pill: 9999px;
+
+  /* Typography scale */
+  --fs-title: 18px;   --fw-title: 600;  --lh-title: 1.3;
+  --fs-body: 13px;    --fw-body: 400;   --lh-body: 1.55;
+  --fs-caption: 12px; --fw-caption: 400; --lh-caption: 1.4;
+  --fs-label: 11px;   --fw-label: 700;  --ls-label: .04em;
+}
+
+/* Typography helper classes (bundle size + weight + line-height for direct use) */
+.ds-title   { font-size: var(--fs-title);   font-weight: var(--fw-title);   line-height: var(--lh-title); }
+.ds-body    { font-size: var(--fs-body);    font-weight: var(--fw-body);    line-height: var(--lh-body); }
+.ds-caption { font-size: var(--fs-caption); font-weight: var(--fw-caption); line-height: var(--lh-caption); }
+.ds-label   { font-size: var(--fs-label);   font-weight: var(--fw-label);   letter-spacing: var(--ls-label); text-transform: uppercase; }
+
 /* ===== Base element styles ===== */
 html, body, #root { min-height: 100%; }
 * { box-sizing: border-box; }
@@ -427,3 +468,32 @@ input:focus, select:focus, textarea:focus {
 /* Asymmetric 2-col that stacks when cramped */
 .row-2col { display: grid; gap: 20px; grid-template-columns: 1.55fr 1fr; }
 @media (max-width: 900px) { .row-2col { grid-template-columns: 1fr; } }
+
+/* ===== Dark mode — overrides neutral tokens only; brand colors stay fixed ===== */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #0B1220;
+  --surface: #111A2B;
+  --surface-strong: #16223A;
+  --ink: #E8EEF6;
+  --ink-2: #C3CFDD;
+  --muted: #93A2B6;
+  --muted-2: #5F7088;
+  --line: #1F2C40;
+  --line-2: #18222F;
+
+  --primary-tint: rgba(56, 189, 248, .14);
+  --accent-soft: rgba(56, 189, 248, .16);
+
+  /* Shadows darken so existing components (which read --shadow*) also adapt */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .5);
+  --shadow:    0 1px 3px rgba(0, 0, 0, .5), 0 6px 18px rgba(0, 0, 0, .45);
+  --shadow-lg: 0 2px 6px rgba(0, 0, 0, .5), 0 16px 40px rgba(0, 0, 0, .55);
+
+  /* Semantic soft tints become low-alpha so badges read on dark surfaces */
+  --status-unread-soft: rgba(14, 165, 233, .18);
+  --status-online-soft: rgba(22, 163, 74, .20);
+  --status-event-soft:  rgba(217, 119, 6, .20);
+  --status-urgent-soft: rgba(220, 38, 38, .22);
+}
