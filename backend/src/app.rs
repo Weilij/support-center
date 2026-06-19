@@ -47,7 +47,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .layer(axum_mw::from_fn(
             crate::middleware::security_headers::security_headers_layer,
         ))
-        .layer(axum_mw::from_fn(crate::middleware::csrf::csrf_layer))
+        .layer(axum_mw::from_fn_with_state(
+            state.clone(),
+            crate::middleware::csrf::csrf_layer,
+        ))
         .layer(axum_mw::from_fn_with_state(
             state.clone(),
             crate::middleware::metrics::metrics_layer,

@@ -28,7 +28,9 @@ pub async fn security_headers_layer(req: Request<Body>, next: Next) -> Response 
     );
     h.insert(
         "Content-Security-Policy",
-        HeaderValue::from_static("default-src 'self'"),
+        HeaderValue::from_static(
+            "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'",
+        ),
     );
     if secure {
         h.insert(
@@ -37,4 +39,35 @@ pub async fn security_headers_layer(req: Request<Body>, next: Next) -> Response 
         );
     }
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn csp_includes_hardening_directives() {
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(security_headers_layer));
+
+        let resp = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        let csp = resp
+            .headers()
+            .get("Content-Security-Policy")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(csp.contains("base-uri 'self'"), "csp was: {csp}");
+        assert!(csp.contains("object-src 'none'"), "csp was: {csp}");
+        assert!(csp.contains("frame-ancestors 'none'"), "csp was: {csp}");
+    }
 }
