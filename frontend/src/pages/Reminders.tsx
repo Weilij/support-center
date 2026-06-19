@@ -32,6 +32,7 @@ export default function Reminders() {
   const [reminders, setReminders] = useState<Reminder[]>([])
   const [stats, setStats] = useState<ReminderStats>({})
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(false)
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
   const [remindAt, setRemindAt] = useState('')
@@ -39,11 +40,13 @@ export default function Reminders() {
 
   const load = async () => {
     setBusy(true)
+    setError(false)
     const [up, st] = await Promise.all([
       get<{ reminders?: Reminder[] }>('/api/reminders/upcoming'),
       get<ReminderStats>('/api/reminders/stats'),
     ])
     if (up.success && up.data) setReminders(up.data.reminders ?? [])
+    else setError(true)
     if (st.success && st.data) setStats(st.data)
     setBusy(false)
   }
@@ -124,7 +127,14 @@ export default function Reminders() {
       </Card>
 
       <Card title="即將到來">
-        <DataTable columns={columns} rows={reminders} rowKey={(r) => r.id} busy={busy} empty="沒有即將到來的提醒" />
+        {error ? (
+          <div style={{ padding: '24px 16px', textAlign: 'center', color: 'crimson' }}>
+            <p style={{ margin: '0 0 var(--sp-3)' }}>載入失敗，請重試</p>
+            <button onClick={() => void load()}>重試</button>
+          </div>
+        ) : (
+          <DataTable columns={columns} rows={reminders} rowKey={(r) => r.id} busy={busy} empty="沒有即將到來的提醒" />
+        )}
       </Card>
 
       <Toast message={toast} onDismiss={() => setToast(null)} />

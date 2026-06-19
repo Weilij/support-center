@@ -29,6 +29,7 @@ export interface SessionsPage {
   sessions: SessionRow[]
   total: number
   page: number
+  ok: boolean
 }
 
 export async function loadSessions(page = 1, pageSize = 20): Promise<SessionsPage> {
@@ -40,9 +41,10 @@ export async function loadSessions(page = 1, pageSize = 20): Promise<SessionsPag
       sessions: resp.data.sessions ?? [],
       total: resp.data.pagination?.total ?? (resp.data.sessions?.length ?? 0),
       page,
+      ok: true,
     }
   }
-  return { sessions: [], total: 0, page }
+  return { sessions: [], total: 0, page, ok: false }
 }
 
 export async function loadSessionStats(): Promise<SessionStats> {

@@ -23,6 +23,7 @@ export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [mustChange, setMustChange] = useState(false)
   const [busy, setBusy] = useState(false)
 
   const submit = async (e: React.FormEvent) => {
@@ -40,7 +41,8 @@ export default function Login() {
       return
     }
     if (resp.data.mustChangePassword) {
-      setError(t('login.mustChange'))
+      setError(null)
+      setMustChange(true)
       return
     }
     session.storeLogin(resp.data.sessionId, resp.data.agent)
@@ -122,32 +124,60 @@ export default function Login() {
           <p style={subtitleStyle}>登入以繼續</p>
         </div>
 
-        <form onSubmit={submit}>
-          <label style={labelStyle}>
-            {t('login.email')}
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              style={inputStyle}
-            />
-          </label>
-          <label style={labelStyle}>
-            {t('login.password')}
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              style={inputStyle}
-            />
-          </label>
-          {error && <p role="alert" style={{ color: 'crimson', margin: '0 0 var(--sp-4)', fontSize: 13 }}>{error}</p>}
-          <button type="submit" disabled={busy} className="cs-btn cs-btn--primary" style={{ width: '100%', justifyContent: 'center' }}>
-            {t('login.submit')}
-          </button>
-        </form>
+        {mustChange ? (
+          <div>
+            <div
+              style={{
+                background: 'var(--amber-50, #fffbeb)',
+                border: '1px solid var(--amber-300, #fcd34d)',
+                borderRadius: 'var(--radius-md, 10px)',
+                padding: 'var(--sp-4) var(--sp-4)',
+                marginBottom: 'var(--sp-5)',
+              }}
+            >
+              <h2 style={{ margin: '0 0 var(--sp-3)', fontSize: 16, fontWeight: 700, color: 'var(--ink)' }}>
+                {t('login.mustChangeTitle')}
+              </h2>
+              <p style={{ margin: '0 0 var(--sp-3)', fontSize: 13, color: 'var(--ink)' }}>{t('login.mustChange')}</p>
+              <p style={{ margin: 0, fontSize: 13, color: 'var(--muted)' }}>{t('login.mustChangeHint')}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => { setMustChange(false); setPassword('') }}
+              className="cs-btn cs-btn--primary"
+              style={{ width: '100%', justifyContent: 'center' }}
+            >
+              {t('login.backToLogin')}
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={submit}>
+            <label style={labelStyle}>
+              {t('login.email')}
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                style={inputStyle}
+              />
+            </label>
+            <label style={labelStyle}>
+              {t('login.password')}
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                style={inputStyle}
+              />
+            </label>
+            {error && <p role="alert" style={{ color: 'crimson', margin: '0 0 var(--sp-4)', fontSize: 13 }}>{error}</p>}
+            <button type="submit" disabled={busy} className="cs-btn cs-btn--primary" style={{ width: '100%', justifyContent: 'center' }}>
+              {t('login.submit')}
+            </button>
+          </form>
+        )}
       </div>
     </div>
   )
