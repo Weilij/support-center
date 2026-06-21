@@ -4,10 +4,11 @@
 // The .cs-inbox flex container lives inside .cs-content which already has
 // overflow:hidden and flex:1 — so height:100% fills the available space.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import { get, post } from '../api/client'
+import { recordPositions, animateMoves } from '../lib/flip'
 import { onEvent, subscribeConversation } from '../realtime/client'
 import { session } from '../auth/session'
 import {
@@ -127,6 +128,7 @@ function ConvItem({
 
   return (
     <div
+      data-flip-id={conv.id}
       className={`cs-conv-item${active ? ' cs-conv-item--active' : ''}`}
       onClick={onClick}
       style={{ cursor: 'pointer', position: 'relative' }}
@@ -180,6 +182,9 @@ function ConvList({
   const [tab, setTab] = useState<TabKey>('all')
   const [search, setSearch] = useState('')
 
+  const listRef = useRef<HTMLDivElement>(null)
+  const prevPos = useRef<ReturnType<typeof recordPositions> | null>(null)
+
   const myId = session.identity()?.id
 
   const filtered = items.filter((c) => {
@@ -199,6 +204,15 @@ function ConvList({
     }
     return true
   })
+
+  const orderKey = filtered.map((c) => c.id).join(',')
+  useLayoutEffect(() => {
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    if (!reduce && listRef.current && prevPos.current) {
+      animateMoves(listRef.current, prevPos.current)
+    }
+    if (listRef.current) prevPos.current = recordPositions(listRef.current)
+  }, [orderKey])
 
   return (
     <div className="cs-conv-list" style={fullWidth ? { width: '100%', flexShrink: 1 } : undefined}>
@@ -261,7 +275,7 @@ function ConvList({
       </div>
 
       {/* List */}
-      <div style={{ flex: 1, overflowY: 'auto' }}>
+      <div ref={listRef} style={{ flex: 1, overflowY: 'auto' }}>
         {busy && filtered.length === 0 && (
           <p style={{ color: 'var(--muted)', fontSize: 13, padding: '16px 20px' }}>載入中…</p>
         )}
