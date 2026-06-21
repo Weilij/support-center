@@ -23,6 +23,7 @@ import {
   type CustomerTag,
 } from '../stores/customers'
 import { useStore } from '../stores/store'
+import { useCollapsed } from '../hooks/useCollapsed'
 import { Avatar } from '../components/Avatar'
 import { ChanGlyph } from '../components/ChanGlyph'
 import { Tag } from '../components/Chip'
@@ -916,6 +917,23 @@ function Thread({
 
 // ── Column 3: Customer panel ──────────────────────────────────────────────────
 
+function CollapsibleSection({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
+  const [collapsed, toggle] = useCollapsed(id, false)
+  return (
+    <div>
+      <button
+        className="cs-cust-block-label"
+        onClick={toggle}
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+      >
+        {title}
+        <Icon name={collapsed ? 'down' : 'up'} w={14} />
+      </button>
+      {!collapsed && <div>{children}</div>}
+    </div>
+  )
+}
+
 function CustPanel({ meta, overlay, onClose }: { meta: ConvMeta; overlay?: boolean; onClose?: () => void }) {
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [tags, setTags] = useState<CustomerTag[]>([])
@@ -1011,8 +1029,7 @@ function CustPanel({ meta, overlay, onClose }: { meta: ConvMeta; overlay?: boole
       <hr style={{ border: 'none', borderTop: '1px solid var(--line)', margin: 0 }} />
 
       {/* Contact info */}
-      <div>
-        <div className="cs-cust-block-label">聯絡資訊</div>
+      <CollapsibleSection id="inbox.cust.contact" title="聯絡資訊">
         {email && (
           <div className="cs-kv">
             <span className="cs-kv-k">電子郵件</span>
@@ -1037,21 +1054,20 @@ function CustPanel({ meta, overlay, onClose }: { meta: ConvMeta; overlay?: boole
         {!email && !phone && !chanDef && (
           <p style={{ fontSize: 13, color: 'var(--muted)' }}>無聯絡資料</p>
         )}
-      </div>
+      </CollapsibleSection>
 
       {/* Stats — only if real data available */}
       {convCount !== null && (
         <>
           <hr style={{ border: 'none', borderTop: '1px solid var(--line)', margin: 0 }} />
-          <div>
-            <div className="cs-cust-block-label">統計</div>
+          <CollapsibleSection id="inbox.cust.stats" title="統計">
             <div style={{ display: 'flex', gap: 0 }}>
               <div style={{ flex: 1, textAlign: 'center', borderRight: '1px solid var(--line)', paddingRight: 8 }}>
                 <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--ink)' }}>{convCount}</div>
                 <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>歷史對話</div>
               </div>
             </div>
-          </div>
+          </CollapsibleSection>
         </>
       )}
     </div>
@@ -1083,6 +1099,7 @@ export default function Inbox() {
   const [isMedium, setIsMedium] = useState(() => window.matchMedia('(max-width: 1100px) and (min-width: 769px)').matches)
   const [isNarrow, setIsNarrow] = useState(() => window.matchMedia('(max-width: 768px)').matches)
   const [custPanelOpen, setCustPanelOpen] = useState(false)
+  const [custCollapsed, toggleCustCollapsed] = useCollapsed('inbox.custPanel', false)
 
   useEffect(() => {
     const wide   = window.matchMedia('(min-width: 1101px)')
@@ -1245,8 +1262,10 @@ export default function Inbox() {
         convId={selectedId}
         meta={meta}
         onMetaLoaded={handleMetaLoaded}
+        onToggleCustPanel={toggleCustCollapsed}
+        showCustToggle
       />
-      <CustPanel meta={meta} />
+      {!custCollapsed && <CustPanel meta={meta} />}
     </div>
   )
 }
