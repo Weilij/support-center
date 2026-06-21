@@ -9,18 +9,22 @@ export interface ChannelDef {
 }
 
 export const CHANNELS: Record<string, ChannelDef> = {
-  chat: { name: '線上即時聊天', short: 'Live Chat', color: '#0ea5e9', glyph: 'chat' },
-  line: { name: 'LINE', short: 'LINE', color: '#06c755', glyph: 'chat' },
-  wa:   { name: 'WhatsApp', short: 'WhatsApp', color: '#25d366', glyph: 'phone' },
-  fb:   { name: 'Messenger', short: 'Messenger', color: '#0084ff', glyph: 'chat' },
+  chat:   { name: '線上即時聊天', short: 'Live Chat', color: 'var(--chat-blue)',     glyph: 'chat' },
+  line:   { name: 'LINE',        short: 'LINE',       color: 'var(--brand-line)',    glyph: 'chat' },
+  wa:     { name: 'WhatsApp',    short: 'WhatsApp',   color: 'var(--wa-green)',      glyph: 'phone' },
+  fb:     { name: 'Messenger',   short: 'Messenger',  color: 'var(--brand-fb)',      glyph: 'chat' },
+  ig:     { name: 'Instagram',   short: 'IG',         color: 'var(--brand-ig)',      glyph: 'chat' },
+  shopee: { name: 'Shopee',      short: 'Shopee',     color: 'var(--brand-shopee)',  glyph: 'chat' },
 }
 
-// Maps backend platform strings to a CHANNELS key.
 const PLATFORM_MAP: Record<string, string> = {
   line:      'line',
   facebook:  'fb',
   messenger: 'fb',
   fb:        'fb',
+  instagram: 'ig',
+  ig:        'ig',
+  shopee:    'shopee',
   whatsapp:  'wa',
   wa:        'wa',
   webchat:   'chat',

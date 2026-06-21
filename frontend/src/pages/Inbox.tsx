@@ -115,7 +115,7 @@ function ConvItem({
   onClick: () => void
 }) {
   const platform = String(conv.platform ?? conv['channel'] ?? 'chat')
-  const chanKey = channelOf(platform) as 'chat' | 'line' | 'wa' | 'fb'
+  const chanKey = channelOf(platform) as 'chat' | 'line' | 'wa' | 'fb' | 'ig' | 'shopee'
   const name = conv.customerName ?? conv.id
   const unread = (conv.unreadCount ?? 0) > 0
   const tags = (conv['tags'] as string[] | undefined) ?? []
@@ -499,7 +499,7 @@ function Thread({
         <div style={{ position: 'relative', flexShrink: 0 }}>
           <Avatar name={customerName || '?'} size="md" />
           <span style={{ position: 'absolute', bottom: -2, right: -4 }}>
-            <ChanGlyph type={chanKey as 'chat' | 'line' | 'wa' | 'fb'} size={17} />
+            <ChanGlyph type={chanKey as 'chat' | 'line' | 'wa' | 'fb' | 'ig' | 'shopee'} size={17} />
           </span>
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -1029,7 +1029,7 @@ function CustPanel({ meta, overlay, onClose }: { meta: ConvMeta; overlay?: boole
           <div className="cs-kv">
             <span className="cs-kv-k">偏好渠道</span>
             <span className="cs-kv-v" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <ChanGlyph type={chanKey as 'chat' | 'line' | 'wa' | 'fb'} size={14} />
+              <ChanGlyph type={chanKey as 'chat' | 'line' | 'wa' | 'fb' | 'ig' | 'shopee'} size={14} />
               {chanDef.name}
             </span>
           </div>
