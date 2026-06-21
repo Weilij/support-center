@@ -84,7 +84,7 @@ pub async fn spawn_app_custom(customize: impl FnOnce(&mut Config)) -> TestApp {
         line_channel_secret: Some("test-line-secret".into()),
         liff_id: Some("test-liff-id".into()),
         line_bot_id: Some("@testbot".into()),
-        line_channel_access_token: Some("test-push-token".into()),
+        line_channel_access_token: None,
         facebook_app_secret: Some("test-fb-secret".into()),
         facebook_verify_token: Some("test-verify-token".into()),
         file_signing_secret: None,

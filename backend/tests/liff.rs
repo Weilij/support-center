@@ -113,7 +113,10 @@ async fn assign_team_is_idempotent_per_user_team_pair() {
 
 #[tokio::test]
 async fn welcome_validates_and_reconciles_conversations() {
-    let app = spawn_app().await;
+    // The LIFF welcome handler validates a configured LINE channel token before
+    // reconciling (returns Internal when absent). Opt in to a present token; no
+    // real network call is made (the push is a TODO stub).
+    let app = spawn_app_custom(|c| c.line_channel_access_token = Some("test-push-token".into())).await;
     let team_a = app.seed_team("A").await;
     let team_b = app.seed_team("B").await;
 

@@ -4,7 +4,7 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use common::{spawn_app, TestApp};
+use common::{spawn_app, spawn_app_custom, TestApp};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -306,7 +306,10 @@ async fn get_raw_authed(app: &TestApp, path: &str, token: &str) -> (StatusCode, 
 
 #[tokio::test]
 async fn line_proxy_serves_stored_media_and_validates_id() {
-    let app = spawn_app().await;
+    // This test exercises the line-proxy upstream-fallback path, which is gated
+    // on a configured LINE channel token (returns BAD_GATEWAY when set, Internal
+    // when absent). Opt in to a present token; no real network call is made.
+    let app = spawn_app_custom(|c| c.line_channel_access_token = Some("test-push-token".into())).await;
     let token = agent(&app).await;
 
     // H2: unauthenticated requests are now rejected (route is auth-gated).

@@ -5,19 +5,10 @@ mod common;
 use axum::http::StatusCode;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
-use common::{spawn_app_custom, TestApp};
+use common::{spawn_app, TestApp};
 use hmac::{Hmac, Mac};
 use serde_json::json;
 use sha2::Sha256;
-
-/// Auto-reply dispatch awaits the outbound send result inline (unlike the
-/// fire-and-forget relays elsewhere), so the gateway must be the stub here:
-/// run with no LINE push token so `OutboundGateway::from_config` selects
-/// `Stub` and no real network call is made — preserving the documented
-/// stubbed `sent`/`success` outcomes.
-async fn spawn_app() -> TestApp {
-    spawn_app_custom(|c| c.line_channel_access_token = None).await
-}
 
 fn line_sig(body: &str) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(b"test-line-secret").unwrap();
