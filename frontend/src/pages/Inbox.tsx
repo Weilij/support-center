@@ -24,6 +24,7 @@ import {
 } from '../stores/customers'
 import { useStore } from '../stores/store'
 import { useCollapsed } from '../hooks/useCollapsed'
+import { useHotkeys } from '../hooks/useHotkeys'
 import { Avatar } from '../components/Avatar'
 import { ChanGlyph } from '../components/ChanGlyph'
 import { Tag } from '../components/Chip'
@@ -225,6 +226,7 @@ function ConvList({
           />
           <input
             type="search"
+            data-inbox-search
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="搜尋對話…"
@@ -714,6 +716,11 @@ function Thread({
                   if (e.key === 'Enter') { e.preventDefault(); setDraft(slashMatches[Math.min(slashIndex, slashMatches.length - 1)].body); setSlashIndex(0); return }
                   if (e.key === 'Escape') { e.preventDefault(); setDraft(''); return }
                 }
+                if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                  e.preventDefault()
+                  void send(e as unknown as React.FormEvent)
+                  return
+                }
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()
                   void send(e as unknown as React.FormEvent)
@@ -1125,6 +1132,8 @@ export default function Inbox() {
   const [isNarrow, setIsNarrow] = useState(() => window.matchMedia('(max-width: 768px)').matches)
   const [custPanelOpen, setCustPanelOpen] = useState(false)
   const [custCollapsed, toggleCustCollapsed] = useCollapsed('inbox.custPanel', false)
+
+  useHotkeys({ 'escape': () => setCustPanelOpen(false) })
 
   useEffect(() => {
     const wide   = window.matchMedia('(min-width: 1101px)')

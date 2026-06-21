@@ -12,6 +12,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 
 import { can, type Area } from '../auth/permissions'
 import { session, authChanged } from '../auth/session'
+import { useHotkeys } from '../hooks/useHotkeys'
 import { notificationsStore } from '../stores/notifications'
 import { useStore } from '../stores/store'
 import { Icon } from './Icon'
@@ -229,6 +230,15 @@ export default function AppShell({
   const who = session.identity()
   const pos = session.position()
   const unread = notifications.unread
+
+  useHotkeys({
+    'mod+k': (e) => {
+      e.preventDefault()
+      const search = document.querySelector<HTMLInputElement>('[data-inbox-search]')
+      if (search) search.focus()
+      else navigate('/messages/search')
+    },
+  })
 
   // ── Responsive state ──
   const [isNarrow, setIsNarrow] = useState(
