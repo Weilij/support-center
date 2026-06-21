@@ -17,6 +17,94 @@ pub struct OutboundItem {
 /// The downstream platform's per-call message cap (LINE push cap, CRD 769).
 pub const BATCH_CAP: usize = 5;
 
+use serde_json::json;
+use std::sync::OnceLock;
+
+/// Shared HTTP client (connection pooling) for all outbound platform calls.
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
+/// Real LINE Messaging API gateway (global channel access token).
+pub struct LineGateway {
+    token: String,
+}
+
+impl LineGateway {
+    pub fn new(token: String) -> Self {
+        Self { token }
+    }
+}
+
+/// The outbound message body for a LINE push (pure — unit-tested).
+pub fn build_push_body(recipient: &str, items: &[OutboundItem]) -> serde_json::Value {
+    json!({
+        "to": recipient,
+        "messages": items
+            .iter()
+            .map(|it| json!({ "type": "text", "text": it.content }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// Outbound delivery gateway. `Stub` reproduces the documented observable
+/// outcome without any network call (dev/tests); `Line` calls the real API.
+pub enum OutboundGateway {
+    Stub,
+    Line(LineGateway),
+}
+
+impl OutboundGateway {
+    /// Real LINE gateway when the global token is configured; otherwise the stub
+    /// (so dev/test runs without a token make no network calls).
+    pub fn from_config(config: &crate::config::Config) -> Self {
+        match config.line_channel_access_token.as_deref() {
+            Some(t) if !t.is_empty() => OutboundGateway::Line(LineGateway::new(t.to_string())),
+            _ => OutboundGateway::Stub,
+        }
+    }
+
+    /// Push one batch (≤ BATCH_CAP items); returns the platform-side message id.
+    pub async fn send_batch(
+        &self,
+        platform: &str,
+        recipient: &str,
+        items: &[OutboundItem],
+    ) -> Result<String, String> {
+        match self {
+            OutboundGateway::Stub => match platform {
+                "line" => Ok(format!("stub-line-{}", uuid::Uuid::new_v4())),
+                other => Err(format!("Outbound delivery is not supported for platform '{other}'")),
+            },
+            OutboundGateway::Line(g) => {
+                if platform != "line" {
+                    return Err(format!("Outbound delivery is not supported for platform '{platform}'"));
+                }
+                let body = build_push_body(recipient, items);
+                let resp = http_client()
+                    .post("https://api.line.me/v2/bot/message/push")
+                    .bearer_auth(&g.token)
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| format!("LINE request failed: {e}"))?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let txt = resp.text().await.unwrap_or_default();
+                    return Err(format!("LINE push failed ({status}): {txt}"));
+                }
+                let v: serde_json::Value = resp.json().await.unwrap_or_else(|_| json!({}));
+                let id = v["sentMessages"][0]["id"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("line-{}", uuid::Uuid::new_v4()));
+                Ok(id)
+            }
+        }
+    }
+}
+
 pub trait ChannelGateway: Send + Sync {
     /// Push one batch (at most [`BATCH_CAP`] items) to the platform.
     /// Returns the platform-side message id on success.
@@ -125,4 +213,32 @@ pub async fn deliver_pending(
             "timestamp": now,
         }),
     );
+}
+
+#[cfg(test)]
+mod gateway_tests {
+    use super::*;
+
+    #[test]
+    fn push_body_has_to_and_text_messages() {
+        let items = vec![
+            OutboundItem { content: "hi".into() },
+            OutboundItem { content: "bye".into() },
+        ];
+        let b = build_push_body("U123", &items);
+        assert_eq!(b["to"], "U123");
+        assert_eq!(b["messages"][0]["type"], "text");
+        assert_eq!(b["messages"][0]["text"], "hi");
+        assert_eq!(b["messages"][1]["text"], "bye");
+        assert_eq!(b["messages"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn from_config_picks_stub_without_token_and_line_with() {
+        let mut c = crate::config::test_config();
+        c.line_channel_access_token = None;
+        assert!(matches!(OutboundGateway::from_config(&c), OutboundGateway::Stub));
+        c.line_channel_access_token = Some("tok".into());
+        assert!(matches!(OutboundGateway::from_config(&c), OutboundGateway::Line(_)));
+    }
 }
