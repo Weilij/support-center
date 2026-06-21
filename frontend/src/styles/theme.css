@@ -380,14 +380,14 @@ input:focus, select:focus, textarea:focus {
 /* 標籤 / chip */
 .cs-chip {
   display: inline-flex; align-items: center; gap: 5px;
-  padding: 4px 10px; border-radius: 7px;
+  padding: 4px 10px; border-radius: var(--r-sm);
   font-size: 11.5px; font-weight: 600;
   background: var(--line-2); color: var(--ink-2);
   white-space: nowrap;
 }
 .cs-chip-dot { width: 7px; height: 7px; border-radius: 50%; }
 .cs-chip--blue { background: var(--blue-50); color: var(--blue-700); }
-.cs-tag { font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 6px; white-space: nowrap; }
+.cs-tag { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: var(--r-sm); white-space: nowrap; }
 
 /* ---------- Inbox 專用 ---------- */
 .cs-inbox { display: flex; flex: 1; min-height: 0; }
@@ -421,20 +421,20 @@ input:focus, select:focus, textarea:focus {
 .cs-conv-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cs-conv-time { font-size: 11.5px; color: var(--muted-2); flex-shrink: 0; }
 .cs-conv-prev { font-size: 12.5px; color: var(--muted); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.45; }
-.cs-conv-unread { width: 8px; height: 8px; border-radius: 50%; background: var(--blue-500); flex-shrink: 0; align-self: center; }
+.cs-conv-unread { width: 8px; height: 8px; border-radius: 50%; background: var(--status-unread); flex-shrink: 0; align-self: center; }
 
 /* 對話視窗 */
 .cs-thread { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
 .cs-thread-head { height: 68px; flex-shrink: 0; background: var(--surface); border-bottom: 1px solid var(--line); display: flex; align-items: center; padding: 0 24px; gap: 14px; }
 .cs-thread-body { flex: 1; min-height: 0; overflow: hidden; padding: 24px 28px; display: flex; flex-direction: column; gap: 16px; }
-.cs-bubble-row { display: flex; gap: 10px; max-width: 74%; }
+.cs-bubble-row { display: flex; gap: 10px; max-width: 60%; }
 .cs-bubble-row--me { align-self: flex-end; flex-direction: row-reverse; }
 .cs-bubble {
-  padding: 11px 15px; border-radius: 15px; font-size: 13.5px; line-height: 1.55;
+  padding: 10px 14px; border-radius: var(--r-lg); font-size: 13.5px; line-height: 1.55;
   background: var(--surface); border: 1px solid var(--line); color: var(--ink-2);
-  border-bottom-left-radius: 5px;
+  border-bottom-left-radius: var(--r-xs);
 }
-.cs-bubble--me { background: var(--blue-600); color: #fff; border: none; border-radius: 15px; border-bottom-right-radius: 5px; }
+.cs-bubble--me { background: var(--blue-600); color: #fff; border: none; border-radius: var(--r-lg); border-bottom-right-radius: var(--r-xs); }
 .cs-bubble-time { font-size: 10.5px; color: var(--muted-2); margin-top: 5px; }
 .cs-day-sep { align-self: center; font-size: 11px; font-weight: 600; color: var(--muted-2); background: var(--surface); border: 1px solid var(--line); padding: 4px 12px; border-radius: 20px; }
 
