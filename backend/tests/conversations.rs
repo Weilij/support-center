@@ -4,7 +4,7 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use common::{spawn_app, TestApp};
+use common::{spawn_app, spawn_app_custom, TestApp};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -681,7 +681,9 @@ async fn wait_for_delivery(app: &TestApp, message_id: &str) -> String {
 
 #[tokio::test]
 async fn send_message_returns_pending_then_delivers_on_line() {
-    let app = spawn_app().await;
+    // No LINE push token so background delivery uses the stub gateway and the
+    // pending -> sent transition is observable without a real network call.
+    let app = spawn_app_custom(|c| c.line_channel_access_token = None).await;
     let token = admin_token(&app).await;
     let agent_id: String =
         sqlx::query_scalar("SELECT id FROM agents LIMIT 1").fetch_one(&app.state.db).await.unwrap();

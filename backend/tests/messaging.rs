@@ -4,7 +4,7 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
-use common::{spawn_app, TestApp};
+use common::{spawn_app, spawn_app_custom, TestApp};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -1317,7 +1317,9 @@ async fn force_due(app: &TestApp, id: &str) {
 
 #[tokio::test]
 async fn process_delayed_dispatches_per_platform() {
-    let app = spawn_app().await;
+    // No LINE push token so the line dispatch uses the stub gateway (marked
+    // sent) rather than a real network call.
+    let app = spawn_app_custom(|c| c.line_channel_access_token = None).await;
     let (_, admin_id, _, conv) = fixture(&app).await;
 
     // Too early -> reschedule signal, still pending.

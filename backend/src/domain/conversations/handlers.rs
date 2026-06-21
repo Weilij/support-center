@@ -750,6 +750,7 @@ pub async fn send_message(
         platform.clone(),
         recipient,
         items,
+        channels::OutboundGateway::from_config(&state.config),
     ));
 
     let created_ms = epoch_ms(&now);

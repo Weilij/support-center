@@ -3,7 +3,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{spawn_app, TestApp};
+use common::{spawn_app, spawn_app_custom, TestApp};
 use mcss_backend::domain::queue::worker;
 use serde_json::json;
 
@@ -102,7 +102,9 @@ async fn maintenance_dispatches_and_lists_available_operations() {
 
 #[tokio::test]
 async fn outbound_job_delivers_and_marks_message() {
-    let app = spawn_app().await;
+    // No LINE push token so the outbound worker uses the stub gateway and the
+    // message transitions to delivered without a real network call.
+    let app = spawn_app_custom(|c| c.line_channel_access_token = None).await;
     worker::spawn(app.state.clone());
     let (conversation, message_id) = seed_pending_message(&app).await;
 

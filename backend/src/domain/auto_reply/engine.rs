@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::db::now_iso;
-use crate::domain::conversations::channels::{ChannelGateway, OutboundItem, StubGateway};
+use crate::domain::conversations::channels::{OutboundGateway, OutboundItem};
 use crate::state::AppState;
 
 const CACHE_TTL: Duration = Duration::from_secs(60);
@@ -325,8 +325,8 @@ async fn dispatch(state: &AppState, rule: &CachedRule, ctx: &DispatchContext<'_>
     } else {
         "reply"
     };
-    let gateway = StubGateway;
-    if let Err(e) = gateway.send_batch(ctx.platform, ctx.platform_user_id, &items) {
+    let gateway = OutboundGateway::from_config(&state.config);
+    if let Err(e) = gateway.send_batch(ctx.platform, ctx.platform_user_id, &items).await {
         return EvalResult {
             matched: true,
             rule_id: Some(rule.id),

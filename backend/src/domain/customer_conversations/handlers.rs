@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::domain::auth::tokens;
-use crate::domain::conversations::channels::{ChannelGateway, OutboundItem, StubGateway, BATCH_CAP};
+use crate::domain::conversations::channels::{OutboundGateway, OutboundItem, BATCH_CAP};
 use crate::state::AppState;
 
 fn fail(status: StatusCode, message: &str) -> Response {
@@ -479,10 +479,10 @@ pub async fn send_reply(
             }
         }
         if !items.is_empty() {
+            let gateway = OutboundGateway::from_config(&state.config);
             tokio::spawn(async move {
-                let gateway = StubGateway;
                 for batch in items.chunks(BATCH_CAP) {
-                    if let Err(e) = gateway.send_batch("line", &recipient, batch) {
+                    if let Err(e) = gateway.send_batch("line", &recipient, batch).await {
                         tracing::warn!(error = %e, "customer-conversation LINE relay failed");
                     }
                 }

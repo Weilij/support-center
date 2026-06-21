@@ -26,7 +26,7 @@ use std::sync::Mutex;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use crate::domain::conversations::channels::{ChannelGateway, OutboundItem, StubGateway, BATCH_CAP};
+use crate::domain::conversations::channels::{OutboundGateway, OutboundItem, BATCH_CAP};
 use crate::state::AppState;
 
 // ------------------------------------------------------------ channel registry
@@ -715,10 +715,10 @@ pub async fn create_message(
                 }
             }
             if !items.is_empty() {
+                let gateway = OutboundGateway::from_config(&state.config);
                 tokio::spawn(async move {
-                    let gateway = StubGateway;
                     for batch in items.chunks(BATCH_CAP) {
-                        if let Err(e) = gateway.send_batch("line", &recipient, batch) {
+                        if let Err(e) = gateway.send_batch("line", &recipient, batch).await {
                             tracing::warn!(error = %e, "customer-channel LINE relay failed");
                         }
                     }

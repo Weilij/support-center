@@ -2,10 +2,11 @@
 //! message and returns immediately; this module performs the background delivery
 //! that drives the observable pending -> sent | partial | failed transitions.
 //!
-//! The real platform calls are stubbed behind [`ChannelGateway`]; the stub
-//! reproduces the documented observable outcome: only the platform with full
-//! outbound support (LINE) delivers, all others remain effectively undelivered
-//! (CRD 773).
+//! Delivery is routed through [`OutboundGateway`]: the `Stub` variant reproduces
+//! the documented observable outcome without any network call (dev/tests), while
+//! the `Line` variant calls the real LINE Messaging API. Only the platform with
+//! full outbound support (LINE) delivers; all others remain effectively
+//! undelivered (CRD 773).
 
 use sqlx::PgPool;
 
@@ -23,7 +24,12 @@ use std::sync::OnceLock;
 /// Shared HTTP client (connection pooling) for all outbound platform calls.
 fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("reqwest client")
+    })
 }
 
 /// Real LINE Messaging API gateway (global channel access token).
@@ -105,37 +111,6 @@ impl OutboundGateway {
     }
 }
 
-pub trait ChannelGateway: Send + Sync {
-    /// Push one batch (at most [`BATCH_CAP`] items) to the platform.
-    /// Returns the platform-side message id on success.
-    fn send_batch(
-        &self,
-        platform: &str,
-        recipient: &str,
-        items: &[OutboundItem],
-    ) -> Result<String, String>;
-}
-
-/// Stub gateway recording the observable side effect without any network call.
-pub struct StubGateway;
-
-impl ChannelGateway for StubGateway {
-    fn send_batch(
-        &self,
-        platform: &str,
-        _recipient: &str,
-        _items: &[OutboundItem],
-    ) -> Result<String, String> {
-        // TODO(channels): replace with the real LINE Messaging API push call
-        // (and future platform integrations). Per CRD 773 only LINE has full
-        // outbound support; other platforms remain effectively undelivered.
-        match platform {
-            "line" => Ok(format!("stub-line-{}", uuid::Uuid::new_v4())),
-            other => Err(format!("Outbound delivery is not supported for platform '{other}'")),
-        }
-    }
-}
-
 /// Background delivery task (fire-and-forget from the send handler, CRD 769-773):
 /// batches the items to the platform cap, then persists the final sent flag,
 /// delivery status (sent / partial / failed), and platform message id.
@@ -147,15 +122,15 @@ pub async fn deliver_pending(
     platform: String,
     recipient: String,
     items: Vec<OutboundItem>,
+    gateway: OutboundGateway,
 ) {
-    let gateway = StubGateway;
     let mut succeeded = 0usize;
     let mut failed = 0usize;
     let mut platform_message_id: Option<String> = None;
     let mut last_error: Option<String> = None;
 
     for batch in items.chunks(BATCH_CAP) {
-        match gateway.send_batch(&platform, &recipient, batch) {
+        match gateway.send_batch(&platform, &recipient, batch).await {
             Ok(id) => {
                 succeeded += 1;
                 platform_message_id.get_or_insert(id);

@@ -9,7 +9,7 @@
 use serde_json::{json, Value};
 use sqlx::PgPool;
 
-use crate::domain::conversations::channels::{ChannelGateway, OutboundItem, StubGateway};
+use crate::domain::conversations::channels::{OutboundGateway, OutboundItem};
 use crate::state::AppState;
 
 use super::store::RECALL_PLACEHOLDER;
@@ -188,8 +188,8 @@ pub async fn process_delayed(state: &AppState, delayed_id: &str) -> Value {
         // The stub gateway only completes LINE pushes; a gateway error marks
         // the item failed, matching the documented pending -> failed outcome.
         "line" | "facebook" => {
-            let gateway = StubGateway;
-            match gateway.send_batch(&platform, &recipient, &[OutboundItem { content }]) {
+            let gateway = OutboundGateway::from_config(&state.config);
+            match gateway.send_batch(&platform, &recipient, &[OutboundItem { content }]).await {
                 Ok(platform_message_id) => Ok(json!({
                     "success": true,
                     "delayedMessageId": row.id,
@@ -429,7 +429,7 @@ pub async fn recall_sent_message(state: &AppState, message_id: &str, user_id: &s
     }
     write_recall_log(&state.db, message_id, user_id, "successful").await;
 
-    let gateway = StubGateway;
+    let gateway = OutboundGateway::from_config(&state.config);
     match platform.as_deref() {
         Some("line") => {
             // LINE offers no native unsend through its API: send a
@@ -439,7 +439,7 @@ pub async fn recall_sent_message(state: &AppState, message_id: &str, user_id: &s
                 "line",
                 recipient.as_deref().unwrap_or_default(),
                 &[OutboundItem { content: "This message has been recalled".into() }],
-            );
+            ).await;
         }
         Some("facebook") => {
             // TODO(channels): attempt a Facebook platform-side delete using the

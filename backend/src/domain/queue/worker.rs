@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::db::now_iso;
-use crate::domain::conversations::channels::{ChannelGateway, OutboundItem, StubGateway, BATCH_CAP};
+use crate::domain::conversations::channels::{OutboundGateway, OutboundItem, BATCH_CAP};
 use crate::state::AppState;
 
 use super::{is_retryable, retry_delay_ms, Job, MAX_BATCH_SIZE, MAX_BATCH_WAIT, MAX_RETRIES};
@@ -119,13 +119,13 @@ async fn process_outbound(state: &Arc<AppState>, body: &Value) -> Result<(), Str
         Err("validation: no messages to send".to_string())
     } else {
         // 3. Chunks of 5 with a brief pause; any chunk failure fails the send.
-        let gateway = StubGateway;
+        let gateway = OutboundGateway::from_config(&state.config);
         let mut result = Ok(());
         for (i, chunk) in items.chunks(BATCH_CAP).enumerate() {
             if i > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-            if let Err(e) = gateway.send_batch("line", recipient, chunk) {
+            if let Err(e) = gateway.send_batch("line", recipient, chunk).await {
                 result = Err(e);
                 break;
             }
