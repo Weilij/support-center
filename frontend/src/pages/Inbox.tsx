@@ -33,6 +33,9 @@ import { channelOf, CHANNELS } from '../components/channels'
 import { Drawer } from '../components/Modal'
 import { FileUpload } from '../components/FileUpload'
 import { Toast } from '../components/ui'
+import { SlashMenu } from '../components/SlashMenu'
+import { TemplateManager } from '../components/TemplateManager'
+import { useTemplates } from '../hooks/useTemplates'
 import {
   loadConversationFiles,
   uploadConversationFile,
@@ -295,6 +298,14 @@ function Thread({
 }) {
   const [messages, setMessages] = useState<Message[]>([])
   const [draft, setDraft] = useState('')
+  const { list: templates } = useTemplates()
+  const [slashIndex, setSlashIndex] = useState(0)
+  const [mgrOpen, setMgrOpen] = useState(false)
+  const slashOpen = draft.startsWith('/')
+  const slashQuery = slashOpen ? draft.slice(1).toLowerCase() : ''
+  const slashMatches = slashOpen
+    ? templates.filter((t) => t.title.toLowerCase().includes(slashQuery) || t.body.toLowerCase().includes(slashQuery))
+    : []
   const [error, setError] = useState<string | null>(null)
   const [assignMode, setAssignMode] = useState<AssignMode | null>(null)
   const [toast, setToast] = useState<string | null>(null)
@@ -685,11 +696,24 @@ function Thread({
                 放開以上傳檔案到此對話
               </div>
             )}
+            {slashOpen && slashMatches.length > 0 && (
+              <SlashMenu
+                templates={slashMatches}
+                activeIndex={Math.min(slashIndex, slashMatches.length - 1)}
+                onPick={(t) => { setDraft(t.body); setSlashIndex(0) }}
+              />
+            )}
             <textarea
               className="cs-composer-input"
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
+                if (slashOpen && slashMatches.length > 0) {
+                  if (e.key === 'ArrowDown') { e.preventDefault(); setSlashIndex((i) => (i + 1) % slashMatches.length); return }
+                  if (e.key === 'ArrowUp') { e.preventDefault(); setSlashIndex((i) => (i - 1 + slashMatches.length) % slashMatches.length); return }
+                  if (e.key === 'Enter') { e.preventDefault(); setDraft(slashMatches[Math.min(slashIndex, slashMatches.length - 1)].body); setSlashIndex(0); return }
+                  if (e.key === 'Escape') { e.preventDefault(); setDraft(''); return }
+                }
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()
                   void send(e as unknown as React.FormEvent)
@@ -713,7 +737,7 @@ function Thread({
               <button type="button" className="cs-composer-ico" aria-label="表情">
                 <Icon name="emoji" w={20} />
               </button>
-              <button type="button" className="cs-composer-ico" aria-label="快捷回覆">
+              <button type="button" className="cs-composer-ico" aria-label="快捷回覆" onClick={() => setMgrOpen(true)}>
                 <Icon name="zap" w={20} />
               </button>
               <span style={{ flex: 1 }} />
@@ -737,6 +761,7 @@ function Thread({
             </div>
           </div>
         </form>
+        <TemplateManager open={mgrOpen} onClose={() => setMgrOpen(false)} />
       </div>
 
       {/* Assign / Transfer dialog */}
