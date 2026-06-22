@@ -19,6 +19,8 @@ pub struct Config {
     pub facebook_app_secret: Option<String>,
     /// Facebook subscription-handshake verification token (CRD 2787).
     pub facebook_verify_token: Option<String>,
+    /// Facebook Page access token for outbound Send API (FACEBOOK_PAGE_ACCESS_TOKEN).
+    pub facebook_page_access_token: Option<String>,
     /// LINE front-end (LIFF) application identifier.
     pub liff_id: Option<String>,
     /// Messaging-account handle, e.g. "@support".
@@ -73,6 +75,9 @@ impl Config {
                 .ok()
                 .filter(|s| !s.is_empty()),
             facebook_verify_token: std::env::var("FACEBOOK_VERIFY_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            facebook_page_access_token: std::env::var("FACEBOOK_PAGE_ACCESS_TOKEN")
                 .ok()
                 .filter(|s| !s.is_empty()),
             file_signing_secret: std::env::var("FILE_SIGNING_SECRET")
@@ -148,6 +153,7 @@ pub fn test_config() -> Config {
         line_channel_secret: None,
         facebook_app_secret: None,
         facebook_verify_token: None,
+        facebook_page_access_token: None,
         liff_id: None,
         line_bot_id: None,
         line_channel_access_token: None,

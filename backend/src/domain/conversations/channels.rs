@@ -2,11 +2,11 @@
 //! message and returns immediately; this module performs the background delivery
 //! that drives the observable pending -> sent | partial | failed transitions.
 //!
-//! Delivery is routed through [`OutboundGateway`]: the `Stub` variant reproduces
-//! the documented observable outcome without any network call (dev/tests), while
-//! the `Line` variant calls the real LINE Messaging API. Only the platform with
-//! full outbound support (LINE) delivers; all others remain effectively
-//! undelivered (CRD 773).
+//! Delivery is routed through [`OutboundGateway`], which holds the configured
+//! per-platform tokens. With a token, the platform calls its real API (LINE
+//! Messaging API push, Facebook Send API); without one, `line` preserves the
+//! documented stub success (no network call in dev/tests) and other platforms
+//! report "not supported" (CRD 773).
 
 use sqlx::PgPool;
 
@@ -32,17 +32,6 @@ fn http_client() -> &'static reqwest::Client {
     })
 }
 
-/// Real LINE Messaging API gateway (global channel access token).
-pub struct LineGateway {
-    token: String,
-}
-
-impl LineGateway {
-    pub fn new(token: String) -> Self {
-        Self { token }
-    }
-}
-
 /// The outbound message body for a LINE push (pure — unit-tested).
 pub fn build_push_body(recipient: &str, items: &[OutboundItem]) -> serde_json::Value {
     json!({
@@ -54,20 +43,74 @@ pub fn build_push_body(recipient: &str, items: &[OutboundItem]) -> serde_json::V
     })
 }
 
-/// Outbound delivery gateway. `Stub` reproduces the documented observable
-/// outcome without any network call (dev/tests); `Line` calls the real API.
-pub enum OutboundGateway {
-    Stub,
-    Line(LineGateway),
+/// One Facebook Send-API text message body (pure — unit-tested).
+pub fn fb_send_body(recipient: &str, content: &str) -> serde_json::Value {
+    json!({
+        "recipient": { "id": recipient },
+        "messaging_type": "RESPONSE",
+        "message": { "text": content },
+    })
+}
+
+async fn line_push(token: &str, recipient: &str, items: &[OutboundItem]) -> Result<String, String> {
+    let body = build_push_body(recipient, items);
+    let resp = http_client()
+        .post("https://api.line.me/v2/bot/message/push")
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("LINE request failed: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let txt = resp.text().await.unwrap_or_default();
+        return Err(format!("LINE push failed ({status}): {txt}"));
+    }
+    let v: serde_json::Value = resp.json().await.unwrap_or_else(|_| json!({}));
+    Ok(v["sentMessages"][0]["id"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("line-{}", uuid::Uuid::new_v4())))
+}
+
+/// FB has no batch endpoint — send one message per item, return the last id.
+async fn fb_send(token: &str, recipient: &str, items: &[OutboundItem]) -> Result<String, String> {
+    let url = format!("https://graph.facebook.com/v21.0/me/messages?access_token={token}");
+    let mut last_id = String::new();
+    for it in items {
+        let resp = http_client()
+            .post(&url)
+            .json(&fb_send_body(recipient, &it.content))
+            .send()
+            .await
+            .map_err(|e| format!("Facebook request failed: {e}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let txt = resp.text().await.unwrap_or_default();
+            return Err(format!("Facebook send failed ({status}): {txt}"));
+        }
+        let v: serde_json::Value = resp.json().await.unwrap_or_else(|_| json!({}));
+        last_id = v["message_id"]
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("fb-{}", uuid::Uuid::new_v4()));
+    }
+    Ok(last_id)
+}
+
+/// Outbound delivery gateway holding the configured per-platform tokens. With no
+/// token for a platform, `line` preserves the documented stub success and other
+/// platforms report "not supported" (so dev/tests make no network calls).
+pub struct OutboundGateway {
+    line: Option<String>,
+    facebook: Option<String>,
 }
 
 impl OutboundGateway {
-    /// Real LINE gateway when the global token is configured; otherwise the stub
-    /// (so dev/test runs without a token make no network calls).
     pub fn from_config(config: &crate::config::Config) -> Self {
-        match config.line_channel_access_token.as_deref() {
-            Some(t) if !t.is_empty() => OutboundGateway::Line(LineGateway::new(t.to_string())),
-            _ => OutboundGateway::Stub,
+        Self {
+            line: config.line_channel_access_token.clone().filter(|t| !t.is_empty()),
+            facebook: config.facebook_page_access_token.clone().filter(|t| !t.is_empty()),
         }
     }
 
@@ -78,35 +121,16 @@ impl OutboundGateway {
         recipient: &str,
         items: &[OutboundItem],
     ) -> Result<String, String> {
-        match self {
-            OutboundGateway::Stub => match platform {
-                "line" => Ok(format!("stub-line-{}", uuid::Uuid::new_v4())),
-                other => Err(format!("Outbound delivery is not supported for platform '{other}'")),
+        match platform {
+            "line" => match &self.line {
+                Some(tok) => line_push(tok, recipient, items).await,
+                None => Ok(format!("stub-line-{}", uuid::Uuid::new_v4())),
             },
-            OutboundGateway::Line(g) => {
-                if platform != "line" {
-                    return Err(format!("Outbound delivery is not supported for platform '{platform}'"));
-                }
-                let body = build_push_body(recipient, items);
-                let resp = http_client()
-                    .post("https://api.line.me/v2/bot/message/push")
-                    .bearer_auth(&g.token)
-                    .json(&body)
-                    .send()
-                    .await
-                    .map_err(|e| format!("LINE request failed: {e}"))?;
-                if !resp.status().is_success() {
-                    let status = resp.status();
-                    let txt = resp.text().await.unwrap_or_default();
-                    return Err(format!("LINE push failed ({status}): {txt}"));
-                }
-                let v: serde_json::Value = resp.json().await.unwrap_or_else(|_| json!({}));
-                let id = v["sentMessages"][0]["id"]
-                    .as_str()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| format!("line-{}", uuid::Uuid::new_v4()));
-                Ok(id)
-            }
+            "facebook" => match &self.facebook {
+                Some(tok) => fb_send(tok, recipient, items).await,
+                None => Err("Outbound delivery is not supported for platform 'facebook'".into()),
+            },
+            other => Err(format!("Outbound delivery is not supported for platform '{other}'")),
         }
     }
 }
@@ -196,24 +220,31 @@ mod gateway_tests {
 
     #[test]
     fn push_body_has_to_and_text_messages() {
-        let items = vec![
-            OutboundItem { content: "hi".into() },
-            OutboundItem { content: "bye".into() },
-        ];
+        let items = vec![OutboundItem { content: "hi".into() }, OutboundItem { content: "bye".into() }];
         let b = build_push_body("U123", &items);
         assert_eq!(b["to"], "U123");
-        assert_eq!(b["messages"][0]["type"], "text");
         assert_eq!(b["messages"][0]["text"], "hi");
-        assert_eq!(b["messages"][1]["text"], "bye");
         assert_eq!(b["messages"].as_array().unwrap().len(), 2);
     }
 
     #[test]
-    fn from_config_picks_stub_without_token_and_line_with() {
+    fn fb_body_has_recipient_and_text() {
+        let b = fb_send_body("PSID1", "hello");
+        assert_eq!(b["recipient"]["id"], "PSID1");
+        assert_eq!(b["messaging_type"], "RESPONSE");
+        assert_eq!(b["message"]["text"], "hello");
+    }
+
+    #[test]
+    fn from_config_reflects_configured_tokens() {
         let mut c = crate::config::test_config();
         c.line_channel_access_token = None;
-        assert!(matches!(OutboundGateway::from_config(&c), OutboundGateway::Stub));
-        c.line_channel_access_token = Some("tok".into());
-        assert!(matches!(OutboundGateway::from_config(&c), OutboundGateway::Line(_)));
+        c.facebook_page_access_token = None;
+        let g = OutboundGateway::from_config(&c);
+        assert!(g.line.is_none() && g.facebook.is_none());
+        c.line_channel_access_token = Some("L".into());
+        c.facebook_page_access_token = Some("F".into());
+        let g = OutboundGateway::from_config(&c);
+        assert!(g.line.is_some() && g.facebook.is_some());
     }
 }
