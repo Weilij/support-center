@@ -90,6 +90,9 @@ pub async fn spawn_app_custom(customize: impl FnOnce(&mut Config)) -> TestApp {
         facebook_page_access_token: None,
         instagram_access_token: None,
         file_signing_secret: None,
+        shopee_partner_id: None,
+        shopee_partner_key: None,
+        shopee_host: None,
     };
     customize(&mut config);
     let state = AppState::new(pool, config);

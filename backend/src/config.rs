@@ -33,6 +33,12 @@ pub struct Config {
     /// Separate HMAC secret for signing/verifying file download URLs (review #8).
     /// Falls back to `jwt_secret` when unset so existing deployments keep working.
     pub file_signing_secret: Option<String>,
+    /// Shopee Open Platform partner id (SHOPEE_PARTNER_ID).
+    pub shopee_partner_id: Option<i64>,
+    /// Shopee Open Platform partner key / app secret (SHOPEE_PARTNER_KEY).
+    pub shopee_partner_key: Option<String>,
+    /// Shopee API host (SHOPEE_HOST), e.g. https://partner.shopeemobile.com.
+    pub shopee_host: Option<String>,
 }
 
 impl Config {
@@ -89,6 +95,9 @@ impl Config {
             file_signing_secret: std::env::var("FILE_SIGNING_SECRET")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            shopee_partner_id: std::env::var("SHOPEE_PARTNER_ID").ok().and_then(|s| s.parse().ok()),
+            shopee_partner_key: std::env::var("SHOPEE_PARTNER_KEY").ok().filter(|s| !s.is_empty()),
+            shopee_host: std::env::var("SHOPEE_HOST").ok().filter(|s| !s.is_empty()),
         }
     }
 
@@ -165,6 +174,9 @@ pub fn test_config() -> Config {
         line_bot_id: None,
         line_channel_access_token: None,
         file_signing_secret: None,
+        shopee_partner_id: None,
+        shopee_partner_key: None,
+        shopee_host: None,
     }
 }
 
