@@ -104,6 +104,7 @@ async fn fb_send(token: &str, recipient: &str, items: &[OutboundItem]) -> Result
 pub struct OutboundGateway {
     line: Option<String>,
     facebook: Option<String>,
+    instagram: Option<String>,
 }
 
 impl OutboundGateway {
@@ -111,6 +112,11 @@ impl OutboundGateway {
         Self {
             line: config.line_channel_access_token.clone().filter(|t| !t.is_empty()),
             facebook: config.facebook_page_access_token.clone().filter(|t| !t.is_empty()),
+            instagram: config
+                .instagram_access_token
+                .clone()
+                .filter(|t| !t.is_empty())
+                .or_else(|| config.facebook_page_access_token.clone().filter(|t| !t.is_empty())),
         }
     }
 
@@ -129,6 +135,10 @@ impl OutboundGateway {
             "facebook" => match &self.facebook {
                 Some(tok) => fb_send(tok, recipient, items).await,
                 None => Err("Outbound delivery is not supported for platform 'facebook'".into()),
+            },
+            "instagram" => match &self.instagram {
+                Some(tok) => fb_send(tok, recipient, items).await,
+                None => Err("Outbound delivery is not supported for platform 'instagram'".into()),
             },
             other => Err(format!("Outbound delivery is not supported for platform '{other}'")),
         }
@@ -246,5 +256,21 @@ mod gateway_tests {
         c.facebook_page_access_token = Some("F".into());
         let g = OutboundGateway::from_config(&c);
         assert!(g.line.is_some() && g.facebook.is_some());
+    }
+
+    #[test]
+    fn from_config_instagram_token_with_fallback() {
+        let mut c = crate::config::test_config();
+        c.instagram_access_token = None;
+        c.facebook_page_access_token = None;
+        assert!(OutboundGateway::from_config(&c).instagram.is_none());
+
+        // Falls back to the page token when the IG token is unset.
+        c.facebook_page_access_token = Some("PAGE".into());
+        assert!(OutboundGateway::from_config(&c).instagram.is_some());
+
+        // Dedicated IG token wins.
+        c.instagram_access_token = Some("IG".into());
+        assert!(OutboundGateway::from_config(&c).instagram.is_some());
     }
 }
