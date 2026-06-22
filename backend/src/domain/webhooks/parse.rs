@@ -353,6 +353,15 @@ mod tests {
     }
 
     #[test]
+    fn instagram_story_reply_is_labelled() {
+        let n = normalize_instagram(&json!({
+            "reply_to": { "story": { "id": "STORY1", "url": "https://x/s.jpg" } }
+        }));
+        assert_eq!(n.content, "[Story reply]");
+        assert!(n.metadata.contains_key("storyReply"));
+    }
+
+    #[test]
     fn instagram_plain_text_passes_through() {
         let n = normalize_instagram(&json!({ "mid": "m1", "text": "hi" }));
         assert_eq!(n.content, "hi");

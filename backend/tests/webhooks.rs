@@ -678,11 +678,21 @@ async fn facebook_read_stamps_read_at_via_watermark() {
 #[tokio::test]
 async fn facebook_user_object_is_accepted_but_not_processed() {
     let app = spawn_app().await;
-    // The `user` object type is a valid envelope but carries no messaging items
-    // we process: accepted (200) with no side effects (CRD 2794).
+    // The `user` object type is a valid envelope. Even when it carries a REAL
+    // message item we would otherwise ingest, the `object` guard skips it:
+    // accepted (200) with no side effects (CRD 2794).
     let body = json!({
         "object": "user",
-        "entry": [{ "id": "u-1", "time": 1, "messaging": [] }]
+        "entry": [{
+            "id": "u-1",
+            "time": 1,
+            "messaging": [{
+                "sender": {"id": "U-obj-user"},
+                "recipient": {"id": "u-1"},
+                "timestamp": 1700000000000i64,
+                "message": {"mid": "user-obj-mid", "text": "should be ignored"}
+            }]
+        }]
     })
     .to_string();
     let sig = fb_sig(&body);
@@ -694,6 +704,11 @@ async fn facebook_user_object_is_accepted_but_not_processed() {
         .await
         .unwrap();
     assert_eq!(count, 0, "the user object type is not processed (CRD 2794)");
+    let customers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM customers")
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+    assert_eq!(customers, 0, "the object guard, not an empty array, prevents processing (CRD 2794)");
 }
 
 // ---------------------------------------------------------------- Instagram
@@ -805,6 +820,78 @@ async fn instagram_reaction_records_metadata() {
     assert_eq!(reactions.len(), 1, "one reaction recorded: {meta}");
     assert_eq!(reactions[0]["reaction"], "love");
     assert_eq!(reactions[0]["emoji"], "❤️");
+}
+
+#[tokio::test]
+async fn instagram_unreaction_removes_reaction() {
+    let app = spawn_app().await;
+    let cust = app.seed_customer("instagram", "IG-unreact", "Instagram User", None).await;
+    let conv = app.seed_conversation(cust, None, "active").await;
+    // Seed a customer message with a known platform_message_id and empty-object
+    // metadata so the reaction has a target to update.
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO messages (id, conversation_id, sender_type, customer_id, content, content_type,
+                               platform_message_id, is_sent, sent_at, delivery_status, metadata, created_at)
+         VALUES ($1, $2, 'customer', $3, 'hi', 'text', 'ig-unreact-mid', 1, $4, 'delivered', '{}', $4)",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(&conv)
+    .bind(cust)
+    .bind(&now)
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+
+    // React: the entry is appended.
+    let (status, resp) = post_ig_item(
+        &app,
+        json!({
+            "sender": {"id": "IG-unreact"},
+            "recipient": {"id": "ig-page-1"},
+            "timestamp": 1700000000000i64,
+            "reaction": {"mid": "ig-unreact-mid", "action": "react", "reaction": "love", "emoji": "❤️"}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+
+    let meta: String =
+        sqlx::query_scalar("SELECT metadata FROM messages WHERE platform_message_id = 'ig-unreact-mid'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    let meta: Value = serde_json::from_str(&meta).unwrap();
+    assert_eq!(
+        meta["reactions"].as_array().expect("reactions array present").len(),
+        1,
+        "one reaction recorded after react: {meta}"
+    );
+
+    // Unreact: the matching entry is removed, leaving an empty array.
+    let (status, resp) = post_ig_item(
+        &app,
+        json!({
+            "sender": {"id": "IG-unreact"},
+            "recipient": {"id": "ig-page-1"},
+            "timestamp": 1700000000001i64,
+            "reaction": {"mid": "ig-unreact-mid", "action": "unreact", "reaction": "love"}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+
+    let meta: String =
+        sqlx::query_scalar("SELECT metadata FROM messages WHERE platform_message_id = 'ig-unreact-mid'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    let meta: Value = serde_json::from_str(&meta).unwrap();
+    assert_eq!(
+        meta["reactions"].as_array().expect("reactions array present").len(),
+        0,
+        "reaction removed after unreact: {meta}"
+    );
 }
 
 #[tokio::test]
