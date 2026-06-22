@@ -462,24 +462,37 @@ fn spawn_followups(state: Arc<AppState>, ctx: FollowupContext) {
 /// Delivery receipt: mark messages delivered by their platform message ids.
 pub async fn mark_delivered(db: &PgPool, mids: &[&str]) {
     for mid in mids {
-        let _ = sqlx::query(
+        if let Err(e) = sqlx::query(
             "UPDATE messages SET delivery_status = 'delivered', updated_at = $1 WHERE platform_message_id = $2",
         )
         .bind(now_iso())
         .bind(mid)
         .execute(db)
-        .await;
+        .await
+        {
+            tracing::warn!(error = %e, "facebook delivery receipt update failed");
+        }
     }
+}
+
+/// Convert an epoch-millis read watermark to the canonical ISO-8601 form used
+/// for every TEXT timestamp column (matching `crate::db::now_iso`: millisecond
+/// precision, `Z`-suffixed UTC). Read-receipt comparisons happen as TEXT, so the
+/// watermark MUST be byte-comparable with the `sent_at` values written by
+/// `now_iso`; the older `to_rfc3339()` `+00:00` form sorts before the `.000Z`
+/// form under byte-ordered collations, silently dropping same-second receipts.
+pub fn watermark_to_iso(watermark_ms: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp_millis(watermark_ms)
+        .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
 /// Read receipt: stamp `read_at` on the customer's agent messages sent at or
 /// before the watermark (ms epoch). FB read events carry no message ids.
 pub async fn mark_read(db: &PgPool, platform: &str, platform_user_id: &str, watermark_ms: i64) {
-    let Some(iso) = chrono::DateTime::from_timestamp_millis(watermark_ms).map(|d| d.to_rfc3339())
-    else {
+    let Some(iso) = watermark_to_iso(watermark_ms) else {
         return;
     };
-    let _ = sqlx::query(
+    if let Err(e) = sqlx::query(
         "UPDATE messages SET read_at = $1
          WHERE sender_type = 'agent' AND read_at IS NULL AND sent_at <= $2
            AND conversation_id IN (
@@ -493,7 +506,10 @@ pub async fn mark_read(db: &PgPool, platform: &str, platform_user_id: &str, wate
     .bind(platform)
     .bind(platform_user_id)
     .execute(db)
-    .await;
+    .await
+    {
+        tracing::warn!(error = %e, "facebook read receipt update failed");
+    }
 }
 
 // ------------------------------------------------------------ follow / unfollow (LINE)

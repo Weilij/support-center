@@ -606,8 +606,15 @@ async fn facebook_read_stamps_read_at_via_watermark() {
     let app = spawn_app().await;
     let cust = app.seed_customer("facebook", "F-read", "Facebook User", None).await;
     let conv = app.seed_conversation(cust, None, "active").await;
-    // An agent message sent before the watermark; read_at starts NULL.
-    let sent_at = "2023-11-14T22:13:20+00:00".to_string(); // 1700000000000 ms
+    // An agent message sent in the SAME second as the read watermark, stamped in
+    // the canonical ISO form real code writes (now_iso / to_rfc3339_opts(Millis,
+    // true) → `Z`-suffixed millis). read_at starts NULL. This exercises the
+    // same-second case that the old `+00:00` watermark form dropped: as TEXT,
+    // "...20.000Z" > "...20+00:00", so `sent_at <= watermark` was false.
+    let sent_at = chrono::DateTime::from_timestamp_millis(1700000000000)
+        .unwrap()
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true); // 2023-11-14T22:13:20.000Z
+    assert_eq!(sent_at, "2023-11-14T22:13:20.000Z");
     let msg_id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO messages (id, conversation_id, sender_type, content, content_type,
@@ -621,14 +628,15 @@ async fn facebook_read_stamps_read_at_via_watermark() {
     .await
     .unwrap();
 
-    // Watermark strictly after the message's sent_at.
+    // Watermark equal to the message's sent_at instant (same second), proving
+    // same-second receipts now stamp `read_at`.
     let (status, resp) = post_fb_item(
         &app,
         json!({
             "sender": {"id": "F-read"},
             "recipient": {"id": "page-1"},
-            "timestamp": 1700000001000i64,
-            "read": {"watermark": 1700000001000i64}
+            "timestamp": 1700000000000i64,
+            "read": {"watermark": 1700000000000i64}
         }),
     )
     .await;
@@ -641,6 +649,30 @@ async fn facebook_read_stamps_read_at_via_watermark() {
             .await
             .unwrap();
     assert!(read_at.is_some(), "agent message read_at stamped by the watermark");
+
+    // Collation-independent regression guard against the actual production
+    // conversion. The `sent_at <= $2` compare runs as TEXT under the deployment's
+    // collation; on byte-ordered (`C`) deployments `+` (0x2B) sorts before `.`
+    // (0x2E), so the OLD watermark form `2023-11-14T22:13:20+00:00` is < the
+    // canonical `2023-11-14T22:13:20.000Z` sent_at, silently dropping the
+    // same-second receipt. Feed the EXACT watermark string `mark_read` builds
+    // (via the shared helper) into the byte-ordered compare: this FAILS for the
+    // old `to_rfc3339()` form and PASSES for the canonical `Millis`/`Z` form,
+    // regardless of the test server's locale.
+    let watermark_iso =
+        mcss_backend::domain::webhooks::ingest::watermark_to_iso(1700000000000).unwrap();
+    let byte_ordered_match: bool =
+        sqlx::query_scalar("SELECT ($1 COLLATE \"C\") <= ($2 COLLATE \"C\")")
+            .bind(&sent_at)
+            .bind(&watermark_iso)
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    assert!(
+        byte_ordered_match,
+        "same-second receipt must match under byte-ordered collation: \
+         sent_at={sent_at} watermark={watermark_iso}"
+    );
 }
 
 #[tokio::test]
