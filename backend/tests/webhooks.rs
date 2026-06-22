@@ -676,17 +676,13 @@ async fn facebook_read_stamps_read_at_via_watermark() {
 }
 
 #[tokio::test]
-async fn facebook_non_page_objects_are_accepted_but_not_processed() {
+async fn facebook_user_object_is_accepted_but_not_processed() {
     let app = spawn_app().await;
+    // The `user` object type is a valid envelope but carries no messaging items
+    // we process: accepted (200) with no side effects (CRD 2794).
     let body = json!({
-        "object": "instagram",
-        "entry": [{
-            "id": "ig-1", "time": 1,
-            "messaging": [{
-                "sender": {"id": "IG-1"}, "recipient": {"id": "ig-1"}, "timestamp": 1,
-                "message": {"mid": "ig-mid-1", "text": "ig"}
-            }]
-        }]
+        "object": "user",
+        "entry": [{ "id": "u-1", "time": 1, "messaging": [] }]
     })
     .to_string();
     let sig = fb_sig(&body);
@@ -697,7 +693,187 @@ async fn facebook_non_page_objects_are_accepted_but_not_processed() {
         .fetch_one(&app.state.db)
         .await
         .unwrap();
-    assert_eq!(count, 0, "only the page object type is processed (CRD 2794)");
+    assert_eq!(count, 0, "the user object type is not processed (CRD 2794)");
+}
+
+// ---------------------------------------------------------------- Instagram
+
+/// Build a signed `instagram` payload from a single `messaging` item and POST it.
+async fn post_ig_item(app: &TestApp, item: Value) -> (StatusCode, Value) {
+    let body = json!({
+        "object": "instagram",
+        "entry": [{ "id": "ig-page-1", "time": 1700000000000i64, "messaging": [item] }]
+    })
+    .to_string();
+    let sig = fb_sig(&body);
+    let (status, text) =
+        send_raw(app, "POST", "/api/webhooks/facebook", &body, &[("x-hub-signature-256", sig.as_str())]).await;
+    (status, serde_json::from_str(&text).unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn instagram_message_creates_instagram_customer_and_message() {
+    let app = spawn_app().await;
+    let (status, resp) = post_ig_item(
+        &app,
+        json!({
+            "sender": {"id": "IG-user-1"},
+            "recipient": {"id": "ig-page-1"},
+            "timestamp": 1700000000000i64,
+            "message": {"mid": "ig-mid-1", "text": "ig hello"}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+
+    let (content, platform, name): (String, String, String) = sqlx::query_as(
+        "SELECT m.content, cu.platform, cu.display_name FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id
+         JOIN customers cu ON cu.id = c.customer_id
+         WHERE m.platform_message_id = 'ig-mid-1'",
+    )
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
+    assert_eq!(content, "ig hello");
+    assert_eq!(platform, "instagram");
+    assert_eq!(name, "Instagram User");
+}
+
+#[tokio::test]
+async fn instagram_echo_messages_are_skipped() {
+    let app = spawn_app().await;
+    let (status, resp) = post_ig_item(
+        &app,
+        json!({
+            "sender": {"id": "IG-echo"},
+            "recipient": {"id": "ig-page-1"},
+            "timestamp": 1700000000000i64,
+            "message": {"mid": "ig-echo-mid-1", "is_echo": true, "text": "x"}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+
+    let msgs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+    assert_eq!(msgs, 0, "instagram echoed message is not ingested");
+}
+
+#[tokio::test]
+async fn instagram_reaction_records_metadata() {
+    let app = spawn_app().await;
+    let cust = app.seed_customer("instagram", "IG-react", "Instagram User", None).await;
+    let conv = app.seed_conversation(cust, None, "active").await;
+    // Seed a customer message with a known platform_message_id and empty-object
+    // metadata so the reaction has a target to update.
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO messages (id, conversation_id, sender_type, customer_id, content, content_type,
+                               platform_message_id, is_sent, sent_at, delivery_status, metadata, created_at)
+         VALUES ($1, $2, 'customer', $3, 'hi', 'text', 'ig-react-mid', 1, $4, 'delivered', '{}', $4)",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(&conv)
+    .bind(cust)
+    .bind(&now)
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+
+    let (status, resp) = post_ig_item(
+        &app,
+        json!({
+            "sender": {"id": "IG-react"},
+            "recipient": {"id": "ig-page-1"},
+            "timestamp": 1700000000000i64,
+            "reaction": {"mid": "ig-react-mid", "action": "react", "reaction": "love", "emoji": "❤️"}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+
+    let meta: String =
+        sqlx::query_scalar("SELECT metadata FROM messages WHERE platform_message_id = 'ig-react-mid'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    let meta: Value = serde_json::from_str(&meta).unwrap();
+    let reactions = meta["reactions"].as_array().expect("reactions array present");
+    assert_eq!(reactions.len(), 1, "one reaction recorded: {meta}");
+    assert_eq!(reactions[0]["reaction"], "love");
+    assert_eq!(reactions[0]["emoji"], "❤️");
+}
+
+#[tokio::test]
+async fn instagram_seen_by_mid_stamps_read_at() {
+    let app = spawn_app().await;
+    let cust = app.seed_customer("instagram", "IG-seen", "Instagram User", None).await;
+    let conv = app.seed_conversation(cust, None, "active").await;
+    // Seed an agent message with a known platform_message_id and sent_at; read_at
+    // starts NULL. The IG "seen" event carries that mid.
+    let sent_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let msg_id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO messages (id, conversation_id, sender_type, content, content_type,
+                               platform_message_id, is_sent, sent_at, delivery_status, created_at)
+         VALUES ($1, $2, 'agent', 'hi', 'text', 'ig-seen-mid', 1, $3, 'delivered', $3)",
+    )
+    .bind(&msg_id)
+    .bind(&conv)
+    .bind(&sent_at)
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+
+    let (status, resp) = post_ig_item(
+        &app,
+        json!({
+            "sender": {"id": "IG-seen"},
+            "recipient": {"id": "ig-page-1"},
+            "timestamp": 1700000000000i64,
+            "read": {"mid": "ig-seen-mid"}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+
+    let read_at: Option<String> =
+        sqlx::query_scalar("SELECT read_at FROM messages WHERE id = $1")
+            .bind(&msg_id)
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    assert!(read_at.is_some(), "agent message read_at stamped by the seen mid");
+}
+
+#[tokio::test]
+async fn instagram_story_mention_is_labelled() {
+    let app = spawn_app().await;
+    let (status, resp) = post_ig_item(
+        &app,
+        json!({
+            "sender": {"id": "IG-story"},
+            "recipient": {"id": "ig-page-1"},
+            "timestamp": 1700000000000i64,
+            "message": {
+                "mid": "ig-story-mid",
+                "attachments": [{ "type": "story_mention", "payload": { "url": "https://x/s.jpg" } }]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+
+    let content: String = sqlx::query_scalar(
+        "SELECT content FROM messages WHERE platform_message_id = 'ig-story-mid'",
+    )
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
+    assert_eq!(content, "[Story mention]");
 }
 
 #[tokio::test]

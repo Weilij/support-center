@@ -241,6 +241,64 @@ pub async fn line_webhook(
     batch_ok()
 }
 
+enum ItemResult {
+    None,
+    Ingested(Result<(), String>),
+}
+
+/// Handle one `messaging[]` item for a Meta platform (facebook | instagram).
+async fn process_messaging_item(
+    state: &std::sync::Arc<AppState>,
+    platform: &str,
+    default_name: &str,
+    item: &Value,
+) -> ItemResult {
+    let sender = item["sender"]["id"].as_str().unwrap_or_default().to_string();
+    if let Some(message) = item.get("message").filter(|m| m.is_object()) {
+        if message.get("is_echo").and_then(Value::as_bool).unwrap_or(false)
+            || message.get("is_self").and_then(Value::as_bool).unwrap_or(false)
+        {
+            return ItemResult::None;
+        }
+        let normalized = if platform == "instagram" {
+            parse::normalize_instagram(message)
+        } else {
+            parse::normalize_facebook(message)
+        };
+        let mid = message.get("mid").and_then(Value::as_str);
+        return ItemResult::Ingested(
+            ingest::ingest_message(state, InboundMessage { platform, platform_user_id: &sender, default_display_name: default_name, platform_message_id: mid, normalized })
+                .await.map(|_| ()),
+        );
+    }
+    if let Some(postback) = item.get("postback") {
+        let normalized = parse::normalize_facebook_postback(postback);
+        return ItemResult::Ingested(
+            ingest::ingest_message(state, InboundMessage { platform, platform_user_id: &sender, default_display_name: default_name, platform_message_id: None, normalized })
+                .await.map(|_| ()),
+        );
+    }
+    if let Some(delivery) = item.get("delivery") {
+        let mids: Vec<&str> = delivery.get("mids").and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        ingest::mark_delivered(&state.db, &mids).await;
+        return ItemResult::None;
+    }
+    if let Some(read) = item.get("read") {
+        if let Some(wm) = read.get("watermark").and_then(Value::as_i64) {
+            ingest::mark_read(&state.db, platform, &sender, wm).await;
+        } else if let Some(mid) = read.get("mid").and_then(Value::as_str) {
+            ingest::mark_read_by_mid(&state.db, platform, &sender, mid).await;
+        }
+        return ItemResult::None;
+    }
+    if let Some(reaction) = item.get("reaction") {
+        ingest::apply_reaction(&state.db, reaction).await;
+        return ItemResult::None;
+    }
+    ItemResult::None
+}
+
 // ---------------------------- Facebook handshake + event delivery (CRD 2780-2812)
 
 pub async fn facebook_webhook(
@@ -347,67 +405,30 @@ pub async fn facebook_webhook(
             .into_response();
     }
 
-    // 6. Only the page object type is processed (CRD 2795).
+    // 6. The page (Facebook) and instagram object types are processed through
+    //    the shared per-item processor; the user object type is accepted but
+    //    not processed (CRD 2795).
     let mut total = 0usize;
     let mut failed = 0usize;
     let mut last_error: Option<String> = None;
-    if object == "page" {
+    if object == "page" || object == "instagram" {
+        let (platform, default_name) = if object == "instagram" {
+            ("instagram", "Instagram User")
+        } else {
+            ("facebook", "Facebook User")
+        };
         for entry in entries.unwrap_or(&Vec::new()) {
             let Some(items) = entry.get("messaging").and_then(Value::as_array) else { continue };
             for item in items {
-                let sender = item["sender"]["id"].as_str().unwrap_or_default().to_string();
-                if let Some(message) = item.get("message").filter(|m| m.is_object()) {
-                    // Skip the page's own echoed messages (would duplicate our outbound).
-                    if message.get("is_echo").and_then(Value::as_bool).unwrap_or(false) {
-                        continue;
+                match process_messaging_item(&state, platform, default_name, item).await {
+                    ItemResult::Ingested(r) => {
+                        total += 1;
+                        if let Err(e) = r {
+                            failed += 1;
+                            last_error = Some(e);
+                        }
                     }
-                    total += 1;
-                    let normalized = parse::normalize_facebook(message);
-                    let mid = message.get("mid").and_then(Value::as_str);
-                    if let Err(e) = ingest::ingest_message(
-                        &state,
-                        InboundMessage {
-                            platform: "facebook",
-                            platform_user_id: &sender,
-                            default_display_name: "Facebook User",
-                            platform_message_id: mid,
-                            normalized,
-                        },
-                    )
-                    .await
-                    {
-                        failed += 1;
-                        last_error = Some(e);
-                    }
-                } else if let Some(postback) = item.get("postback") {
-                    total += 1;
-                    let normalized = parse::normalize_facebook_postback(postback);
-                    if let Err(e) = ingest::ingest_message(
-                        &state,
-                        InboundMessage {
-                            platform: "facebook",
-                            platform_user_id: &sender,
-                            default_display_name: "Facebook User",
-                            platform_message_id: None,
-                            normalized,
-                        },
-                    )
-                    .await
-                    {
-                        failed += 1;
-                        last_error = Some(e);
-                    }
-                } else if let Some(delivery) = item.get("delivery") {
-                    let mids: Vec<&str> = delivery
-                        .get("mids")
-                        .and_then(Value::as_array)
-                        .map(|a| a.iter().filter_map(Value::as_str).collect())
-                        .unwrap_or_default();
-                    ingest::mark_delivered(&state.db, &mids).await;
-                } else if let Some(read) = item.get("read") {
-                    if let Some(wm) = read.get("watermark").and_then(Value::as_i64) {
-                        ingest::mark_read(&state.db, "facebook", &sender, wm).await;
-                    }
+                    ItemResult::None => {}
                 }
             }
         }

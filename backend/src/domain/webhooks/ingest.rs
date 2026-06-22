@@ -512,6 +512,57 @@ pub async fn mark_read(db: &PgPool, platform: &str, platform_user_id: &str, wate
     }
 }
 
+/// IG/FB message reaction: update the target message's `metadata.reactions`.
+pub async fn apply_reaction(db: &PgPool, reaction: &serde_json::Value) {
+    let Some(mid) = reaction.get("mid").and_then(serde_json::Value::as_str) else { return };
+    let action = reaction.get("action").and_then(serde_json::Value::as_str).unwrap_or("react");
+    let react_type = reaction.get("reaction").and_then(serde_json::Value::as_str);
+    let emoji = reaction.get("emoji").and_then(serde_json::Value::as_str);
+
+    let found: Option<Option<String>> =
+        sqlx::query_scalar("SELECT metadata FROM messages WHERE platform_message_id = $1")
+            .bind(mid).fetch_optional(db).await.ok().flatten();
+    let Some(meta_text) = found else { return };
+    let mut meta: serde_json::Value =
+        meta_text.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| json!({}));
+    if !meta.is_object() { meta = json!({}); }
+    let arr = meta.as_object_mut().unwrap().entry("reactions").or_insert_with(|| json!([]));
+    if let Some(list) = arr.as_array_mut() {
+        if action == "unreact" {
+            list.retain(|r| r.get("reaction").and_then(serde_json::Value::as_str) != react_type);
+        } else {
+            list.push(json!({ "reaction": react_type, "emoji": emoji }));
+        }
+    }
+    if let Err(e) = sqlx::query("UPDATE messages SET metadata = $1, updated_at = $2 WHERE platform_message_id = $3")
+        .bind(meta.to_string()).bind(now_iso()).bind(mid).execute(db).await
+    {
+        tracing::warn!(error = %e, "reaction metadata update failed");
+    }
+}
+
+/// Read receipt keyed by a specific message id (IG "seen" may carry `read.mid`):
+/// mark agent messages up to that message's sent_at as read.
+pub async fn mark_read_by_mid(db: &PgPool, platform: &str, platform_user_id: &str, mid: &str) {
+    let at: Option<Option<String>> =
+        sqlx::query_scalar("SELECT sent_at FROM messages WHERE platform_message_id = $1")
+            .bind(mid).fetch_optional(db).await.ok().flatten();
+    let Some(Some(sent_at)) = at else { return };
+    if let Err(e) = sqlx::query(
+        "UPDATE messages SET read_at = $1
+         WHERE sender_type = 'agent' AND read_at IS NULL AND sent_at <= $2
+           AND conversation_id IN (
+             SELECT c.id FROM conversations c
+             JOIN customers cu ON cu.id = c.customer_id
+             WHERE cu.platform = $3 AND cu.platform_user_id = $4
+           )",
+    )
+    .bind(now_iso()).bind(&sent_at).bind(platform).bind(platform_user_id).execute(db).await
+    {
+        tracing::warn!(error = %e, "read-by-mid update failed");
+    }
+}
+
 // ------------------------------------------------------------ follow / unfollow (LINE)
 
 /// Follow / opt-in lifecycle handling (CRD 2814-2826).

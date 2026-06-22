@@ -234,6 +234,31 @@ pub fn normalize_facebook(message: &Value) -> Normalized {
     }
 }
 
+/// Instagram inbound message. Delegates to `normalize_facebook` (same envelope)
+/// and labels story mentions / replies, keeping the raw object in metadata.
+pub fn normalize_instagram(message: &Value) -> Normalized {
+    let is_story_mention = message
+        .get("attachments")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().any(|att| att.get("type").and_then(Value::as_str) == Some("story_mention")))
+        .unwrap_or(false);
+    let story_reply = message.get("reply_to").and_then(|r| r.get("story")).cloned();
+
+    let mut n = normalize_facebook(message);
+    if is_story_mention {
+        n.content = "[Story mention]".into();
+        if let Some(atts) = message.get("attachments") {
+            n.metadata.insert("storyMention".into(), atts.clone());
+        }
+    } else if let Some(story) = story_reply {
+        if n.content.is_empty() || n.content == "[Unknown message]" {
+            n.content = "[Story reply]".into();
+        }
+        n.metadata.insert("storyReply".into(), story);
+    }
+    n
+}
+
 /// A postback (button / quick-reply click) as a normalized text message.
 pub fn normalize_facebook_postback(postback: &Value) -> Normalized {
     let title = postback.get("title").and_then(Value::as_str).unwrap_or("");
@@ -316,6 +341,22 @@ mod tests {
 
         let n = normalize_facebook(&json!({ "mid": "f4" }));
         assert_eq!(n.content, "[Unknown message]");
+    }
+
+    #[test]
+    fn instagram_story_mention_is_labelled() {
+        let n = normalize_instagram(&json!({
+            "attachments": [{ "type": "story_mention", "payload": { "url": "https://x/s.jpg" } }]
+        }));
+        assert_eq!(n.content, "[Story mention]");
+        assert!(n.metadata.contains_key("storyMention"));
+    }
+
+    #[test]
+    fn instagram_plain_text_passes_through() {
+        let n = normalize_instagram(&json!({ "mid": "m1", "text": "hi" }));
+        assert_eq!(n.content, "hi");
+        assert_eq!(n.kind, "text");
     }
 
     #[test]

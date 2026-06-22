@@ -88,6 +88,7 @@ pub async fn spawn_app_custom(customize: impl FnOnce(&mut Config)) -> TestApp {
         facebook_app_secret: Some("test-fb-secret".into()),
         facebook_verify_token: Some("test-verify-token".into()),
         facebook_page_access_token: None,
+        instagram_access_token: None,
         file_signing_secret: None,
     };
     customize(&mut config);
