@@ -23,7 +23,7 @@ B2 completes FB: real Send-API outbound + the four inbound event types. It also 
 - No per-team tokens — global `FACEBOOK_PAGE_ACCESS_TOKEN` (mirrors B1's global LINE token).
 - Text-only outbound (no image/template sends in B2).
 - No Instagram/Shopee (B3/B4). (Note for B3: IG read uses the `messaging_seen` webhook field, not FB's `message_reads`, and IG has **no** delivery receipt.)
-- No new webhook-subscription automation — subscribing the FB app to `messages`, `messaging_postbacks`, `message_deliveries`, `message_reads` is a console/config step, not code.
+- No new webhook-subscription automation — subscribing the FB app to `messages`, `message_echoes`, `messaging_postbacks`, `message_deliveries`, `message_reads` is a console/config step, not code. (Verified against Meta's Webhook Events docs, 2026-06-22: echo events require the `message_echoes` field; `message_deliveries`→`delivery.mids`/`delivery.watermark`, `message_reads`→`read.watermark`, postback→`postback.payload`/`postback.title`. IG uses `messaging_seen` and has no delivery receipts.)
 
 ---
 
@@ -116,7 +116,7 @@ Postback normalization: add `normalize_facebook_postback(postback: &Value) -> No
 
 - `cargo build` + `cargo test` green, network-free: the test harness has no FB token (B1 opt-in default), so `send_batch("facebook", …)` returns "not supported" and `"line"` stubs — no real HTTP. Unit tests: `fb_send_body`, `normalize_facebook_postback`, `from_config` dispatch (line/fb token presence). Webhook integration tests drive echo/postback/delivery/read through the signed `facebook_webhook` (reuse the existing FB webhook test setup with `facebook_app_secret` set + a valid signature).
 - `detect_changes()` before commit; the gateway refactor keeps the public API stable (call sites unchanged).
-- Live FB send + receipts need a real `FACEBOOK_PAGE_ACCESS_TOKEN`, the app subscribed to the `messages`/`messaging_postbacks`/`message_deliveries`/`message_reads` fields, and a public webhook (deferred config step).
+- Live FB send + receipts need a real `FACEBOOK_PAGE_ACCESS_TOKEN`, the app subscribed to the `messages`/`message_echoes`/`messaging_postbacks`/`message_deliveries`/`message_reads` fields, and a public webhook (deferred config step).
 
 ---
 
