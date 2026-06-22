@@ -457,6 +457,45 @@ fn spawn_followups(state: Arc<AppState>, ctx: FollowupContext) {
     });
 }
 
+// ------------------------------------------------------------ delivery / read receipts
+
+/// Delivery receipt: mark messages delivered by their platform message ids.
+pub async fn mark_delivered(db: &PgPool, mids: &[&str]) {
+    for mid in mids {
+        let _ = sqlx::query(
+            "UPDATE messages SET delivery_status = 'delivered', updated_at = $1 WHERE platform_message_id = $2",
+        )
+        .bind(now_iso())
+        .bind(mid)
+        .execute(db)
+        .await;
+    }
+}
+
+/// Read receipt: stamp `read_at` on the customer's agent messages sent at or
+/// before the watermark (ms epoch). FB read events carry no message ids.
+pub async fn mark_read(db: &PgPool, platform: &str, platform_user_id: &str, watermark_ms: i64) {
+    let Some(iso) = chrono::DateTime::from_timestamp_millis(watermark_ms).map(|d| d.to_rfc3339())
+    else {
+        return;
+    };
+    let _ = sqlx::query(
+        "UPDATE messages SET read_at = $1
+         WHERE sender_type = 'agent' AND read_at IS NULL AND sent_at <= $2
+           AND conversation_id IN (
+             SELECT c.id FROM conversations c
+             JOIN customers cu ON cu.id = c.customer_id
+             WHERE cu.platform = $3 AND cu.platform_user_id = $4
+           )",
+    )
+    .bind(now_iso())
+    .bind(&iso)
+    .bind(platform)
+    .bind(platform_user_id)
+    .execute(db)
+    .await;
+}
+
 // ------------------------------------------------------------ follow / unfollow (LINE)
 
 /// Follow / opt-in lifecycle handling (CRD 2814-2826).

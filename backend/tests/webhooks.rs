@@ -491,6 +491,158 @@ async fn facebook_delivery_verifies_signature_and_ingests() {
     assert_eq!(platform, "facebook");
 }
 
+/// Build a signed `page` payload from a single `messaging` item and POST it.
+async fn post_fb_item(app: &TestApp, item: Value) -> (StatusCode, Value) {
+    let body = json!({
+        "object": "page",
+        "entry": [{ "id": "page-1", "time": 1700000000000i64, "messaging": [item] }]
+    })
+    .to_string();
+    let sig = fb_sig(&body);
+    let (status, text) =
+        send_raw(app, "POST", "/api/webhooks/facebook", &body, &[("x-hub-signature-256", sig.as_str())]).await;
+    (status, serde_json::from_str(&text).unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn facebook_echo_messages_are_skipped() {
+    let app = spawn_app().await;
+    let (status, resp) = post_fb_item(
+        &app,
+        json!({
+            "sender": {"id": "F-echo"},
+            "recipient": {"id": "page-1"},
+            "timestamp": 1700000000000i64,
+            "message": {"mid": "echo-mid-1", "is_echo": true, "text": "x"}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+
+    // No inbound message and no customer created for the echoed event.
+    let msgs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+    assert_eq!(msgs, 0, "page's own echoed message is not ingested");
+    let customers: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM customers WHERE platform_user_id = 'F-echo'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    assert_eq!(customers, 0);
+}
+
+#[tokio::test]
+async fn facebook_postback_is_ingested_as_text() {
+    let app = spawn_app().await;
+    let (status, resp) = post_fb_item(
+        &app,
+        json!({
+            "sender": {"id": "F-pb"},
+            "recipient": {"id": "page-1"},
+            "timestamp": 1700000000000i64,
+            "postback": {"title": "Get Started", "payload": "START"}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+
+    let (content, content_type): (String, String) = sqlx::query_as(
+        "SELECT m.content, m.content_type FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id
+         JOIN customers cu ON cu.id = c.customer_id
+         WHERE cu.platform = 'facebook' AND cu.platform_user_id = 'F-pb'",
+    )
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
+    assert_eq!(content, "Get Started");
+    assert_eq!(content_type, "text");
+}
+
+#[tokio::test]
+async fn facebook_delivery_marks_messages_delivered() {
+    let app = spawn_app().await;
+    let cust = app.seed_customer("facebook", "F-del", "Facebook User", None).await;
+    let conv = app.seed_conversation(cust, None, "active").await;
+    // Seed an outbound agent message with a known platform_message_id, initially
+    // not yet delivered, so the receipt has an observable effect.
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO messages (id, conversation_id, sender_type, content, content_type,
+                               platform_message_id, is_sent, sent_at, delivery_status, created_at)
+         VALUES ($1, $2, 'agent', 'hi', 'text', 'del-mid-1', 1, $3, 'sent', $3)",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(&conv)
+    .bind(&now)
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+
+    let (status, resp) = post_fb_item(
+        &app,
+        json!({
+            "sender": {"id": "F-del"},
+            "recipient": {"id": "page-1"},
+            "timestamp": 1700000000000i64,
+            "delivery": {"mids": ["del-mid-1"], "watermark": 1700000000000i64}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+
+    let delivery: String =
+        sqlx::query_scalar("SELECT delivery_status FROM messages WHERE platform_message_id = 'del-mid-1'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    assert_eq!(delivery, "delivered");
+}
+
+#[tokio::test]
+async fn facebook_read_stamps_read_at_via_watermark() {
+    let app = spawn_app().await;
+    let cust = app.seed_customer("facebook", "F-read", "Facebook User", None).await;
+    let conv = app.seed_conversation(cust, None, "active").await;
+    // An agent message sent before the watermark; read_at starts NULL.
+    let sent_at = "2023-11-14T22:13:20+00:00".to_string(); // 1700000000000 ms
+    let msg_id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO messages (id, conversation_id, sender_type, content, content_type,
+                               is_sent, sent_at, delivery_status, created_at)
+         VALUES ($1, $2, 'agent', 'hi', 'text', 1, $3, 'delivered', $3)",
+    )
+    .bind(&msg_id)
+    .bind(&conv)
+    .bind(&sent_at)
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+
+    // Watermark strictly after the message's sent_at.
+    let (status, resp) = post_fb_item(
+        &app,
+        json!({
+            "sender": {"id": "F-read"},
+            "recipient": {"id": "page-1"},
+            "timestamp": 1700000001000i64,
+            "read": {"watermark": 1700000001000i64}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+
+    let read_at: Option<String> =
+        sqlx::query_scalar("SELECT read_at FROM messages WHERE id = $1")
+            .bind(&msg_id)
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    assert!(read_at.is_some(), "agent message read_at stamped by the watermark");
+}
+
 #[tokio::test]
 async fn facebook_non_page_objects_are_accepted_but_not_processed() {
     let app = spawn_app().await;

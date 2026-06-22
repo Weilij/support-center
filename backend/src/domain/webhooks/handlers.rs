@@ -355,27 +355,59 @@ pub async fn facebook_webhook(
         for entry in entries.unwrap_or(&Vec::new()) {
             let Some(items) = entry.get("messaging").and_then(Value::as_array) else { continue };
             for item in items {
-                let Some(message) = item.get("message").filter(|m| m.is_object()) else {
-                    continue;
-                };
-                total += 1;
-                let normalized = parse::normalize_facebook(message);
-                let mid = message.get("mid").and_then(Value::as_str);
                 let sender = item["sender"]["id"].as_str().unwrap_or_default().to_string();
-                let result = ingest::ingest_message(
-                    &state,
-                    InboundMessage {
-                        platform: "facebook",
-                        platform_user_id: &sender,
-                        default_display_name: "Facebook User",
-                        platform_message_id: mid,
-                        normalized,
-                    },
-                )
-                .await;
-                if let Err(e) = result {
-                    failed += 1;
-                    last_error = Some(e);
+                if let Some(message) = item.get("message").filter(|m| m.is_object()) {
+                    // Skip the page's own echoed messages (would duplicate our outbound).
+                    if message.get("is_echo").and_then(Value::as_bool).unwrap_or(false) {
+                        continue;
+                    }
+                    total += 1;
+                    let normalized = parse::normalize_facebook(message);
+                    let mid = message.get("mid").and_then(Value::as_str);
+                    if let Err(e) = ingest::ingest_message(
+                        &state,
+                        InboundMessage {
+                            platform: "facebook",
+                            platform_user_id: &sender,
+                            default_display_name: "Facebook User",
+                            platform_message_id: mid,
+                            normalized,
+                        },
+                    )
+                    .await
+                    {
+                        failed += 1;
+                        last_error = Some(e);
+                    }
+                } else if let Some(postback) = item.get("postback") {
+                    total += 1;
+                    let normalized = parse::normalize_facebook_postback(postback);
+                    if let Err(e) = ingest::ingest_message(
+                        &state,
+                        InboundMessage {
+                            platform: "facebook",
+                            platform_user_id: &sender,
+                            default_display_name: "Facebook User",
+                            platform_message_id: None,
+                            normalized,
+                        },
+                    )
+                    .await
+                    {
+                        failed += 1;
+                        last_error = Some(e);
+                    }
+                } else if let Some(delivery) = item.get("delivery") {
+                    let mids: Vec<&str> = delivery
+                        .get("mids")
+                        .and_then(Value::as_array)
+                        .map(|a| a.iter().filter_map(Value::as_str).collect())
+                        .unwrap_or_default();
+                    ingest::mark_delivered(&state.db, &mids).await;
+                } else if let Some(read) = item.get("read") {
+                    if let Some(wm) = read.get("watermark").and_then(Value::as_i64) {
+                        ingest::mark_read(&state.db, "facebook", &sender, wm).await;
+                    }
                 }
             }
         }

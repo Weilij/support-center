@@ -234,6 +234,21 @@ pub fn normalize_facebook(message: &Value) -> Normalized {
     }
 }
 
+/// A postback (button / quick-reply click) as a normalized text message.
+pub fn normalize_facebook_postback(postback: &Value) -> Normalized {
+    let title = postback.get("title").and_then(Value::as_str).unwrap_or("");
+    let payload = postback.get("payload").and_then(Value::as_str).unwrap_or("");
+    let content = if !title.is_empty() { title } else { payload };
+    let mut metadata = Map::new();
+    metadata.insert("postback".into(), postback.clone());
+    Normalized {
+        content: if content.is_empty() { "[Postback]".into() } else { content.into() },
+        kind: "text".into(),
+        media: None,
+        metadata,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,5 +316,14 @@ mod tests {
 
         let n = normalize_facebook(&json!({ "mid": "f4" }));
         assert_eq!(n.content, "[Unknown message]");
+    }
+
+    #[test]
+    fn facebook_postback_uses_title_then_payload() {
+        let n = normalize_facebook_postback(&json!({ "title": "Get Started", "payload": "START" }));
+        assert_eq!(n.content, "Get Started");
+        assert_eq!(n.kind, "text");
+        let n = normalize_facebook_postback(&json!({ "payload": "ONLY_PAYLOAD" }));
+        assert_eq!(n.content, "ONLY_PAYLOAD");
     }
 }
