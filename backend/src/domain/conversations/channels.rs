@@ -140,6 +140,7 @@ impl OutboundGateway {
                 Some(tok) => fb_send(tok, recipient, items).await,
                 None => Err("Outbound delivery is not supported for platform 'instagram'".into()),
             },
+            "shopee" => Err("Outbound delivery is not supported for platform 'shopee'".into()),
             other => Err(format!("Outbound delivery is not supported for platform '{other}'")),
         }
     }
