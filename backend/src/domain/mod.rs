@@ -16,6 +16,7 @@ pub mod notifications;
 pub mod queue;
 pub mod reports;
 pub mod sessions;
+pub mod shopee;
 pub mod system;
 pub mod tags;
 pub mod teams;
