@@ -26,7 +26,6 @@ type LogRow = (i64, Option<i64>, Option<String>, Option<String>, Option<i64>, Op
 const TRIGGER_TYPES: &[&str] = &["welcome", "greeting", "keyword", "off_hours", "fallback"];
 const CONDITION_TYPES: &[&str] = &["exact", "contains", "regex", "message_type"];
 const ACTION_TYPES: &[&str] = &["text", "image", "flex"];
-const PLATFORMS: &[&str] = &["line", "facebook", "whatsapp"];
 
 #[derive(Deserialize)]
 pub struct ScopeQuery {
@@ -505,9 +504,9 @@ pub async fn list_logs(
         ),
     };
     if let Some(p) = &q.platform {
-        if !PLATFORMS.contains(&p.as_str()) {
+        if crate::platform::Platform::from_str(p).is_none() {
             return Err(AppError::BadRequest(format!(
-                "Invalid platform '{p}': must be one of {PLATFORMS:?}"
+                "Invalid platform '{p}': must be one of line, facebook, instagram, shopee"
             )));
         }
     }

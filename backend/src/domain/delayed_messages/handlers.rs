@@ -458,8 +458,8 @@ pub async fn legacy_send(
     if body.recipient_id.as_deref().unwrap_or("").is_empty() {
         problems.push("recipientId is required");
     }
-    if !["line", "facebook"].contains(&platform) {
-        problems.push("platform must be one of: line, facebook");
+    if crate::platform::Platform::from_str(platform).is_none() {
+        problems.push("platform must be one of: line, facebook, instagram, shopee");
     }
     if let Some(url) = body.media_url.as_deref().filter(|u| !u.is_empty()) {
         if !url.starts_with("https://") {
@@ -687,7 +687,7 @@ pub async fn legacy_reschedule(
         .and_then(|m| serde_json::from_str(m).ok())
         .unwrap_or_default();
     let platform = meta.get("platform").and_then(Value::as_str).unwrap_or("").to_string();
-    if !["line", "facebook"].contains(&platform.as_str()) {
+    if crate::platform::Platform::from_str(&platform).is_none() {
         return Err(AppError::BadRequest(
             "Message platform does not support rescheduling".into(),
         ));

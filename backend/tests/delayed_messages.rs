@@ -253,6 +253,31 @@ async fn legacy_send_validates_all_field_rules() {
 }
 
 #[tokio::test]
+async fn legacy_send_accepts_instagram_and_shopee_platforms() {
+    let app = spawn_app().await;
+    let (token, agent, conversation) = setup(&app).await;
+
+    // Instagram and Shopee are now valid platforms (previously rejected with
+    // "platform must be one of: line, facebook").
+    for platform in ["instagram", "shopee"] {
+        let mut body = legacy_send_body(&conversation, &agent, 30);
+        body["platform"] = json!(platform);
+        let (status, resp, _) = app
+            .request("POST", "/api/delayed-messages/send", Some(&token), Some(body))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{platform} should be accepted: {resp}");
+    }
+
+    // An unknown platform is still rejected.
+    let mut body = legacy_send_body(&conversation, &agent, 30);
+    body["platform"] = json!("telegram");
+    let (status, _, _) = app
+        .request("POST", "/api/delayed-messages/send", Some(&token), Some(body))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "telegram is still rejected");
+}
+
+#[tokio::test]
 async fn legacy_recall_enforces_marker_ownership_and_deadline() {
     let app = spawn_app().await;
     let (token, agent, conversation) = setup(&app).await;

@@ -506,3 +506,24 @@ async fn logs_listing_filters_and_validates() {
         .await;
     assert_eq!(body["data"]["items"][0]["ruleName"], "CA", "left-join keeps deleted rule name");
 }
+
+#[tokio::test]
+async fn logs_platform_filter_accepts_instagram_and_shopee_rejects_whatsapp() {
+    let app = spawn_app().await;
+    let (token, _) = operator(&app).await;
+
+    // Instagram and Shopee are now valid platforms: the filter is accepted.
+    for platform in ["instagram", "shopee"] {
+        let (status, _, _) = app
+            .request("GET", &format!("/api/auto-reply/logs?platform={platform}"), Some(&token), None)
+            .await;
+        assert_ne!(status, StatusCode::BAD_REQUEST, "{platform} must be an accepted platform filter");
+        assert_eq!(status, StatusCode::OK, "{platform} filter should list logs");
+    }
+
+    // whatsapp is no longer a canonical platform: the filter is now rejected.
+    let (status, _, _) = app
+        .request("GET", "/api/auto-reply/logs?platform=whatsapp", Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "whatsapp is no longer an accepted platform");
+}
