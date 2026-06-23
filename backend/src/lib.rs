@@ -7,5 +7,6 @@ pub mod envelope;
 pub mod error;
 pub mod locks;
 pub mod middleware;
+pub mod platform;
 pub mod realtime;
 pub mod state;
