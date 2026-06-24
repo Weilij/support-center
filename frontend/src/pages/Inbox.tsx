@@ -136,7 +136,7 @@ function ConvItem({
     >
       {/* Avatar + channel badge */}
       <div className="cs-conv-av">
-        <Avatar name={name} src={conv.avatarUrl as string | undefined} size="md" />
+        <Avatar name={name} src={conv.customerAvatarUrl as string | undefined} size="md" />
         <span className="cs-conv-chan">
           <ChanGlyph type={chanKey} size={18} />
         </span>
