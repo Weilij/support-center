@@ -1,6 +1,6 @@
 // Avatar — round avatar: a photo when `src` is given, else initials with a
 // hashed color from AV_COLORS. A broken/expired image falls back to initials.
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 export const AV_COLORS = [
   '#0284c7', '#0d9488', '#7c3aed', '#db2777',
@@ -22,6 +22,9 @@ export interface AvatarProps {
 
 export function Avatar({ name, src, size = 'md', ring = false }: AvatarProps) {
   const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    setFailed(false)
+  }, [src])
   const cls = `cs-av cs-av-${size}${ring ? ' cs-av-ring' : ''}`
   if (src && !failed) {
     return (
