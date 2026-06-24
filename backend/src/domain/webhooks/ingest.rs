@@ -270,13 +270,40 @@ pub async fn ingest_message(
     let lock = customer_lock(&format!("{}:{}", inbound.platform, inbound.platform_user_id));
     let _guard = lock.lock().await;
 
-    let customer = find_or_create_customer(
+    let mut customer = find_or_create_customer(
         &state.db,
         inbound.platform,
         inbound.platform_user_id,
         inbound.default_display_name,
     )
     .await?;
+
+    // Fill the real name + avatar while we still only have the placeholder
+    // (covers brand-new customers and old "<Platform> User" records). Best-effort:
+    // a failed/absent profile leaves the placeholder untouched (CRD 2818).
+    if is_placeholder_name(inbound.platform, customer.display_name.as_deref()) {
+        let gateway =
+            crate::domain::conversations::channels::OutboundGateway::from_config(&state.config);
+        let profile = gateway.fetch_profile(inbound.platform, inbound.platform_user_id).await;
+        if profile.display_name.is_some() || profile.avatar_url.is_some() {
+            let _ = sqlx::query(
+                "UPDATE customers
+                    SET display_name = COALESCE($1, display_name),
+                        avatar_url   = COALESCE($2, avatar_url),
+                        updated_at   = $3
+                  WHERE id = $4",
+            )
+            .bind(profile.display_name.as_deref())
+            .bind(profile.avatar_url.as_deref())
+            .bind(now_iso())
+            .bind(customer.id)
+            .execute(&state.db)
+            .await;
+            if let Some(name) = profile.display_name {
+                customer.display_name = Some(name);
+            }
+        }
+    }
     let team_id = match routed_team(&state.db, inbound.platform, inbound.platform_user_id).await? {
         Some(t) => Some(t),
         None => customer.source_team_id,

@@ -200,6 +200,24 @@ async fn line_text_message_creates_customer_conversation_and_message() {
 }
 
 #[tokio::test]
+async fn line_inbound_without_token_keeps_placeholder_name() {
+    // No LINE access token in the test harness, so the inbound profile fetch
+    // must no-op (no network call) and the placeholder "LINE User" is kept.
+    let app = spawn_app().await;
+    let body = line_text_event("U-noprofile", "mid-np", "hi there");
+    let (status, resp) = post_line(&app, &body, Some(&line_sig(&body))).await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+
+    let name: String = sqlx::query_scalar(
+        "SELECT display_name FROM customers WHERE platform = 'line' AND platform_user_id = 'U-noprofile'",
+    )
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
+    assert_eq!(name, "LINE User");
+}
+
+#[tokio::test]
 async fn line_redelivery_is_idempotent() {
     let app = spawn_app().await;
     let body = line_text_event("U-dup", "mid-dup", "once");
