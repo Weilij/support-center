@@ -618,15 +618,25 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
     };
     let now = now_iso();
 
-    // TODO(live-platform): fetch the end-user's profile (display name, avatar)
-    // from the platform; failure is tolerated and a default or previously
-    // captured name is used (CRD 2818).
+    // Capture the real profile (name + avatar) on follow when we still only have
+    // a placeholder; failure is tolerated and the previous/default name is used
+    // (CRD 2818).
     let existing = find_customer(&state.db, "line", user_id).await?;
-    let display_name = existing
-        .as_ref()
-        .and_then(|c| c.display_name.clone())
+    let stored = existing.as_ref().and_then(|c| c.display_name.clone());
+    let mut display_name = stored
+        .clone()
         .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "LINE User".into());
+        .unwrap_or_else(|| default_display_name("line").to_string());
+    let mut avatar_url: Option<String> = None;
+    if is_placeholder_name("line", stored.as_deref()) {
+        let gateway =
+            crate::domain::conversations::channels::OutboundGateway::from_config(&state.config);
+        let profile = gateway.fetch_profile("line", user_id).await;
+        if let Some(name) = profile.display_name {
+            display_name = name;
+        }
+        avatar_url = profile.avatar_url;
+    }
 
     // Tracking parameters that may carry a team-routing token (CRD 2817).
     let tracking_token = event["follow"]["trackingId"]
@@ -664,11 +674,13 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
     }
     let _ = sqlx::query(
         "UPDATE customers SET display_name = $1,
-                metadata = (COALESCE(metadata, '{}')::jsonb || $2::jsonb)::text,
-                updated_at = $3
-         WHERE id = $4",
+                avatar_url = COALESCE($2, avatar_url),
+                metadata = (COALESCE(metadata, '{}')::jsonb || $3::jsonb)::text,
+                updated_at = $4
+         WHERE id = $5",
     )
     .bind(&display_name)
+    .bind(avatar_url.as_deref())
     .bind(meta.to_string())
     .bind(&now)
     .bind(customer.id)
