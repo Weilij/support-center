@@ -68,6 +68,7 @@ interface ConvMeta {
   teamId?: number | null
   customerId?: number | null
   customerName?: string
+  avatarUrl?: string | null
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -135,7 +136,7 @@ function ConvItem({
     >
       {/* Avatar + channel badge */}
       <div className="cs-conv-av">
-        <Avatar name={name} size="md" />
+        <Avatar name={name} src={conv.avatarUrl as string | undefined} size="md" />
         <span className="cs-conv-chan">
           <ChanGlyph type={chanKey} size={18} />
         </span>
@@ -409,6 +410,7 @@ function Thread({
       teamId?: number | null
       customerId?: number | null
       customerName?: string
+      customerAvatarUrl?: string
     }>(`/api/conversations/${convId}`).then((resp) => {
       if (resp.success && resp.data) {
         onMetaLoaded({
@@ -417,6 +419,7 @@ function Thread({
           teamId: resp.data.teamId ?? null,
           customerId: resp.data.customerId ?? null,
           customerName: resp.data.customerName,
+          avatarUrl: resp.data.customerAvatarUrl ?? null,
         })
       }
     })
@@ -510,6 +513,7 @@ function Thread({
   const chanKey = channelOf(meta.platform ?? 'chat')
   const chanDef = CHANNELS[chanKey]
   const customerName = meta.customerName ?? ''
+  const customerAvatarUrl = meta.avatarUrl ?? undefined
 
   return (
     <div className="cs-thread">
@@ -529,7 +533,7 @@ function Thread({
         )}
         {/* Left: avatar + channel + name */}
         <div style={{ position: 'relative', flexShrink: 0 }}>
-          <Avatar name={customerName || '?'} size="md" />
+          <Avatar name={customerName || '?'} src={customerAvatarUrl} size="md" />
           <span style={{ position: 'absolute', bottom: -2, right: -4 }}>
             <ChanGlyph type={chanKey as 'chat' | 'line' | 'wa' | 'fb' | 'ig' | 'shopee'} size={17} />
           </span>
@@ -657,7 +661,7 @@ function Thread({
               style={{ opacity: msg.pending ? 0.55 : 1 }}
             >
               {!isMe && (
-                <Avatar name={customerName || '?'} size="sm" />
+                <Avatar name={customerName || '?'} src={customerAvatarUrl} size="sm" />
               )}
               <div>
                 <div className={`cs-bubble${isMe ? ' cs-bubble--me' : ''}`}>
@@ -1065,7 +1069,7 @@ function CustPanel({ meta, overlay, onClose }: { meta: ConvMeta; overlay?: boole
 
       {/* Top: avatar + name + ID */}
       <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
-        <Avatar name={name || '?'} size="lg" ring />
+        <Avatar name={name || '?'} src={customer?.avatar_url ?? meta.avatarUrl ?? undefined} size="lg" ring />
         <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--ink)' }}>{name}</div>
         {(customer?.id || platformUserId) && (
           <div style={{ fontSize: 12.5, color: 'var(--muted)' }}>
