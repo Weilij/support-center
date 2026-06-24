@@ -64,6 +64,25 @@ pub enum IngestOutcome {
     },
 }
 
+/// The default customer name used until a real profile is captured.
+pub fn default_display_name(platform: &str) -> &'static str {
+    match platform {
+        "line" => "LINE User",
+        "facebook" => "Facebook User",
+        "instagram" => "Instagram User",
+        _ => "Customer",
+    }
+}
+
+/// True when `name` is absent/blank or still this platform's placeholder — i.e.
+/// no real profile has been captured for the customer yet.
+pub fn is_placeholder_name(platform: &str, name: Option<&str>) -> bool {
+    match name.map(str::trim) {
+        None | Some("") => true,
+        Some(n) => n == default_display_name(platform),
+    }
+}
+
 pub struct InboundMessage<'a> {
     pub platform: &'a str,
     pub platform_user_id: &'a str,
@@ -754,6 +773,32 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
     // TODO(notifications): customer-followed notification trigger (CRD 2825).
 
     Ok(())
+}
+
+#[cfg(test)]
+mod placeholder_tests {
+    use super::{default_display_name, is_placeholder_name};
+
+    #[test]
+    fn defaults_per_platform() {
+        assert_eq!(default_display_name("line"), "LINE User");
+        assert_eq!(default_display_name("facebook"), "Facebook User");
+        assert_eq!(default_display_name("instagram"), "Instagram User");
+        assert_eq!(default_display_name("shopee"), "Customer");
+    }
+
+    #[test]
+    fn placeholder_detection() {
+        assert!(is_placeholder_name("line", None));
+        assert!(is_placeholder_name("line", Some("")));
+        assert!(is_placeholder_name("line", Some("   ")));
+        assert!(is_placeholder_name("line", Some("LINE User")));
+        assert!(is_placeholder_name("facebook", Some("Facebook User")));
+        assert!(!is_placeholder_name("line", Some("陳小明")));
+        // A real name that happens to match another platform's placeholder is
+        // still real for this platform.
+        assert!(!is_placeholder_name("line", Some("Facebook User")));
+    }
 }
 
 /// Unfollow / opt-out lifecycle handling (CRD 2828-2833).

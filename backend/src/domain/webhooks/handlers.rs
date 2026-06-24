@@ -199,7 +199,7 @@ pub async fn line_webhook(
                         InboundMessage {
                             platform: "line",
                             platform_user_id: &user_id,
-                            default_display_name: "LINE User",
+                            default_display_name: ingest::default_display_name("line"),
                             platform_message_id: mid,
                             normalized,
                         },
@@ -412,11 +412,8 @@ pub async fn facebook_webhook(
     let mut failed = 0usize;
     let mut last_error: Option<String> = None;
     if object == "page" || object == "instagram" {
-        let (platform, default_name) = if object == "instagram" {
-            ("instagram", "Instagram User")
-        } else {
-            ("facebook", "Facebook User")
-        };
+        let platform = if object == "instagram" { "instagram" } else { "facebook" };
+        let default_name = ingest::default_display_name(platform);
         for entry in entries.unwrap_or(&Vec::new()) {
             let Some(items) = entry.get("messaging").and_then(Value::as_array) else { continue };
             for item in items {
