@@ -248,6 +248,7 @@ pub fn conversation_view(r: &ConvRow, detail: bool) -> Value {
         "assignedTeam": assigned_team,
         // Flattened backward-compatible fields (CRD 674).
         "customerName": r.cust_id.map(|_| customer_name(r)),
+        "customerAvatarUrl": r.cust_avatar,
         "platform": r.cust_platform,
         "platformUserId": r.cust_platform_user_id,
         "lastMessage": last_message,
