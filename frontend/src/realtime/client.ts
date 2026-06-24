@@ -31,17 +31,43 @@ function route(event: string, payload: Record<string, unknown>) {
   handlers.get(event)?.forEach((fn) => fn(payload))
 }
 
+export interface IncomingMessage {
+  conversationId: string
+  id: string
+  content: string
+  senderType: string
+  senderId: string
+  timestamp: string
+  /// True when this is an agent message sent by the current user — the sender
+  /// already rendered it optimistically, so handlers skip it (avoids duplicate
+  /// bubbles and a wrong unread bump on one's own messages).
+  isOwn: boolean
+}
+
+// The server uses two `new_message` payload shapes: inbound (webhook) nests the
+// fields under `message`, while outbound (agent send) is flat with `messageId`.
+// Read both so every event renders with real content and the right sender side.
+export function readMessageEvent(payload: Record<string, unknown>): IncomingMessage {
+  const nested = (payload.message ?? {}) as Record<string, unknown>
+  const senderId = String(nested.senderId ?? payload.senderId ?? '')
+  const senderType = String(nested.senderType ?? payload.senderType ?? 'customer')
+  const me = session.identity()?.id
+  return {
+    conversationId: String(payload.conversationId ?? ''),
+    id: String(nested.id ?? payload.messageId ?? ''),
+    content: String(nested.content ?? payload.content ?? ''),
+    senderType,
+    senderId,
+    timestamp: String(nested.timestamp ?? payload.timestamp ?? ''),
+    isOwn: senderType === 'agent' && me != null && senderId === String(me),
+  }
+}
+
 // Built-in routing: pushed new-message events reconcile the conversation list.
 onEvent('new_message', (payload) => {
-  const conversationId = String(payload.conversationId ?? '')
-  const message = (payload.message ?? {}) as Record<string, unknown>
-  if (conversationId) {
-    applyIncomingMessage(
-      conversationId,
-      String(message.content ?? ''),
-      String(message.timestamp ?? new Date().toISOString()),
-    )
-  }
+  const m = readMessageEvent(payload)
+  if (!m.conversationId || m.isOwn) return
+  applyIncomingMessage(m.conversationId, m.content, m.timestamp || new Date().toISOString())
 })
 
 export function connectRealtime(): void {

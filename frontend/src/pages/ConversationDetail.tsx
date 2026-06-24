@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 
 import { get, post } from '../api/client'
-import { onEvent, subscribeConversation, unsubscribeConversation } from '../realtime/client'
+import { onEvent, readMessageEvent, subscribeConversation, unsubscribeConversation } from '../realtime/client'
 import { session } from '../auth/session'
 import { AssignDialog, type AssignMode } from '../components/ConversationAssign'
 import { conversationsStore } from '../stores/conversations'
@@ -126,16 +126,16 @@ export default function ConversationDetail() {
     subscribeConversation(id)
     // Realtime reconciliation: append pushed messages for this conversation.
     const off = onEvent('new_message', (payload) => {
-      if (String(payload.conversationId) !== id) return
-      const m = (payload.message ?? {}) as Record<string, unknown>
+      const m = readMessageEvent(payload)
+      if (m.conversationId !== id || m.isOwn) return
       setMessages((prev) =>
         prev.some((x) => x.id === m.id)
           ? prev
           : [...prev, {
-              id: String(m.id ?? crypto.randomUUID()),
-              content: String(m.content ?? ''),
-              senderType: String(m.senderType ?? 'customer'),
-              createdAt: String(m.timestamp ?? ''),
+              id: m.id || crypto.randomUUID(),
+              content: m.content,
+              senderType: m.senderType,
+              createdAt: m.timestamp,
             }],
       )
     })

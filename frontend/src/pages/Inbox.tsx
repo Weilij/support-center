@@ -9,7 +9,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 
 import { get, post } from '../api/client'
 import { recordPositions, animateMoves } from '../lib/flip'
-import { onEvent, subscribeConversation, unsubscribeConversation } from '../realtime/client'
+import { onEvent, readMessageEvent, subscribeConversation, unsubscribeConversation } from '../realtime/client'
 import { session } from '../auth/session'
 import {
   conversationsStore,
@@ -433,16 +433,16 @@ function Thread({
     })
     subscribeConversation(convId)
     const off = onEvent('new_message', (payload) => {
-      if (String(payload.conversationId) !== convId) return
-      const m = (payload.message ?? {}) as Record<string, unknown>
+      const m = readMessageEvent(payload)
+      if (m.conversationId !== convId || m.isOwn) return
       setMessages((prev) =>
         prev.some((x) => x.id === m.id)
           ? prev
           : [...prev, {
-              id: String(m.id ?? crypto.randomUUID()),
-              content: String(m.content ?? ''),
-              senderType: String(m.senderType ?? 'customer'),
-              createdAt: String(m.timestamp ?? ''),
+              id: m.id || crypto.randomUUID(),
+              content: m.content,
+              senderType: m.senderType,
+              createdAt: m.timestamp,
             }],
       )
     })
