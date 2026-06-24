@@ -1,7 +1,6 @@
-// Avatar — round initials avatar, hashed color from AV_COLORS palette.
-// Ported from handoff assets/components.jsx Avatar + avColor.
-// Prop API: { name: string; size?: 'sm'|'md'|'lg'; ring?: boolean }
-// Sizes: sm=30px, md=38px, lg=46px via .cs-av .cs-av-{sm|md|lg} classes.
+// Avatar — round avatar: a photo when `src` is given, else initials with a
+// hashed color from AV_COLORS. A broken/expired image falls back to initials.
+import { useState } from 'react'
 
 export const AV_COLORS = [
   '#0284c7', '#0d9488', '#7c3aed', '#db2777',
@@ -16,18 +15,28 @@ export function avColor(name: string): string {
 
 export interface AvatarProps {
   name: string
+  src?: string | null
   size?: 'sm' | 'md' | 'lg'
   ring?: boolean
 }
 
-export function Avatar({ name, size = 'md', ring = false }: AvatarProps) {
-  const initials = name.slice(-2)
+export function Avatar({ name, src, size = 'md', ring = false }: AvatarProps) {
+  const [failed, setFailed] = useState(false)
+  const cls = `cs-av cs-av-${size}${ring ? ' cs-av-ring' : ''}`
+  if (src && !failed) {
+    return (
+      <img
+        className={cls}
+        src={src}
+        alt={name}
+        onError={() => setFailed(true)}
+        style={{ objectFit: 'cover' }}
+      />
+    )
+  }
   return (
-    <span
-      className={`cs-av cs-av-${size}${ring ? ' cs-av-ring' : ''}`}
-      style={{ background: avColor(name) }}
-    >
-      {initials}
+    <span className={cls} style={{ background: avColor(name) }}>
+      {name.slice(-2)}
     </span>
   )
 }
