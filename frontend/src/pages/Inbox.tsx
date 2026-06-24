@@ -9,7 +9,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 
 import { get, post } from '../api/client'
 import { recordPositions, animateMoves } from '../lib/flip'
-import { onEvent, subscribeConversation } from '../realtime/client'
+import { onEvent, subscribeConversation, unsubscribeConversation } from '../realtime/client'
 import { session } from '../auth/session'
 import {
   conversationsStore,
@@ -432,7 +432,7 @@ function Thread({
       }
     })
     subscribeConversation(convId)
-    return onEvent('new_message', (payload) => {
+    const off = onEvent('new_message', (payload) => {
       if (String(payload.conversationId) !== convId) return
       const m = (payload.message ?? {}) as Record<string, unknown>
       setMessages((prev) =>
@@ -446,6 +446,10 @@ function Thread({
             }],
       )
     })
+    return () => {
+      off()
+      unsubscribeConversation(convId)
+    }
   }, [convId]) // onMetaLoaded intentionally omitted — stable callback ref
 
   useEffect(() => {
@@ -465,7 +469,7 @@ function Thread({
     }])
     const resp = await post<{ message?: Message; id?: string }>(
       `/api/conversations/${convId}/messages`,
-      { content: text },
+      { content: text, senderId: who?.id },
     )
     if (resp.success) {
       const confirmed = resp.data?.message ?? { id: resp.data?.id ?? tempId, content: text }
@@ -724,6 +728,9 @@ function Thread({
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
+                // Ignore Enter while an IME (e.g. Chinese) is composing — the
+                // candidate-confirming Enter must not also send (avoids double-send).
+                if (e.nativeEvent.isComposing) return
                 if (slashOpen && slashMatches.length > 0) {
                   if (e.key === 'ArrowDown') { e.preventDefault(); setSlashIndex((i) => (i + 1) % slashMatches.length); return }
                   if (e.key === 'ArrowUp') { e.preventDefault(); setSlashIndex((i) => (i - 1 + slashMatches.length) % slashMatches.length); return }

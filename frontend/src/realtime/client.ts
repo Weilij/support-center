@@ -14,6 +14,12 @@ let socket: WebSocket | null = null
 let backoff = 1000
 let closedByUs = false
 const handlers = new Map<string, Set<Handler>>()
+// Conversations the UI wants live updates for. Subscribe frames sent before the
+// socket reaches OPEN are dropped (sendFrame has no queue), so we remember the
+// desired set and (re)send it on every successful handshake — this fixes both
+// the initial-load race (Inbox mounts and subscribes while the WS is still
+// CONNECTING) and re-subscription after a reconnect.
+const desiredConversations = new Set<string>()
 
 export function onEvent(event: string, fn: Handler): () => void {
   if (!handlers.has(event)) handlers.set(event, new Set())
@@ -51,11 +57,20 @@ export function connectRealtime(): void {
 
   ws.onopen = () => {
     backoff = 1000 // reset after a successful handshake
+    // Flush every desired subscription now that the socket is OPEN — covers the
+    // initial-load race and re-establishes subscriptions after a reconnect.
+    desiredConversations.forEach((id) => sendFrame({ type: 'subscribe', conversationId: id }))
   }
   ws.onmessage = (raw) => {
     try {
-      const frame = JSON.parse(String(raw.data)) as { type?: string } & Record<string, unknown>
-      if (frame.type) route(frame.type, frame)
+      const frame = JSON.parse(String(raw.data)) as {
+        type?: string
+        payload?: Record<string, unknown>
+      } & Record<string, unknown>
+      // The server wraps events as { type, payload, timestamp }. Hand the inner
+      // payload to handlers — they read fields like conversationId/message off
+      // it directly. Raw frames without a payload wrapper fall back to the frame.
+      if (frame.type) route(frame.type, (frame.payload ?? frame) as Record<string, unknown>)
     } catch {
       /* non-JSON frames are ignored */
     }
@@ -86,7 +101,14 @@ export function sendFrame(frame: Record<string, unknown>): boolean {
 }
 
 export function subscribeConversation(conversationId: string) {
+  // Remember the intent so a reconnect (or a not-yet-OPEN socket) re-sends it.
+  desiredConversations.add(conversationId)
   sendFrame({ type: 'subscribe', conversationId })
+}
+
+export function unsubscribeConversation(conversationId: string) {
+  desiredConversations.delete(conversationId)
+  sendFrame({ type: 'unsubscribe', conversationId })
 }
 
 // Auth changes force a fresh handshake (CRD §8.1 renew-credential behavior).

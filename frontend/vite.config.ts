@@ -6,7 +6,8 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/api': { target: 'http://localhost:3000', changeOrigin: true },
+      // ws:true so the realtime WebSocket (/api/websocket/connect) is proxied in dev.
+      '/api': { target: 'http://localhost:3000', changeOrigin: true, ws: true },
       '/phase2-auth': { target: 'http://localhost:3000', changeOrigin: true },
       '/installer': {
         target: 'http://localhost:8976',
