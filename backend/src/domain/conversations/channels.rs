@@ -98,6 +98,70 @@ async fn fb_send(token: &str, recipient: &str, items: &[OutboundItem]) -> Result
     Ok(last_id)
 }
 
+/// End-user profile from a platform lookup (best-effort; both fields optional).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Profile {
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+/// Trimmed non-empty string from a JSON field, else `None`.
+fn non_empty(v: Option<&serde_json::Value>) -> Option<String> {
+    v.and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Parse a LINE `GET /v2/bot/profile/{userId}` body (pure — unit-tested).
+pub fn parse_line_profile(v: &serde_json::Value) -> Profile {
+    Profile {
+        display_name: non_empty(v.get("displayName")),
+        avatar_url: non_empty(v.get("pictureUrl")),
+    }
+}
+
+/// Parse a Meta Graph `?fields=name,username,profile_pic` body (pure — unit-tested).
+pub fn parse_meta_profile(v: &serde_json::Value) -> Profile {
+    Profile {
+        display_name: non_empty(v.get("name")).or_else(|| non_empty(v.get("username"))),
+        avatar_url: non_empty(v.get("profile_pic")),
+    }
+}
+
+async fn line_profile(token: &str, user_id: &str) -> Profile {
+    let url = format!("https://api.line.me/v2/bot/profile/{user_id}");
+    match http_client()
+        .get(&url)
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            parse_line_profile(&resp.json::<serde_json::Value>().await.unwrap_or_else(|_| json!({})))
+        }
+        _ => Profile::default(),
+    }
+}
+
+async fn meta_profile(token: &str, user_id: &str) -> Profile {
+    let url = format!(
+        "https://graph.facebook.com/v21.0/{user_id}?fields=name,username,profile_pic&access_token={token}"
+    );
+    match http_client()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            parse_meta_profile(&resp.json::<serde_json::Value>().await.unwrap_or_else(|_| json!({})))
+        }
+        _ => Profile::default(),
+    }
+}
+
 /// Outbound delivery gateway holding the configured per-platform tokens. With no
 /// token for a platform, `line` preserves the documented stub success and other
 /// platforms report "not supported" (so dev/tests make no network calls).
@@ -142,6 +206,30 @@ impl OutboundGateway {
             },
             "shopee" => Err("Outbound delivery is not supported for platform 'shopee'".into()),
             other => Err(format!("Outbound delivery is not supported for platform '{other}'")),
+        }
+    }
+
+    /// Best-effort end-user profile lookup (name + avatar). Returns an empty
+    /// `Profile` for an unknown platform, a missing token, an empty user id, or
+    /// any network/parse failure — never errors, never panics.
+    pub async fn fetch_profile(&self, platform: &str, user_id: &str) -> Profile {
+        if user_id.is_empty() {
+            return Profile::default();
+        }
+        match platform {
+            "line" => match &self.line {
+                Some(t) => line_profile(t, user_id).await,
+                None => Profile::default(),
+            },
+            "facebook" => match &self.facebook {
+                Some(t) => meta_profile(t, user_id).await,
+                None => Profile::default(),
+            },
+            "instagram" => match &self.instagram {
+                Some(t) => meta_profile(t, user_id).await,
+                None => Profile::default(),
+            },
+            _ => Profile::default(),
         }
     }
 }
@@ -273,5 +361,42 @@ mod gateway_tests {
         // Dedicated IG token wins.
         c.instagram_access_token = Some("IG".into());
         assert!(OutboundGateway::from_config(&c).instagram.is_some());
+    }
+
+    #[test]
+    fn parse_line_profile_extracts_name_and_avatar() {
+        let v = serde_json::json!({ "displayName": "陳小明", "pictureUrl": "https://p/x.jpg" });
+        let p = parse_line_profile(&v);
+        assert_eq!(p.display_name.as_deref(), Some("陳小明"));
+        assert_eq!(p.avatar_url.as_deref(), Some("https://p/x.jpg"));
+    }
+
+    #[test]
+    fn parse_line_profile_empty_fields_are_none() {
+        let v = serde_json::json!({ "displayName": "", "pictureUrl": "  " });
+        let p = parse_line_profile(&v);
+        assert_eq!(p, Profile::default());
+    }
+
+    #[test]
+    fn parse_meta_profile_prefers_name_then_username() {
+        let with_name = serde_json::json!({ "name": "Jane", "username": "jane_ig", "profile_pic": "https://p/a.jpg" });
+        assert_eq!(parse_meta_profile(&with_name).display_name.as_deref(), Some("Jane"));
+        let only_user = serde_json::json!({ "username": "jane_ig" });
+        assert_eq!(parse_meta_profile(&only_user).display_name.as_deref(), Some("jane_ig"));
+        assert_eq!(parse_meta_profile(&with_name).avatar_url.as_deref(), Some("https://p/a.jpg"));
+    }
+
+    #[tokio::test]
+    async fn fetch_profile_without_token_is_empty() {
+        let mut c = crate::config::test_config();
+        c.line_channel_access_token = None;
+        c.facebook_page_access_token = None;
+        c.instagram_access_token = None;
+        let g = OutboundGateway::from_config(&c);
+        assert_eq!(g.fetch_profile("line", "U1").await, Profile::default());
+        assert_eq!(g.fetch_profile("facebook", "P1").await, Profile::default());
+        assert_eq!(g.fetch_profile("instagram", "I1").await, Profile::default());
+        assert_eq!(g.fetch_profile("shopee", "S1").await, Profile::default());
     }
 }
