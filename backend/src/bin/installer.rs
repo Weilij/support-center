@@ -13,13 +13,17 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, Mutex};
+use tokio::process::Command;
 
 #[derive(Clone)]
 struct Installer {
     runs: Arc<Mutex<HashMap<String, Value>>>,
     cloud: CloudflareApi,
     oauth: CloudflareOAuth,
+    artifact_root: Option<PathBuf>,
+    wrangler_bin: String,
 }
 
 impl Default for Installer {
@@ -28,6 +32,10 @@ impl Default for Installer {
             runs: Arc::new(Mutex::new(HashMap::new())),
             cloud: CloudflareApi::from_env(),
             oauth: CloudflareOAuth::from_env(),
+            artifact_root: std::env::var("FRONTEND_ARTIFACT_ROOT")
+                .ok()
+                .map(PathBuf::from),
+            wrangler_bin: std::env::var("WRANGLER_BIN").unwrap_or_else(|_| "wrangler".into()),
         }
     }
 }
@@ -39,6 +47,8 @@ impl Installer {
             runs: Arc::new(Mutex::new(HashMap::new())),
             cloud: CloudflareApi::new(api_base),
             oauth: CloudflareOAuth::from_env(),
+            artifact_root: None,
+            wrangler_bin: "wrangler".into(),
         }
     }
 
@@ -53,6 +63,23 @@ impl Installer {
             runs: Arc::new(Mutex::new(HashMap::new())),
             cloud: CloudflareApi::new(api_base),
             oauth: CloudflareOAuth::new(oauth_base, oauth_client_id, oauth_client_secret),
+            artifact_root: None,
+            wrangler_bin: "wrangler".into(),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_cloudflare_api_and_artifacts(
+        api_base: String,
+        artifact_root: PathBuf,
+        wrangler_bin: String,
+    ) -> Self {
+        Self {
+            runs: Arc::new(Mutex::new(HashMap::new())),
+            cloud: CloudflareApi::new(api_base),
+            oauth: CloudflareOAuth::from_env(),
+            artifact_root: Some(artifact_root),
+            wrangler_bin,
         }
     }
 }
@@ -101,14 +128,20 @@ struct ProvisionConfig {
     custom_domain: Option<String>,
     zone_id: Option<String>,
     frontend_artifact: Option<FrontendArtifact>,
+    frontend_artifact_dir: Option<PathBuf>,
+    wrangler_bin: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct FrontendArtifact {
-    manifest: HashMap<String, String>,
+    manifest: Option<HashMap<String, String>>,
     #[serde(rename = "buildOutputDir")]
     build_output_dir: Option<String>,
+    #[serde(rename = "localBuildOutputDir")]
+    local_build_output_dir: Option<String>,
     branch: Option<String>,
+    #[serde(default, rename = "deployWithWrangler")]
+    deploy_with_wrangler: bool,
     #[serde(rename = "commitHash")]
     commit_hash: Option<String>,
     #[serde(rename = "commitMessage")]
@@ -496,12 +529,27 @@ impl CloudflareApi {
                     )
                     .await?;
                 let deployment = match &config.frontend_artifact {
-                    Some(artifact) => Some(
+                    Some(artifact) if artifact.manifest.is_some() => Some(
                         self.create_pages_deployment(account, &name, creds, artifact)
                             .await?,
                     ),
                     None => None,
+                    _ => None,
                 };
+                let wrangler_deployment =
+                    match (&config.frontend_artifact, &config.frontend_artifact_dir) {
+                        (Some(artifact), Some(dir)) if artifact.deploy_with_wrangler => Some(
+                            run_wrangler_pages_deploy(
+                                &config.wrangler_bin,
+                                dir,
+                                &name,
+                                artifact.branch.as_deref().unwrap_or("main"),
+                                creds,
+                            )
+                            .await?,
+                        ),
+                        _ => None,
+                    };
                 ProvisionedResource {
                     step,
                     kind: "pages_project",
@@ -509,6 +557,7 @@ impl CloudflareApi {
                     result: json!({
                         "project": project_result,
                         "deployment": deployment,
+                        "wranglerDeployment": wrangler_deployment,
                         "artifact": config.frontend_artifact,
                     }),
                 }
@@ -525,9 +574,12 @@ impl CloudflareApi {
         creds: &CloudCredentials,
         artifact: &FrontendArtifact,
     ) -> Result<Value, String> {
+        let manifest = artifact.manifest.as_ref().ok_or_else(|| {
+            "frontendArtifact.manifest is required for API deployment".to_string()
+        })?;
         let mut fields = vec![(
             "manifest",
-            serde_json::to_string(&artifact.manifest)
+            serde_json::to_string(manifest)
                 .map_err(|e| format!("Invalid frontend artifact manifest: {e}"))?,
         )];
         fields.push((
@@ -857,23 +909,40 @@ fn valid_custom_domain(domain: &str) -> bool {
 }
 
 fn validate_frontend_artifact(artifact: &FrontendArtifact) -> Result<(), String> {
-    if artifact.manifest.is_empty() {
-        return Err("frontendArtifact.manifest must not be empty".into());
+    if artifact.manifest.is_none() && !artifact.deploy_with_wrangler {
+        return Err("frontendArtifact requires manifest or deployWithWrangler".into());
     }
-    if artifact.manifest.len() > 20_000 {
-        return Err("frontendArtifact.manifest exceeds Cloudflare Pages 20,000 file limit".into());
-    }
-    for (path, hash) in &artifact.manifest {
-        if !valid_manifest_path(path) {
-            return Err("frontendArtifact.manifest contains an invalid asset path".into());
+    if let Some(manifest) = artifact.manifest.as_ref() {
+        if manifest.is_empty() {
+            return Err("frontendArtifact.manifest must not be empty".into());
         }
-        if hash.trim().is_empty() {
-            return Err("frontendArtifact.manifest contains an empty content hash".into());
+        if manifest.len() > 20_000 {
+            return Err(
+                "frontendArtifact.manifest exceeds Cloudflare Pages 20,000 file limit".into(),
+            );
+        }
+        for (path, hash) in manifest {
+            if !valid_manifest_path(path) {
+                return Err("frontendArtifact.manifest contains an invalid asset path".into());
+            }
+            if hash.trim().is_empty() {
+                return Err("frontendArtifact.manifest contains an empty content hash".into());
+            }
         }
     }
     if let Some(dir) = artifact.build_output_dir.as_ref() {
         if dir.trim().is_empty() || dir.starts_with('/') || dir.contains("..") {
             return Err("frontendArtifact.buildOutputDir is invalid".into());
+        }
+    }
+    if artifact.deploy_with_wrangler {
+        let Some(dir) = artifact.local_build_output_dir.as_deref() else {
+            return Err(
+                "frontendArtifact.localBuildOutputDir is required for Wrangler deploy".into(),
+            );
+        };
+        if dir.trim().is_empty() || dir.starts_with('/') || !valid_manifest_path(dir) {
+            return Err("frontendArtifact.localBuildOutputDir is invalid".into());
         }
     }
     Ok(())
@@ -886,6 +955,71 @@ fn valid_manifest_path(path: &str) -> bool {
         && path
             .split('/')
             .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+fn resolve_artifact_dir(root: &FsPath, requested: &str) -> Result<PathBuf, String> {
+    if requested.trim().is_empty()
+        || requested.starts_with('/')
+        || requested.contains('\\')
+        || !valid_manifest_path(requested)
+    {
+        return Err("frontendArtifact.localBuildOutputDir is invalid".into());
+    }
+    let root = root
+        .canonicalize()
+        .map_err(|e| format!("FRONTEND_ARTIFACT_ROOT is not accessible: {e}"))?;
+    let candidate = root
+        .join(requested)
+        .canonicalize()
+        .map_err(|e| format!("frontendArtifact.localBuildOutputDir is not accessible: {e}"))?;
+    if !candidate.starts_with(&root) {
+        return Err("frontendArtifact.localBuildOutputDir escapes FRONTEND_ARTIFACT_ROOT".into());
+    }
+    if !candidate.is_dir() {
+        return Err("frontendArtifact.localBuildOutputDir must be a directory".into());
+    }
+    Ok(candidate)
+}
+
+async fn run_wrangler_pages_deploy(
+    wrangler_bin: &str,
+    artifact_dir: &FsPath,
+    project_name: &str,
+    branch: &str,
+    creds: &CloudCredentials,
+) -> Result<Value, String> {
+    let output = Command::new(wrangler_bin)
+        .arg("pages")
+        .arg("deploy")
+        .arg(artifact_dir)
+        .arg("--project-name")
+        .arg(project_name)
+        .arg("--branch")
+        .arg(branch)
+        .env("CLOUDFLARE_API_TOKEN", &creds.api_token)
+        .env("CLOUDFLARE_ACCOUNT_ID", &creds.account_id)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run wrangler pages deploy: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !output.status.success() {
+        return Err(format!(
+            "wrangler pages deploy failed with status {:?}: {}",
+            output.status.code(),
+            if stderr.is_empty() { stdout } else { stderr }
+        ));
+    }
+    Ok(json!({
+        "method": "wrangler",
+        "status": "completed",
+        "projectName": project_name,
+        "branch": branch,
+        "artifactDir": artifact_dir.display().to_string(),
+        "stdout": stdout,
+        "stderr": stderr,
+    }))
 }
 
 fn is_cancelled(runs: &Arc<Mutex<HashMap<String, Value>>>, id: &str) -> bool {
@@ -966,6 +1100,27 @@ async fn deployment_start(
             return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
         }
     }
+    let frontend_artifact_dir = match body.frontend_artifact.as_ref() {
+        Some(artifact) if artifact.deploy_with_wrangler => {
+            let Some(root) = installer.artifact_root.as_ref() else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "FRONTEND_ARTIFACT_ROOT must be configured for deployWithWrangler",
+                    })),
+                )
+                    .into_response();
+            };
+            let requested = artifact.local_build_output_dir.as_deref().unwrap_or("");
+            match resolve_artifact_dir(root, requested) {
+                Ok(dir) => Some(dir),
+                Err(error) => {
+                    return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response()
+                }
+            }
+        }
+        _ => None,
+    };
     let creds = CloudCredentials {
         api_token: token,
         account_id: account,
@@ -974,6 +1129,8 @@ async fn deployment_start(
         custom_domain,
         zone_id,
         frontend_artifact: body.frontend_artifact,
+        frontend_artifact_dir,
+        wrangler_bin: installer.wrangler_bin.clone(),
     };
     let run_id = uuid::Uuid::new_v4().to_string();
     installer.runs.lock().unwrap().insert(
@@ -1735,6 +1892,108 @@ mod tests {
         assert_eq!(
             body["error"],
             "frontendArtifact.manifest contains an invalid asset path"
+        );
+
+        let (status, body) = send(
+            &app,
+            "POST",
+            "/deployment/start",
+            Some(json!({
+                "projectName": "bad-artifact",
+                "apiToken": "tok_live",
+                "accountId": "acc_123",
+                "frontendArtifact": {
+                    "deployWithWrangler": true,
+                    "localBuildOutputDir": "dist"
+                }
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"],
+            "FRONTEND_ARTIFACT_ROOT must be configured for deployWithWrangler"
+        );
+    }
+
+    #[tokio::test]
+    async fn provisioning_runs_wrangler_pages_deploy_for_local_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        let dist = dir.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        std::fs::write(dist.join("index.html"), "<h1>MCSS</h1>").unwrap();
+
+        let (base, calls) = mock_cloudflare().await;
+        let app = router(Installer::with_cloudflare_api_and_artifacts(
+            base,
+            dir.path().to_path_buf(),
+            "/bin/echo".into(),
+        ));
+        let (status, body) = send(
+            &app,
+            "POST",
+            "/deployment/start",
+            Some(json!({
+                "projectName": "wrangler-tenant",
+                "apiToken": "tok_live",
+                "accountId": "acc_123",
+                "frontendArtifact": {
+                    "deployWithWrangler": true,
+                    "localBuildOutputDir": "dist",
+                    "branch": "production"
+                }
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let id = body["deploymentId"].as_str().unwrap().to_string();
+
+        let mut last = Value::Null;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let (status, body) = send(&app, "GET", &format!("/deployment/status/{id}"), None).await;
+            assert_eq!(status, StatusCode::OK);
+            last = body;
+            if last["status"] == "completed" {
+                break;
+            }
+        }
+        assert_eq!(last["status"], "completed", "{last}");
+        let pages = last["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|resource| resource["kind"] == "pages_project")
+            .expect("pages resource");
+        assert!(pages["result"]["deployment"].is_null());
+        assert_eq!(pages["result"]["wranglerDeployment"]["method"], "wrangler");
+        assert_eq!(
+            pages["result"]["wranglerDeployment"]["projectName"],
+            "wrangler-tenant-frontend"
+        );
+        assert_eq!(
+            pages["result"]["wranglerDeployment"]["branch"],
+            "production"
+        );
+        let stdout = pages["result"]["wranglerDeployment"]["stdout"]
+            .as_str()
+            .unwrap();
+        assert!(stdout.contains("pages deploy"), "{stdout}");
+        assert!(
+            stdout.contains("--project-name wrangler-tenant-frontend"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("--branch production"), "{stdout}");
+
+        let calls = calls.lock().unwrap().clone();
+        let paths: Vec<&str> = calls.iter().filter_map(|c| c["path"].as_str()).collect();
+        assert!(
+            paths.contains(&"/client/v4/accounts/acc_123/pages/projects"),
+            "{paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|path| path.ends_with("/deployments")),
+            "{paths:?}"
         );
     }
 

@@ -92,10 +92,10 @@ Remaining external/infrastructure boundaries:
       active-run cancellation, and deployment index listing are wired.
 - [x] Installer optional Worker route provisioning: custom-domain runs create
       Cloudflare Worker routes for the deployed backend script.
-- [~] Installer production artifact upload and Pages deployment assets: Pages
-      project provisioning can now submit a manifest-backed production
-      deployment request with build metadata; binary asset upload/session
-      orchestration remains the final gap.
+- [x] Installer production artifact upload and Pages deployment assets: Pages
+      project provisioning can submit manifest-backed deployment requests with
+      build metadata, or execute server-side Wrangler direct uploads from a
+      configured artifact root for binary asset deployment.
 - [x] Multi-instance customer-channel realtime fan-out: customer conversation
       events relay across backend instances through Postgres event/ack tables.
 - [x] Multi-instance routed broadcaster fan-out: queued broadcaster events relay
