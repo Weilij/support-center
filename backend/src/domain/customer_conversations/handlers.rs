@@ -530,7 +530,8 @@ pub async fn send_reply(
         );
         // The conversation's isolated customer channel (the /api/customer-ws
         // subscribers) receives the same event as a raw frame (CRD 1164).
-        state.realtime.customers.broadcast(
+        crate::realtime::customer::broadcast_customer_event(
+            &state,
             &conversation_id,
             &json!({
                 "type": "new_message",
@@ -539,7 +540,8 @@ pub async fn send_reply(
                 "message": message,
                 "timestamp": now,
             }),
-        );
+        )
+        .await;
         // Coalesced latest-message cache refresh (CRD 4149-4153 eventual
         // freshness): the conversation gained a new most-recent message.
         crate::realtime::latest::schedule_refresh(state.clone(), conversation_id.clone());

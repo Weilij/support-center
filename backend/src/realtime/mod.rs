@@ -217,6 +217,7 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     // Background queue-processing loops (CRD 3692): fast loop for high/urgent
     // events, slower loop for normal/low events.
     broadcaster::spawn_loops(state.clone());
+    customer::spawn_remote_fanout_loop(state.clone());
 
     gateway
         .merge(ops)

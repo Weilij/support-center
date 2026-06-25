@@ -194,6 +194,7 @@ pub enum RegisterError {
 }
 
 pub struct RealtimeHub {
+    instance_id: String,
     inner: Mutex<HubInner>,
     config: Mutex<GatewayConfig>,
     /// Routed-delivery queues, reachability registry & distribution statistics
@@ -225,6 +226,7 @@ pub fn frame(event: &str, payload: Value) -> String {
 impl RealtimeHub {
     pub fn new() -> Self {
         Self {
+            instance_id: uuid::Uuid::new_v4().to_string(),
             inner: Mutex::new(HubInner::default()),
             config: Mutex::new(GatewayConfig::default()),
             queue: super::broadcaster::BroadcastQueue::default(),
@@ -234,6 +236,10 @@ impl RealtimeHub {
             collab: super::collaboration::CollabState::default(),
             started: Instant::now(),
         }
+    }
+
+    pub fn instance_id(&self) -> &str {
+        &self.instance_id
     }
 
     pub fn uptime_secs(&self) -> u64 {

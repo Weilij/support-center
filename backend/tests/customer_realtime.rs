@@ -10,7 +10,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use common::ws::{connect_rejected, mint, serve, wait_for_event, ws_connect, Ws};
-use common::{spawn_app, TestApp};
+use common::{spawn_app, spawn_peer_app, TestApp};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -238,6 +238,43 @@ async fn notify_message_broadcasts_and_reports_diagnostics() {
         .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body["success"], json!(false));
+}
+
+#[tokio::test]
+async fn notify_message_reaches_customer_channel_on_peer_instance() {
+    let app_a = spawn_app().await;
+    let s = seed(&app_a).await;
+    let app_b = spawn_peer_app(&app_a);
+    let addr_b = serve(&app_b).await;
+
+    let mut peer_viewer = ws_connect(addr_b, &fast_ws(&s.conv, "peer-viewer"))
+        .await
+        .unwrap();
+
+    let (status, body, _) = app_a
+        .request(
+            "POST",
+            "/api/customer-channel/notify-message",
+            None,
+            Some(json!({
+                "conversationId": s.conv,
+                "message": {
+                    "id": "m-peer-1",
+                    "content": "hello from another instance",
+                    "messageType": "text",
+                    "senderType": "agent",
+                    "senderId": "agent-a",
+                },
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["success"], json!(true));
+    assert_eq!(body["debug"]["totalConnections"], json!(0));
+
+    let ev = wait_for_event(&mut peer_viewer, "new_message").await;
+    assert_eq!(ev["data"]["content"], "hello from another instance");
+    assert_eq!(ev["message"]["id"], "m-peer-1");
 }
 
 #[tokio::test]

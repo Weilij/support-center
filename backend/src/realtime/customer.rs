@@ -22,12 +22,14 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::Mutex;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::mpsc;
 
 use crate::domain::conversations::channels::{OutboundGateway, OutboundItem, BATCH_CAP};
 use crate::state::AppState;
+
+const REMOTE_FANOUT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+const REMOTE_FANOUT_BATCH: i64 = 100;
 
 // ------------------------------------------------------------ channel registry
 
@@ -125,6 +127,113 @@ impl CustomerChannels {
         users.sort();
         (channel.len(), users)
     }
+}
+
+/// Publish a raw customer-channel event locally and to the cross-instance
+/// relay. The database write is best-effort so a fan-out storage hiccup cannot
+/// block the request path that already delivered to this process.
+async fn publish_customer_event(state: &AppState, conversation_id: &str, event: &Value) {
+    let event_id = uuid::Uuid::new_v4().to_string();
+    if let Err(err) = sqlx::query(
+        "INSERT INTO realtime_customer_fanout_events
+         (id, source_instance, conversation_id, event, created_at)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(event_id)
+    .bind(state.realtime.instance_id())
+    .bind(conversation_id)
+    .bind(event.to_string())
+    .bind(crate::db::now_iso())
+    .execute(&state.db)
+    .await
+    {
+        tracing::warn!(error = %err, conversation_id, "customer-channel fanout publish failed");
+    }
+}
+
+pub(crate) async fn broadcast_customer_event(
+    state: &AppState,
+    conversation_id: &str,
+    event: &Value,
+) -> usize {
+    let delivered = state.realtime.customers.broadcast(conversation_id, event);
+    publish_customer_event(state, conversation_id, event).await;
+    delivered
+}
+
+#[derive(sqlx::FromRow)]
+struct RemoteCustomerEvent {
+    id: String,
+    conversation_id: String,
+    event: String,
+}
+
+/// Deliver peer-instance customer-channel events into this process's in-memory
+/// registry and ack them once processed. Invalid persisted payloads are acked
+/// after logging so a bad row cannot permanently block a receiver.
+pub async fn process_remote_customer_events(
+    state: &AppState,
+    limit: i64,
+) -> Result<usize, sqlx::Error> {
+    let rows = sqlx::query_as::<_, RemoteCustomerEvent>(
+        "SELECT e.id, e.conversation_id, e.event
+         FROM realtime_customer_fanout_events e
+         WHERE e.source_instance <> $1
+           AND NOT EXISTS (
+             SELECT 1 FROM realtime_customer_fanout_acks a
+             WHERE a.event_id = e.id AND a.instance_id = $1
+           )
+         ORDER BY e.created_at ASC
+         LIMIT $2",
+    )
+    .bind(state.realtime.instance_id())
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await?;
+
+    let mut processed = 0usize;
+    for row in rows {
+        match serde_json::from_str::<Value>(&row.event) {
+            Ok(event) => {
+                state.realtime.customers.broadcast(&row.conversation_id, &event);
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    event_id = %row.id,
+                    "customer-channel fanout payload was not valid JSON"
+                );
+            }
+        }
+        sqlx::query(
+            "INSERT INTO realtime_customer_fanout_acks (event_id, instance_id, acked_at)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (event_id, instance_id) DO NOTHING",
+        )
+        .bind(&row.id)
+        .bind(state.realtime.instance_id())
+        .bind(crate::db::now_iso())
+        .execute(&state.db)
+        .await?;
+        processed += 1;
+    }
+    Ok(processed)
+}
+
+pub fn spawn_remote_fanout_loop(state: Arc<AppState>) {
+    let state: Weak<AppState> = Arc::downgrade(&state);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(REMOTE_FANOUT_INTERVAL);
+        loop {
+            ticker.tick().await;
+            let Some(state) = state.upgrade() else {
+                break;
+            };
+            if let Err(err) = process_remote_customer_events(&state, REMOTE_FANOUT_BATCH).await {
+                tracing::warn!(error = %err, "customer-channel remote fanout loop failed");
+            }
+        }
+    });
 }
 
 /// Drive one accepted customer-channel socket: forward channel broadcasts;
@@ -298,7 +407,7 @@ pub async fn notify_message(
         "message": message,
         "timestamp": now,
     });
-    state.realtime.customers.broadcast(&conversation_id, &event);
+    broadcast_customer_event(&state, &conversation_id, &event).await;
     let (total, users) = state.realtime.customers.snapshot(&conversation_id);
     (
         StatusCode::OK,
@@ -342,7 +451,7 @@ pub async fn notify_message_updated(
         "data": data,
         "timestamp": crate::db::now_iso(),
     });
-    state.realtime.customers.broadcast(&conversation_id, &event);
+    broadcast_customer_event(&state, &conversation_id, &event).await;
     (StatusCode::OK, Json(json!({ "success": true }))).into_response()
 }
 
@@ -751,7 +860,8 @@ pub async fn create_message(
         "correlationId": body.correlation_id,
         "createdAt": now,
     });
-    state.realtime.customers.broadcast(
+    broadcast_customer_event(
+        &state,
         &conversation_id,
         &json!({
             "type": "new_message",
@@ -760,7 +870,8 @@ pub async fn create_message(
             "message": message,
             "timestamp": now,
         }),
-    );
+    )
+    .await;
     let mut global_data = data.clone();
     global_data["messageId"] = json!(message_id);
     state.realtime.global(

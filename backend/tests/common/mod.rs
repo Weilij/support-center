@@ -102,6 +102,14 @@ pub async fn spawn_app_custom(customize: impl FnOnce(&mut Config)) -> TestApp {
     TestApp { router: app::build_router(state.clone()), state, _dir: dir }
 }
 
+pub fn spawn_peer_app(primary: &TestApp) -> TestApp {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut config = primary.state.config.clone();
+    config.upload_dir = dir.path().join("uploads").display().to_string();
+    let state = AppState::new(primary.state.db.clone(), config);
+    TestApp { router: app::build_router(state.clone()), state, _dir: dir }
+}
+
 impl TestApp {
     pub async fn request(
         &self,
