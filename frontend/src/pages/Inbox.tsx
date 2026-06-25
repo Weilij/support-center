@@ -63,6 +63,7 @@ interface Message {
   pending?: boolean
   messageType?: string
   media?: Record<string, unknown>
+  attachments?: Array<{ id: string; filename?: string; mimeType?: string; url?: string; downloadUrl?: string }>
 }
 
 interface ConvMeta {
@@ -383,6 +384,24 @@ function Thread({
   // ── Drag-drop state ─────────────────────────────────────────────────────────
   const [dragOver, setDragOver] = useState(false)
 
+  // ── Composer attachments (button / drop / paste) ────────────────────────────
+  const fileInput = useRef<HTMLInputElement | null>(null)
+  const [attachPending, setAttachPending] = useState<Array<{ id: string; name: string; mime: string; previewUrl?: string }>>([])
+
+  const addFiles = useCallback(async (files: FileList | File[]) => {
+    if (!convId) return
+    for (const file of Array.from(files)) {
+      const { attachment, error } = await uploadConversationFile(convId, file)
+      if (error || !attachment) { setToast(`上傳失敗：${error ?? file.name}`); continue }
+      setAttachPending((p) => [...p, {
+        id: attachment.id,
+        name: attachment.filename ?? file.name,
+        mime: attachment.contentType ?? file.type,
+        previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
+      }])
+    }
+  }, [convId])
+
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
     setDragOver(true)
@@ -391,16 +410,8 @@ function Thread({
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault()
     setDragOver(false)
-    if (!convId) return
-    const file = e.dataTransfer.files[0]
-    if (!file) return
-    const { error: uploadErr } = await uploadConversationFile(convId, file)
-    if (!uploadErr) {
-      await refreshFiles()
-      setToast(`已上傳 ${file.name}`)
-    } else {
-      setToast(`上傳失敗：${uploadErr}`)
-    }
+    const dropped = e.dataTransfer.files
+    if (dropped && dropped.length) await addFiles(dropped)
   }
 
   // Load conversation meta + messages on convId change
@@ -469,18 +480,21 @@ function Thread({
 
   const send = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!convId || !draft.trim()) return
+    if (!convId || (!draft.trim() && attachPending.length === 0)) return
     const text = draft.trim()
+    const atts = attachPending
     setDraft('')
+    setAttachPending([])
     const tempId = `pending-${Date.now()}`
     const who = session.identity()
     setMessages((prev) => [...prev, {
       id: tempId, content: text, senderType: 'agent',
       senderName: who?.displayName, pending: true,
+      attachments: atts.map((a) => ({ id: a.id, filename: a.name, mimeType: a.mime, url: a.previewUrl })),
     }])
     const resp = await post<{ message?: Message; id?: string }>(
       `/api/conversations/${convId}/messages`,
-      { content: text, senderId: who?.id },
+      { content: text, senderId: who?.id, attachmentIds: atts.map((a) => a.id) },
     )
     if (resp.success) {
       const confirmed = resp.data?.message ?? { id: resp.data?.id ?? tempId, content: text }
@@ -489,6 +503,7 @@ function Thread({
       setMessages((prev) => prev.filter((m) => m.id !== tempId))
       setError(resp.message ?? null)
       setDraft(text)
+      setAttachPending(atts)
     }
   }
 
@@ -734,7 +749,7 @@ function Thread({
                 color: 'var(--blue-600)',
                 pointerEvents: 'none',
               }}>
-                放開以上傳檔案到此對話
+                放開以附加到訊息
               </div>
             )}
             {slashOpen && slashMatches.length > 0 && (
@@ -744,10 +759,31 @@ function Thread({
                 onPick={(t) => { setDraft(t.body); setSlashIndex(0) }}
               />
             )}
+            {attachPending.length > 0 && (
+              <div className="cs-attach-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                {attachPending.map((p) => (
+                  <div key={p.id} className="cs-attach-chip" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', border: '1px solid var(--border)', borderRadius: 8 }}>
+                    {p.previewUrl
+                      ? <img src={p.previewUrl} alt={p.name} style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 4 }} />
+                      : <span>📄</span>}
+                    <span style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+                    <button type="button" aria-label="移除" onClick={() => setAttachPending((list) => {
+                      const found = list.find((x) => x.id === p.id)
+                      if (found?.previewUrl) URL.revokeObjectURL(found.previewUrl)
+                      return list.filter((x) => x.id !== p.id)
+                    })} style={{ border: 'none', background: 'transparent', cursor: 'pointer' }}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
             <textarea
               className="cs-composer-input"
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
+              onPaste={(e) => {
+                const files = Array.from(e.clipboardData.files)
+                if (files.length) { e.preventDefault(); void addFiles(files) }
+              }}
               onKeyDown={(e) => {
                 // Ignore Enter while an IME (e.g. Chinese) is composing — the
                 // candidate-confirming Enter must not also send (avoids double-send).
@@ -780,9 +816,17 @@ function Thread({
               }}
             />
             <div className="cs-composer-tools">
-              <button type="button" className="cs-composer-ico" aria-label="附件">
+              <button type="button" className="cs-composer-ico" aria-label="附件" onClick={() => fileInput.current?.click()}>
                 <Icon name="paperclip" w={20} />
               </button>
+              <input
+                ref={fileInput}
+                type="file"
+                multiple
+                accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx,.zip"
+                style={{ display: 'none' }}
+                onChange={(e) => { if (e.target.files) void addFiles(e.target.files); e.target.value = '' }}
+              />
               <button type="button" className="cs-composer-ico" aria-label="表情">
                 <Icon name="emoji" w={20} />
               </button>
@@ -801,7 +845,7 @@ function Thread({
               <button
                 type="submit"
                 className="cs-btn cs-btn--primary"
-                disabled={!draft.trim()}
+                disabled={!draft.trim() && attachPending.length === 0}
                 style={{ display: 'flex', alignItems: 'center', gap: 6 }}
               >
                 <Icon name="send" w={18} />
