@@ -75,8 +75,10 @@ Remaining external/infrastructure boundaries:
 - [x] Shopee inbound richer media/chat surface: Webchat media/card payloads
       preserve image preview media, sticker data, and product/order-style
       metadata for downstream rendering.
-- [ ] Shopee outbound native media delivery beyond text and link-style
-      fallback delivery.
+- [x] Shopee outbound native media delivery: image attachments are routed as
+      SellerChat image payloads, while video/audio/file attachments keep the
+      documented link-style fallback because public Shopee Chat API material
+      only confirms text/image outbound support.
 - [x] Installer Cloudflare API-token verification and core resource
       provisioning: `/auth/token` verifies the Bearer token/account through
       Cloudflare API, and deployment creates D1, KV, R2, and Queue resources.

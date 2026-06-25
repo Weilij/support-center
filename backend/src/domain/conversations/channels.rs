@@ -135,15 +135,28 @@ pub fn parse_shopee_recipient(recipient: &str) -> Result<(i64, String), String> 
 }
 
 pub fn shopee_send_body(to_id: &str, item: &OutboundItem) -> serde_json::Value {
-    let content = match &item.media {
-        Some(m) => format!("📎 {}\n{}", m.file_name.clone().unwrap_or_default(), m.url),
-        None => item.content.clone(),
-    };
-    json!({
-        "to_id": to_id,
-        "message_type": "text",
-        "content": { "text": content },
-    })
+    match &item.media {
+        Some(m) if m.kind == MediaKind::Image => json!({
+            "to_id": to_id,
+            "message_type": "image",
+            "content": {
+                "url": m.url,
+                "preview_url": m.preview_url.clone().unwrap_or_else(|| m.url.clone()),
+            },
+        }),
+        Some(m) => json!({
+            "to_id": to_id,
+            "message_type": "text",
+            "content": {
+                "text": format!("📎 {}\n{}", m.file_name.clone().unwrap_or_default(), m.url),
+            },
+        }),
+        None => json!({
+            "to_id": to_id,
+            "message_type": "text",
+            "content": { "text": item.content },
+        }),
+    }
 }
 
 async fn line_push(
@@ -646,6 +659,53 @@ mod gateway_tests {
         assert_eq!(b["to_id"], "9001");
         assert_eq!(b["message_type"], "text");
         assert_eq!(b["content"]["text"], "hello");
+    }
+
+    #[test]
+    fn shopee_body_dispatches_native_media_when_supported() {
+        let image = shopee_send_body(
+            "9001",
+            &OutboundItem {
+                content: "pic.png".into(),
+                media: Some(OutboundMedia {
+                    kind: MediaKind::Image,
+                    url: "https://cdn.example/pic.png".into(),
+                    preview_url: Some("https://cdn.example/preview.png".into()),
+                    file_name: Some("pic.png".into()),
+                    duration_ms: None,
+                }),
+            },
+        );
+        assert_eq!(image["to_id"], "9001");
+        assert_eq!(image["message_type"], "image");
+        assert_eq!(image["content"]["url"], "https://cdn.example/pic.png");
+        assert_eq!(
+            image["content"]["preview_url"],
+            "https://cdn.example/preview.png"
+        );
+
+        let file = shopee_send_body(
+            "9001",
+            &OutboundItem {
+                content: "report.pdf".into(),
+                media: Some(OutboundMedia {
+                    kind: MediaKind::File,
+                    url: "https://cdn.example/report.pdf".into(),
+                    preview_url: None,
+                    file_name: Some("report.pdf".into()),
+                    duration_ms: None,
+                }),
+            },
+        );
+        assert_eq!(file["message_type"], "text");
+        assert!(file["content"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("report.pdf"));
+        assert!(file["content"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("https://cdn.example/report.pdf"));
     }
 
     #[test]
