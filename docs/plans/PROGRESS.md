@@ -88,6 +88,8 @@ Remaining external/infrastructure boundaries:
       project.
 - [x] Installer Worker bindings: backend Worker settings bind the provisioned
       D1, KV, R2, and Queue resources.
+- [x] Installer provisioning management endpoints: project-name status polling,
+      active-run cancellation, and deployment index listing are wired.
 - [ ] Installer production artifact upload, Worker routes/custom domains, and
       Pages deployment assets.
 - [x] Multi-instance customer-channel realtime fan-out: customer conversation

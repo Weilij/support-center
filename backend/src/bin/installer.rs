@@ -532,7 +532,13 @@ async fn descriptor() -> Response {
             "health": ["/health"],
             "auth": ["/auth/token"],
             "oauth": ["/oauth/authorize", "/oauth/callback"],
-            "deployment": ["/deployment/start", "/deployment/status/{id}"],
+            "deployment": [
+                "/deployment/start",
+                "/deployment/status/{id}",
+                "/deployment/{projectName}/status",
+                "/deployment/{projectName}/cancel",
+                "/deployments"
+            ],
         },
         "documentation": "https://docs.example.com/installer",
         "support": "support@example.com",
@@ -694,6 +700,18 @@ fn valid_project_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+fn is_cancelled(runs: &Arc<Mutex<HashMap<String, Value>>>, id: &str) -> bool {
+    runs.lock()
+        .ok()
+        .and_then(|runs| {
+            runs.get(id)
+                .and_then(|run| run["status"].as_str())
+                .map(str::to_owned)
+        })
+        .as_deref()
+        == Some("cancelled")
+}
+
 const STEPS: &[&str] = &[
     "database",
     "kv-sessions",
@@ -769,7 +787,13 @@ async fn deployment_start(
             }
             return;
         }
+        if is_cancelled(&runs, &id) {
+            return;
+        }
         for (i, step) in STEPS.iter().enumerate() {
+            if is_cancelled(&runs, &id) {
+                return;
+            }
             match cloud
                 .provision_step(step, &project, &creds, &mut provision_context)
                 .await
@@ -790,6 +814,9 @@ async fn deployment_start(
                     return;
                 }
             }
+            if is_cancelled(&runs, &id) {
+                return;
+            }
             completed.push(step);
             let percent = ((i + 1) * 100 / STEPS.len()) as i64;
             if let Ok(mut runs) = runs.lock() {
@@ -800,6 +827,9 @@ async fn deployment_start(
                     run["progressPercent"] = json!(percent);
                 }
             }
+        }
+        if is_cancelled(&runs, &id) {
+            return;
         }
         if let Ok(mut runs) = runs.lock() {
             if let Some(run) = runs.get_mut(&id) {
@@ -830,6 +860,79 @@ async fn deployment_status(State(installer): State<Installer>, Path(id): Path<St
     }
 }
 
+/// GET /deployment/{projectName}/status: CRD-compatible project-name polling.
+async fn deployment_status_by_project(
+    State(installer): State<Installer>,
+    Path(project): Path<String>,
+) -> Response {
+    let runs = installer.runs.lock().unwrap();
+    match runs
+        .values()
+        .find(|run| run["projectName"].as_str() == Some(project.as_str()))
+    {
+        Some(run) => Json(run.clone()).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Deployment not found"})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /deployment/{projectName}/cancel: stop an active in-memory run.
+async fn deployment_cancel(
+    State(installer): State<Installer>,
+    Path(project): Path<String>,
+) -> Response {
+    let mut runs = installer.runs.lock().unwrap();
+    let Some((_id, run)) = runs
+        .iter_mut()
+        .find(|(_id, run)| run["projectName"].as_str() == Some(project.as_str()))
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "No active deployment"})),
+        )
+            .into_response();
+    };
+    if run["status"].as_str() != Some("running") {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "No active deployment"})),
+        )
+            .into_response();
+    }
+    run["status"] = json!("cancelled");
+    run["currentStep"] = Value::Null;
+    run["completedAt"] = json!(now_ms());
+    Json(json!({"success": true, "message": "Deployment cancelled"})).into_response()
+}
+
+/// GET /deployments: list in-memory provisioning run summaries.
+async fn deployments(State(installer): State<Installer>) -> Response {
+    let runs = installer.runs.lock().unwrap();
+    let items: Vec<Value> = runs
+        .values()
+        .map(|run| {
+            json!({
+                "projectName": run["projectName"],
+                "deploymentId": run["id"],
+                "status": run["status"],
+                "currentStep": run["currentStep"],
+                "progressPercent": run["progressPercent"],
+                "startedAt": run["startedAt"],
+                "completedAt": run.get("completedAt").cloned().unwrap_or(Value::Null),
+                "error": run.get("error").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect();
+    Json(json!({
+        "items": items,
+        "count": items.len(),
+    }))
+    .into_response()
+}
+
 fn router(installer: Installer) -> Router {
     Router::new()
         .route("/", get(descriptor))
@@ -839,6 +942,12 @@ fn router(installer: Installer) -> Router {
         .route("/auth/token", post(auth_token))
         .route("/deployment/start", post(deployment_start))
         .route("/deployment/status/{id}", get(deployment_status))
+        .route(
+            "/deployment/{project}/status",
+            get(deployment_status_by_project),
+        )
+        .route("/deployment/{project}/cancel", post(deployment_cancel))
+        .route("/deployments", get(deployments))
         .with_state(installer)
 }
 
@@ -895,6 +1004,13 @@ mod tests {
     async fn mock_cloudflare_with_token_status(
         status: &'static str,
     ) -> (String, Arc<Mutex<Vec<Value>>>) {
+        mock_cloudflare_with_token_status_and_delay(status, 0).await
+    }
+
+    async fn mock_cloudflare_with_token_status_and_delay(
+        status: &'static str,
+        delay_ms: u64,
+    ) -> (String, Arc<Mutex<Vec<Value>>>) {
         async fn record(
             State(calls): State<Arc<Mutex<Vec<Value>>>>,
             OriginalUri(uri): OriginalUri,
@@ -915,12 +1031,15 @@ mod tests {
             Json(json!({"success": true, "result": {"id": "mock", "status": "active"}}))
         }
         async fn verify_token(
-            State((calls, status)): State<(Arc<Mutex<Vec<Value>>>, &'static str)>,
+            State((calls, status, delay_ms)): State<(Arc<Mutex<Vec<Value>>>, &'static str, u64)>,
             OriginalUri(uri): OriginalUri,
             method: axum::http::Method,
             headers: axum::http::HeaderMap,
             body: axum::body::Bytes,
         ) -> Json<Value> {
+            if delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
             let body = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
             calls.lock().unwrap().push(json!({
                 "method": method.as_str(),
@@ -937,7 +1056,7 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new()
             .route("/client/v4/user/tokens/verify", get(verify_token))
-            .with_state((calls.clone(), status))
+            .with_state((calls.clone(), status, delay_ms))
             .merge(
                 Router::new()
                     .route("/client/v4/accounts/{account}", get(record))
@@ -1248,5 +1367,47 @@ mod tests {
 
         let (status, _) = send(&app, "GET", "/deployment/status/ghost", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let (status, by_project) = send(&app, "GET", "/deployment/smoke-tenant/status", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(by_project["id"], id);
+
+        let (status, index) = send(&app, "GET", "/deployments", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(index["count"], 1);
+        assert_eq!(index["items"][0]["projectName"], "smoke-tenant");
+        assert_eq!(index["items"][0]["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn deployment_cancel_stops_active_run() {
+        let (base, _calls) = mock_cloudflare_with_token_status_and_delay("active", 150).await;
+        let app = router(Installer::with_cloudflare_api(base));
+        let (status, body) = send(
+            &app,
+            "POST",
+            "/deployment/start",
+            Some(json!({
+                "projectName": "cancel-tenant",
+                "apiToken": "tok_live",
+                "accountId": "acc_123"
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let (status, body) = send(&app, "POST", "/deployment/cancel-tenant/cancel", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["success"], true);
+
+        tokio::time::sleep(std::time::Duration::from_millis(220)).await;
+        let (status, body) = send(&app, "GET", "/deployment/cancel-tenant/status", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["status"], "cancelled");
+        assert_eq!(body["currentStep"], Value::Null);
+
+        let (status, body) = send(&app, "POST", "/deployment/missing/cancel", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "No active deployment");
     }
 }
