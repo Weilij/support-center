@@ -36,6 +36,7 @@ import { Drawer } from '../components/Modal'
 import { FileUpload } from '../components/FileUpload'
 import { Toast } from '../components/ui'
 import { SlashMenu } from '../components/SlashMenu'
+import { MessageMedia, isMediaKind } from '../components/MessageMedia'
 import { TemplateManager } from '../components/TemplateManager'
 import { useTemplates } from '../hooks/useTemplates'
 import {
@@ -671,9 +672,17 @@ function Thread({
                 <Avatar name={customerName || '?'} src={customerAvatarUrl} size="sm" />
               )}
               <div>
-                <div className={`cs-bubble${isMe ? ' cs-bubble--me' : ''}`}>
-                  {msg.content}
-                </div>
+                {isMediaKind(msg.messageType) ? (
+                  msg.messageType === 'sticker' ? (
+                    <MessageMedia convId={convId ?? ''} msgId={msg.id} messageType={msg.messageType!} media={msg.media} content={msg.content} />
+                  ) : (
+                    <div className={`cs-bubble${isMe ? ' cs-bubble--me' : ''}`}>
+                      <MessageMedia convId={convId ?? ''} msgId={msg.id} messageType={msg.messageType!} media={msg.media} content={msg.content} />
+                    </div>
+                  )
+                ) : (
+                  <div className={`cs-bubble${isMe ? ' cs-bubble--me' : ''}`}>{msg.content}</div>
+                )}
                 <div
                   className="cs-bubble-time"
                   style={{ textAlign: isMe ? 'right' : 'left' }}
