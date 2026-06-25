@@ -83,7 +83,11 @@ Remaining external/infrastructure boundaries:
 - [x] Installer OAuth grant exchange: `/oauth/authorize` uses Cloudflare OAuth
       endpoints, `/oauth/callback` exchanges authorization codes for access
       tokens, and the setup wizard consumes the returned token.
-- [ ] Installer Workers/Pages application deployment.
+- [x] Installer Workers/Pages deployment bootstrap: backend provisioning uploads
+      a Cloudflare Worker script and frontend provisioning creates a Pages
+      project.
+- [ ] Installer production artifact upload, Worker bindings/routes, and Pages
+      deployment assets.
 - [x] Multi-instance customer-channel realtime fan-out: customer conversation
       events relay across backend instances through Postgres event/ack tables.
 - [ ] Broader realtime scale-out hardening for non-customer-channel rooms and

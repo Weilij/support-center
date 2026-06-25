@@ -238,6 +238,35 @@ impl CloudflareApi {
         Ok(value)
     }
 
+    async fn request_body(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        creds: &CloudCredentials,
+        content_type: &'static str,
+        body: String,
+    ) -> Result<Value, String> {
+        let url = format!("{}{}", self.api_base, path);
+        let response = self
+            .client
+            .request(method, url)
+            .bearer_auth(&creds.api_token)
+            .header("Content-Type", content_type)
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| format!("Cloudflare request failed: {e}"))?;
+        let status = response.status();
+        let value: Value = response
+            .json()
+            .await
+            .map_err(|e| format!("Cloudflare returned invalid JSON: {e}"))?;
+        if !status.is_success() || value.get("success").and_then(Value::as_bool) == Some(false) {
+            return Err(format!("Cloudflare API error at {path}: {value}"));
+        }
+        Ok(value)
+    }
+
     async fn verify(&self, creds: &CloudCredentials) -> Result<Value, String> {
         let token = self
             .request_json(reqwest::Method::GET, "/user/tokens/verify", creds, None)
@@ -330,10 +359,71 @@ impl CloudflareApi {
                     result,
                 }
             }
+            "backend-service" => {
+                let name = format!("{project}-backend");
+                let script = worker_bootstrap_script(project);
+                let result = self
+                    .request_body(
+                        reqwest::Method::PUT,
+                        &format!("/accounts/{account}/workers/scripts/{name}/content"),
+                        creds,
+                        "application/javascript+module",
+                        script,
+                    )
+                    .await?;
+                ProvisionedResource {
+                    step,
+                    kind: "worker_script",
+                    name,
+                    result,
+                }
+            }
+            "frontend-site" => {
+                let name = format!("{project}-frontend");
+                let result = self
+                    .request_json(
+                        reqwest::Method::POST,
+                        &format!("/accounts/{account}/pages/projects"),
+                        creds,
+                        Some(json!({
+                            "name": name,
+                            "production_branch": "main",
+                            "deployment_configs": {
+                                "production": {},
+                                "preview": {}
+                            }
+                        })),
+                    )
+                    .await?;
+                ProvisionedResource {
+                    step,
+                    kind: "pages_project",
+                    name,
+                    result,
+                }
+            }
             _ => return Ok(None),
         };
         Ok(Some(resource))
     }
+}
+
+fn worker_bootstrap_script(project: &str) -> String {
+    format!(
+        r#"export default {{
+  async fetch(request, env, ctx) {{
+    const url = new URL(request.url);
+    if (url.pathname === "/health") {{
+      return Response.json({{ status: "ok", service: "{project}-backend" }});
+    }}
+    return new Response("MCSS backend bootstrap for {project}", {{
+      status: 200,
+      headers: {{ "content-type": "text/plain; charset=utf-8" }}
+    }});
+  }}
+}};
+"#
+    )
 }
 
 fn now_ms() -> i64 {
@@ -758,6 +848,11 @@ mod tests {
                     )
                     .route("/client/v4/accounts/{account}/r2/buckets", post(record))
                     .route("/client/v4/accounts/{account}/queues", post(record))
+                    .route(
+                        "/client/v4/accounts/{account}/workers/scripts/{script}/content",
+                        axum::routing::put(record),
+                    )
+                    .route("/client/v4/accounts/{account}/pages/projects", post(record))
                     .with_state(calls.clone()),
             );
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -995,6 +1090,16 @@ mod tests {
         );
         assert!(
             paths.contains(&"/client/v4/accounts/acc_123/queues"),
+            "{paths:?}"
+        );
+        assert!(
+            paths.contains(
+                &"/client/v4/accounts/acc_123/workers/scripts/smoke-tenant-backend/content"
+            ),
+            "{paths:?}"
+        );
+        assert!(
+            paths.contains(&"/client/v4/accounts/acc_123/pages/projects"),
             "{paths:?}"
         );
 
