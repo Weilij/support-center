@@ -95,8 +95,27 @@ fn meta_postback_event_key(platform: &str, sender: &str, item: &Value, postback:
         .get("timestamp")
         .and_then(Value::as_i64)
         .unwrap_or_default();
-    let canonical = serde_json::to_vec(postback).unwrap_or_default();
-    let digest = sha256_hex(&canonical);
+    let title = postback.get("title").and_then(Value::as_str).unwrap_or_default();
+    let payload = postback
+        .get("payload")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let referral_ref = postback
+        .get("referral")
+        .and_then(|v| v.get("ref"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let canonical = [
+        platform,
+        sender,
+        recipient,
+        &timestamp.to_string(),
+        title,
+        payload,
+        referral_ref,
+    ]
+    .join("\0");
+    let digest = sha256_hex(canonical.as_bytes());
     format!("{platform}:postback:{sender}:{recipient}:{timestamp}:{digest}")
 }
 
