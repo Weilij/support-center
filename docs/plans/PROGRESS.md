@@ -84,8 +84,10 @@ Remaining external/infrastructure boundaries:
 - [x] Live email alert dispatch: monitoring alerts can send SMTP `email`
       channel attempts from the admin-configured email settings and record
       success/failure outcomes.
-- [ ] Remaining alert polish: live welcome-reply push polish where TODO
-      markers remain.
+- [x] LINE follow default welcome push: fallback welcome messages are delivered
+      through the outbound LINE gateway and persist platform message outcomes.
+- [ ] Remaining alert polish: LIFF welcome endpoint live push polish where
+      `TODO(channels)` markers remain.
 
 ## Current Routing Decision
 

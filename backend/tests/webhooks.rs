@@ -399,8 +399,9 @@ async fn follow_with_routing_creates_team_conversation_and_welcome() {
 
     // Default welcome stored as a system-authored message so the conversation
     // is not empty (CRD 2822).
-    let (sender_type, count): (String, i64) = sqlx::query_as(
-        "SELECT MAX(m.sender_type), COUNT(*) FROM messages m JOIN conversations c ON c.id = m.conversation_id
+    let (sender_type, count, platform_message_id): (String, i64, Option<String>) = sqlx::query_as(
+        "SELECT MAX(m.sender_type), COUNT(*), MAX(m.platform_message_id)
+         FROM messages m JOIN conversations c ON c.id = m.conversation_id
          WHERE c.customer_id = $1",
     )
     .bind(cust_id)
@@ -409,6 +410,12 @@ async fn follow_with_routing_creates_team_conversation_and_welcome() {
     .unwrap();
     assert_eq!(sender_type, "system");
     assert_eq!(count, 1);
+    assert!(
+        platform_message_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("stub-line-")),
+        "default welcome should be dispatched through the LINE outbound gateway: {platform_message_id:?}"
+    );
 }
 
 #[tokio::test]

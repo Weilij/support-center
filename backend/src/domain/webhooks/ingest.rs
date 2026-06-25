@@ -47,6 +47,40 @@ fn customer_lock(key: &str) -> Arc<tokio::sync::Mutex<()>> {
     guard.entry(key.to_string()).or_default().clone()
 }
 
+async fn push_default_welcome(state: &AppState, message_id: &str, user_id: &str) {
+    let gateway = crate::domain::conversations::channels::OutboundGateway::from_state(state);
+    let item = crate::domain::conversations::channels::OutboundItem::text(DEFAULT_WELCOME);
+    let now = now_iso();
+    match gateway.send_batch("line", user_id, &[item]).await {
+        Ok(platform_message_id) => {
+            let _ = sqlx::query(
+                "UPDATE messages
+                    SET is_sent = 1, sent_at = $1, delivery_status = 'sent',
+                        platform_message_id = $2, updated_at = $3
+                 WHERE id = $4",
+            )
+            .bind(&now)
+            .bind(platform_message_id)
+            .bind(&now)
+            .bind(message_id)
+            .execute(&state.db)
+            .await;
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "LINE default welcome push failed");
+            let _ = sqlx::query(
+                "UPDATE messages
+                    SET is_sent = 0, delivery_status = 'failed', updated_at = $1
+                 WHERE id = $2",
+            )
+            .bind(&now)
+            .bind(message_id)
+            .execute(&state.db)
+            .await;
+        }
+    }
+}
+
 /// Outcome of one inbound message ingestion.
 #[derive(Debug)]
 pub enum IngestOutcome {
@@ -869,16 +903,16 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
             "INSERT INTO messages
                 (id, conversation_id, sender_type, content, content_type, is_sent, sent_at,
                  delivery_status, sender_name, created_at)
-             VALUES ($1, $2, 'system', $3, 'text', 1, $4, 'delivered', 'System', $5)",
+             VALUES ($1, $2, 'system', $3, 'text', 0, NULL, 'pending', 'System', $4)",
         )
         .bind(&welcome_id)
         .bind(cid)
         .bind(DEFAULT_WELCOME)
         .bind(&now)
-        .bind(&now)
         .execute(&state.db)
         .await;
         if inserted.is_ok() {
+            push_default_welcome(state, &welcome_id, user_id).await;
             let _ = sqlx::query(
                 "UPDATE conversations SET last_message_at = $1, updated_at = $2 WHERE id = $3",
             )
@@ -888,8 +922,6 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
             .execute(&state.db)
             .await;
         }
-        // TODO(live-platform): push the welcome text to the end user via the
-        // platform reply credential (failure tolerated, CRD 2826).
     }
 
     ensure_system_agent(&state.db).await;
