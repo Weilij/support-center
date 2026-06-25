@@ -2,9 +2,16 @@
 
 mod common;
 
+use axum::body::Bytes;
+use axum::extract::State;
 use axum::http::StatusCode;
+use axum::routing::post;
+use axum::{Json, Router};
 use common::{spawn_app, TestApp};
-use serde_json::json;
+use serde_json::{json, Value};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 async fn users(app: &TestApp) -> (String, String) {
     app.seed_agent("admin@test.dev", "pw123456", "admin").await;
@@ -12,6 +19,24 @@ async fn users(app: &TestApp) -> (String, String) {
     let (admin, _, _) = app.login("admin@test.dev", "pw123456").await;
     let (agent, _, _) = app.login("agent@test.dev", "pw123456").await;
     (admin, agent)
+}
+
+async fn webhook_sink() -> (String, Arc<Mutex<Vec<Value>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    async fn capture(State(seen): State<Arc<Mutex<Vec<Value>>>>, body: Bytes) -> Json<Value> {
+        let parsed = serde_json::from_slice::<Value>(&body).unwrap_or_else(|_| json!({}));
+        seen.lock().await.push(parsed);
+        Json(json!({"ok": true}))
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route("/alert", post(capture))
+        .with_state(seen.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}/alert"), seen)
 }
 
 #[tokio::test]
@@ -264,6 +289,7 @@ async fn feedback_flow() {
 async fn alert_config_admin_gates_and_validation() {
     let app = spawn_app().await;
     let (admin, agent) = users(&app).await;
+    let (webhook_url, webhook_seen) = webhook_sink().await;
 
     let (status, _, _) = app
         .request("POST", "/api/alert-config/channels/slack", Some(&agent),
@@ -293,13 +319,18 @@ async fn alert_config_admin_gates_and_validation() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["recipientCount"], 2);
+    let (status, _, _) = app
+        .request("POST", "/api/alert-config/channels/webhook", Some(&admin),
+            Some(json!({"webhookUrl": webhook_url})))
+        .await;
+    assert_eq!(status, StatusCode::OK);
 
     let (_, body, _) = app
         .request("GET", "/api/alert-config/channels/status", Some(&admin), None)
         .await;
     assert_eq!(body["data"]["slack"]["configured"], true);
     assert_eq!(body["data"]["email"]["recipientCount"], 2);
-    assert_eq!(body["data"]["webhook"]["configured"], false);
+    assert_eq!(body["data"]["webhook"]["configured"], true);
 
     let (status, _, _) = app
         .request("POST", "/api/alert-config/test-alert", Some(&admin),
@@ -311,6 +342,23 @@ async fn alert_config_admin_gates_and_validation() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["level"], "warning", "default level");
+    let received = webhook_seen.lock().await;
+    assert_eq!(received.len(), 0, "warning defaults to console only");
+
+    drop(received);
+    let (status, body, _) = app
+        .request("POST", "/api/alert-config/test-alert", Some(&admin),
+            Some(json!({"level": "critical", "title": "API smoke"})))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["data"]["channelAttempts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a["channel"] == "webhook" && a["success"] == true));
+    let received = webhook_seen.lock().await;
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0]["title"], "API smoke");
 }
 
 #[tokio::test]

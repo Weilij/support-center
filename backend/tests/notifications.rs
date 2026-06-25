@@ -2,10 +2,17 @@
 
 mod common;
 
+use axum::body::Bytes;
+use axum::extract::State;
 use axum::http::StatusCode;
+use axum::routing::post;
+use axum::{Json, Router};
 use common::{spawn_app, TestApp};
 use mcss_backend::domain::notifications::{alerts, reminders};
-use serde_json::json;
+use serde_json::{json, Value};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 async fn users(app: &TestApp) -> (String, String, String) {
     app.seed_agent("admin@test.dev", "pw123456", "admin").await;
@@ -13,6 +20,24 @@ async fn users(app: &TestApp) -> (String, String, String) {
     let (admin, _, _) = app.login("admin@test.dev", "pw123456").await;
     let (agent, _, _) = app.login("n@test.dev", "pw123456").await;
     (admin, agent, agent_id)
+}
+
+async fn webhook_sink() -> (String, Arc<Mutex<Vec<Value>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    async fn capture(State(seen): State<Arc<Mutex<Vec<Value>>>>, body: Bytes) -> Json<Value> {
+        let parsed = serde_json::from_slice::<Value>(&body).unwrap_or_else(|_| json!({}));
+        seen.lock().await.push(parsed);
+        Json(json!({"ok": true}))
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route("/alert", post(capture))
+        .with_state(seen.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}/alert"), seen)
 }
 
 // ---------------------------------------------------------------- inbox
@@ -468,6 +493,40 @@ async fn monitoring_alerts_rate_limit_ack_and_resolve() {
     let disabled = alerts::send_monitoring_alert(&app.state, "info", "quiet", "d", None).await;
     assert_eq!(disabled["channelAttempts"].as_array().unwrap().len(), 0,
         "globally disabled: recorded but not delivered");
+}
+
+#[tokio::test]
+async fn monitoring_alert_posts_configured_webhook_channel() {
+    let app = spawn_app().await;
+    let (url, seen) = webhook_sink().await;
+    sqlx::query(
+        "INSERT INTO system_settings (key, value, updated_at) VALUES ($1, $2, $3)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    )
+    .bind("alert.webhook")
+    .bind(json!({"url": url}).to_string())
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+
+    let alert = alerts::send_monitoring_alert(
+        &app.state,
+        "critical",
+        "DB latency",
+        "p95 crossed threshold",
+        Some(json!({"metric": "db.p95"})),
+    )
+    .await;
+    let attempts = alert["channelAttempts"].as_array().unwrap();
+    assert!(attempts.iter().any(|a| a["channel"] == "webhook" && a["success"] == true));
+
+    let received = seen.lock().await;
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0]["type"], "monitoring_alert");
+    assert_eq!(received[0]["level"], "critical");
+    assert_eq!(received[0]["title"], "DB latency");
+    assert_eq!(received[0]["metadata"]["metric"], "db.p95");
 }
 
 #[tokio::test]

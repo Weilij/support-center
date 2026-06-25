@@ -77,8 +77,11 @@ Remaining external/infrastructure boundaries:
 - [ ] Broader realtime scale-out hardening for non-customer-channel rooms and
       presence, if deployment requirements need every realtime surface to span
       multiple instances.
-- [ ] Optional external alert/notification sinks and live welcome-reply push
-      polish where TODO markers remain.
+- [x] Configured alert webhook sink: monitoring/test alerts POST JSON to the
+      admin-configured webhook URL and record per-channel attempt outcomes.
+- [ ] Remaining alert polish: live email/Slack-specific dispatch beyond generic
+      webhook POST, plus live welcome-reply push polish where TODO markers
+      remain.
 
 ## Current Routing Decision
 
@@ -218,3 +221,7 @@ conversation routing as "指派至團隊 / 轉接團隊 / 取消指派" only.
   shared customer/conversation/message ingestion pipeline, dedupes redelivery by
   platform message id, and routes outbound text through SellerChat
   `/api/v2/sellerchat/send_message` with `shop_id:buyer_id` recipients.
+- 2026-06-26: Alert webhook sink implemented: `/api/alert-config/channels/webhook`
+  configuration is now used by monitoring/test alerts, which best-effort POST
+  a JSON payload to the configured URL and persist success/failure in
+  `channelAttempts`.

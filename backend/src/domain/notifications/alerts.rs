@@ -14,6 +14,16 @@ pub const LEVELS: &[&str] = &["info", "warning", "critical", "emergency"];
 const CONFIG_KEY: &str = "alerting_config";
 const DEFAULT_MAX_PER_HOUR: i64 = 20;
 
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .expect("alert webhook client")
+    })
+}
+
 fn severity_rank(s: &str) -> usize {
     SEVERITIES.iter().position(|x| *x == s).unwrap_or(0)
 }
@@ -118,6 +128,49 @@ pub async fn update_config(db: &PgPool, partial: &Value) -> Value {
     config
 }
 
+async fn get_channel_setting(db: &PgPool, key: &str) -> Option<Value> {
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT value FROM system_settings WHERE key = $1")
+            .bind(key)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
+    stored.and_then(|s| serde_json::from_str(&s).ok())
+}
+
+async fn dispatch_webhook(
+    state: &AppState,
+    payload: &Value,
+    setting_key: &str,
+) -> Result<(), String> {
+    let setting = get_channel_setting(&state.db, setting_key)
+        .await
+        .ok_or_else(|| "webhook: not configured".to_string())?;
+    let url = setting["url"]
+        .as_str()
+        .or_else(|| setting["webhookUrl"].as_str())
+        .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+        .ok_or_else(|| "webhook: invalid URL".to_string())?;
+
+    let mut req = http_client().post(url).json(payload);
+    if let Some(headers) = setting["headers"].as_object() {
+        for (name, value) in headers {
+            if let Some(v) = value.as_str() {
+                req = req.header(name, v);
+            }
+        }
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("webhook: request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("webhook: HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
 /// Monitoring alert with rate limiting and escalation (CRD 5064-5067).
 pub async fn send_monitoring_alert(
     state: &AppState,
@@ -150,15 +203,30 @@ pub async fn send_monitoring_alert(
             .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
             .unwrap_or_else(|| vec!["console".into()]);
         for channel in &channels {
-            let success = channel == "console"; // external channels need config
-            if success {
-                tracing::warn!(level, title, description, "monitoring alert");
-            }
+            let payload = json!({
+                "type": "monitoring_alert",
+                "id": id,
+                "level": level,
+                "title": title,
+                "description": description,
+                "metadata": metadata.clone().unwrap_or(Value::Null),
+                "timestamp": now,
+            });
+            let result = match channel.as_str() {
+                "console" => {
+                    tracing::warn!(level, title, description, "monitoring alert");
+                    Ok(())
+                }
+                "webhook" => dispatch_webhook(state, &payload, "alert.webhook").await,
+                "chat" => dispatch_webhook(state, &payload, "alert.slack").await,
+                other => Err(format!("{other}: not configured")),
+            };
+            let success = result.is_ok();
             attempts.push(json!({
                 "channel": channel,
                 "time": now_iso(),
                 "success": success,
-                "error": if success { Value::Null } else { json!(format!("{channel}: not configured")) },
+                "error": result.err().map(Value::String).unwrap_or(Value::Null),
             }));
         }
         // Escalation for critical/emergency is scheduled (logged) only (CRD 5066).
