@@ -232,7 +232,7 @@ export default function ConversationDetail() {
                     style={{ marginLeft: 'auto' }}
                     onClick={async () => {
                       const url = (await fileDownloadUrl(f.id)) ?? f.publicUrl ?? f.url
-                      if (url) window.open(url, '_blank')
+                      if (url) window.open(url, '_blank', 'noopener,noreferrer')
                     }}
                   >
                     下載
