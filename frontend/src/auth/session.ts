@@ -16,10 +16,20 @@ export interface Identity {
   displayName?: string
   role?: string
   position?: string
+  teamId?: string | number | null
+  teamName?: string | null
+  teams?: unknown
   [key: string]: unknown
 }
 
 const SNAPSHOT_TTL_MS = 3000
+const TEAM_CONTEXT_KEY = 'mcss.contextTeamId'
+
+export interface TeamOption {
+  id: string
+  name: string
+  isPrimary: boolean
+}
 
 class AuthChangedSignal {
   private listeners = new Set<() => void>()
@@ -37,25 +47,96 @@ export const authChanged = new AuthChangedSignal()
 
 let lifecycle: SessionLifecycle = 'pending'
 let identity: Identity | null = null
+let teamOptions: TeamOption[] = []
 let initPromise: Promise<void> | null = null
 let snapshot: { at: number; authenticated: boolean } | null = null
 
+function teamId(value: unknown): string | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return String(value)
+  if (typeof value === 'string' && value.trim() !== '') return value.trim()
+  return null
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function readTeams(who: Identity): TeamOption[] {
+  const raw = Array.isArray(who.teams) ? who.teams : []
+  const seen = new Set<string>()
+  const options: TeamOption[] = []
+  for (const item of raw) {
+    if (!isRecord(item)) continue
+    const id = teamId(item.id ?? item.teamId)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    options.push({
+      id,
+      name: String(item.name ?? item.teamName ?? `Team ${id}`),
+      isPrimary: item.isPrimary === true || item.primary === true,
+    })
+  }
+  const primaryId = teamId(who.teamId)
+  if (primaryId && !seen.has(primaryId)) {
+    options.unshift({
+      id: primaryId,
+      name: String(who.teamName ?? `Team ${primaryId}`),
+      isPrimary: true,
+    })
+  }
+  return options
+}
+
+function canUseTeam(id: string): boolean {
+  if (identity?.role === 'admin') return true
+  return teamOptions.some((team) => team.id === id)
+}
+
+function setInitialTeamContext(who: Identity) {
+  teamOptions = readTeams(who)
+  const persisted = teamId(localStorage.getItem(TEAM_CONTEXT_KEY))
+  if (persisted && canUseTeam(persisted)) return
+
+  const primary = teamOptions.find((team) => team.isPrimary)?.id ?? teamOptions[0]?.id
+  if (primary) localStorage.setItem(TEAM_CONTEXT_KEY, primary)
+  else localStorage.removeItem(TEAM_CONTEXT_KEY)
+}
+
 export const session = {
   sessionId: () => localStorage.getItem('mcss.sessionId'),
-  contextTeamId: () => localStorage.getItem('mcss.contextTeamId'),
+  contextTeamId: () => localStorage.getItem(TEAM_CONTEXT_KEY),
+  teamOptions: () => teamOptions.map((team) => ({ ...team })),
+  currentTeam: () => {
+    const current = localStorage.getItem(TEAM_CONTEXT_KEY)
+    return teamOptions.find((team) => team.id === current) ?? null
+  },
+  switchContextTeam(nextTeamId: string | number): boolean {
+    const id = teamId(nextTeamId)
+    if (!id || !canUseTeam(id)) return false
+    localStorage.setItem(TEAM_CONTEXT_KEY, id)
+    return true
+  },
+  clearContextTeam(): boolean {
+    if (identity?.role !== 'admin') return false
+    localStorage.removeItem(TEAM_CONTEXT_KEY)
+    return true
+  },
 
   /// Called after a successful login: cache identity from the JSON body (the
   /// backend has already set the HttpOnly auth cookies at this point).
   storeLogin(sessionId: string, who: Identity) {
     localStorage.setItem('mcss.sessionId', sessionId)
     identity = who
+    setInitialTeamContext(who)
     lifecycle = 'authenticated'
     authChanged.emit()
   },
 
   clear() {
     localStorage.removeItem('mcss.sessionId')
+    localStorage.removeItem(TEAM_CONTEXT_KEY)
     identity = null
+    teamOptions = []
     lifecycle = 'unauthenticated'
   },
 
@@ -87,6 +168,7 @@ export const session = {
           const body = await resp.json().catch(() => null)
           if (resp.ok && body?.success) {
             identity = body.data as Identity
+            setInitialTeamContext(identity)
             lifecycle = 'authenticated'
           } else {
             this.clear()

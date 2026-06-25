@@ -43,4 +43,18 @@ describe('unwrapList', () => {
     expect(r.items).toEqual(['x', 'y'])
     expect(r.total).toBe(2)
   })
+
+  it('rejects malformed list and pagination shapes', () => {
+    const r = unwrapList(
+      {
+        success: true,
+        data: { items: 'not-an-array' },
+        pagination: { total: 'many', page: 'later' },
+      } as never,
+      4,
+    )
+    expect(r.items).toEqual([])
+    expect(r.total).toBe(0)
+    expect(r.page).toBe(4)
+  })
 })

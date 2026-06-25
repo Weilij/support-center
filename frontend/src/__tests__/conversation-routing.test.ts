@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { post } from '../api/client'
+import { get, post } from '../api/client'
 import {
   assignConversation,
   assignConversationToAgent,
   conversationsStore,
+  loadConversations,
+  normalizeConversations,
   transferConversation,
 } from '../stores/conversations'
 
@@ -15,9 +17,11 @@ vi.mock('../api/client', () => ({
 }))
 
 const postMock = vi.mocked(post)
+const getMock = vi.mocked(get)
 
 describe('conversation routing store', () => {
   beforeEach(() => {
+    getMock.mockReset()
     postMock.mockReset()
     postMock.mockResolvedValue({ success: true })
     conversationsStore.set({
@@ -63,5 +67,77 @@ describe('conversation routing store', () => {
     expect(conversationsStore.get().items[0]).not.toHaveProperty('teamId')
     expect(conversationsStore.get().items[0]).not.toHaveProperty('agentId')
     expect(conversationsStore.get().items[0]).not.toHaveProperty('assigneeId')
+  })
+
+  it('loads only validated conversations and ignores malformed pagination', async () => {
+    getMock.mockResolvedValue({
+      success: true,
+      data: {
+        items: [
+          { id: 'bad' },
+          { id: 'c1', status: 'active', priority: 'normal', lastMessage: { content: 'hi' } },
+        ],
+      },
+      pagination: { total: 'wrong' },
+    } as never)
+
+    await loadConversations(2, true)
+
+    expect(conversationsStore.get()).toMatchObject({
+      items: [{ id: 'c1', status: 'active', priority: 'normal', lastMessage: 'hi' }],
+      total: 1,
+      page: 2,
+      busy: false,
+      error: null,
+    })
+  })
+})
+
+describe('conversation response normalization', () => {
+  it('accepts supported list containers and extracts last-message content', () => {
+    expect(
+      normalizeConversations({
+        conversations: [
+          {
+            id: 'c1',
+            status: 'active',
+            priority: 'normal',
+            lastMessage: { content: 'hello' },
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        id: 'c1',
+        status: 'active',
+        priority: 'normal',
+        lastMessage: 'hello',
+      },
+    ])
+  })
+
+  it('drops malformed rows instead of casting them into conversations', () => {
+    expect(
+      normalizeConversations({
+        items: [
+          'bad-row',
+          null,
+          { id: 'missing-required-fields' },
+          {
+            id: 'c2',
+            status: 'active',
+            priority: 'normal',
+            lastMessage: { content: 123 },
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        id: 'c2',
+        status: 'active',
+        priority: 'normal',
+        lastMessage: '123',
+      },
+    ])
   })
 })

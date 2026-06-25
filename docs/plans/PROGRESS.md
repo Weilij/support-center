@@ -27,17 +27,19 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
 - [x] Phase 7: frontend SPA — API layer, stores, realtime, all screens, wizard
   - [x] foundation: API client w/ refresh single-flight, session lifecycle,
         router guards, login + dashboard shell, i18n (frontend/)
-  - [~] §8.1 state model: Store<T> w/ optimistic+rollback, conversations
-        container + screen done; remaining: messages/teams/tags/notifications
-        containers (CRD 5846-6126)
+  - [x] §8.1 state model: Store<T> w/ optimistic+rollback, conversations,
+        messages, teams, tags, notifications, and supporting containers wired
+        with cache freshness / optimistic rollback coverage (CRD 5846-6126)
   - [x] §8.2 views: ALL destination screens implemented — conversations
         list/detail, notifications, tags, teams, settings, profile, reports,
         activity, auto-reply, channels
   - [x] §8.3 realtime client core: connect/auth/reconnect/event routing,
         reconnect re-subscribe, and reconnect message resync; presence coverage
         remains a deeper follow-up.
-  - [ ] §8.4 remaining: full endpoint contract map, team context switcher
-  - [ ] §8.5 traceability matrix check (6689-6723)
+  - [x] §8.4 routing/API/i18n: endpoint contract registry, shared client
+        team-context header, and topbar team context switcher are wired.
+  - [x] §8.5 traceability matrix check (6689-6723): frontend endpoint
+        registry test covers every matrix area.
 - [x] Phase 8: web installer — provisioning service (§9.1) + setup wizard (§9.2);
       Cloudflare API-token verification and core resource provisioning are wired,
       OAuth grant exchange is wired, and Workers/Pages deployment remains

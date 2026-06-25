@@ -2,50 +2,24 @@
 
 import { useEffect, useState } from 'react'
 
-import { get, post, del } from '../api/client'
 import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'
-
-interface Tag {
-  id: number
-  name: string
-  color?: string
-  isActive?: boolean
-}
+import { useStore } from '../stores/store'
+import { createTag, deleteTag, loadTags, tagsStore } from '../stores/tags'
 
 export default function Tags() {
-  const [tags, setTags] = useState<Tag[]>([])
+  const { items: tags, error } = useStore(tagsStore)
   const [name, setName] = useState('')
-  const [error, setError] = useState<string | null>(null)
 
-  const load = async () => {
-    const resp = await get<{ items?: Tag[]; tags?: Tag[] }>('/api/tags')
-    if (resp.success && resp.data) {
-      setTags(resp.data.items ?? resp.data.tags ?? [])
-    } else {
-      setError(resp.message ?? null)
-    }
-  }
   useEffect(() => {
-    void load()
+    void loadTags()
   }, [])
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!name.trim()) return
-    const resp = await post('/api/tags', { name: name.trim() })
-    if (resp.success) {
+    if (await createTag(name)) {
       setName('')
-      void load()
-    } else {
-      setError(resp.message ?? null)
     }
-  }
-
-  const remove = async (id: number) => {
-    const resp = await del(`/api/tags/${id}`)
-    if (resp.success) void load()
-    else setError(resp.message ?? null)
   }
 
   const addAction = (
@@ -71,7 +45,7 @@ export default function Tags() {
               }}>
                 {tag.name}
               </span>
-              <button onClick={() => void remove(tag.id)} style={{ marginLeft: 'auto' }}>刪除</button>
+              <button onClick={() => void deleteTag(tag.id)} style={{ marginLeft: 'auto' }}>刪除</button>
             </li>
           ))}
         </ul>

@@ -131,4 +131,106 @@ describe('realtime client', () => {
 
     expect(reconnects).toEqual([{ subscribedConversationIds: ['conv-1'] }])
   })
+
+  it('parses nested message payloads including metadata media', async () => {
+    const realtime = await import('../realtime/client')
+
+    const parsed = realtime.readMessageEvent({
+      conversationId: 'conv-1',
+      message: {
+        id: 'msg-1',
+        content: 'photo',
+        senderType: 'customer',
+        senderId: 'customer-1',
+        timestamp: '2026-06-25T12:00:00.000Z',
+        metadata: JSON.stringify({ media: { url: 'https://cdn.example/a.png' } }),
+      },
+    })
+
+    expect(parsed).toMatchObject({
+      conversationId: 'conv-1',
+      id: 'msg-1',
+      content: 'photo',
+      senderType: 'customer',
+      senderId: 'customer-1',
+      timestamp: '2026-06-25T12:00:00.000Z',
+      isOwn: false,
+      messageType: 'text',
+      media: { url: 'https://cdn.example/a.png' },
+    })
+  })
+
+  it('deduplicates pushed new-message events by message id for conversation updates', async () => {
+    const { session } = await import('../auth/session')
+    const { conversationsStore } = await import('../stores/conversations')
+    const realtime = await import('../realtime/client')
+
+    session.storeLogin('session-1', { id: 'agent-1', role: 'agent' })
+    conversationsStore.set({
+      items: [{ id: 'conv-1', status: 'active', priority: 'normal', unreadCount: 0 }],
+      total: 1,
+      page: 1,
+      busy: false,
+      error: null,
+    })
+    realtime.connectRealtime()
+    MockWebSocket.instances[0].open()
+
+    const frame = {
+      type: 'new_message',
+      payload: {
+        conversationId: 'conv-1',
+        message: {
+          id: 'msg-1',
+          content: 'hello',
+          senderType: 'customer',
+          senderId: 'customer-1',
+          timestamp: '2026-06-25T12:00:00.000Z',
+        },
+      },
+    }
+    MockWebSocket.instances[0].receive(frame)
+    MockWebSocket.instances[0].receive(frame)
+
+    expect(conversationsStore.get().items[0]).toMatchObject({
+      id: 'conv-1',
+      lastMessage: 'hello',
+      unreadCount: 1,
+    })
+  })
+
+  it('does not update conversations for own agent messages', async () => {
+    const { session } = await import('../auth/session')
+    const { conversationsStore } = await import('../stores/conversations')
+    const realtime = await import('../realtime/client')
+
+    session.storeLogin('session-1', { id: 'agent-1', role: 'agent' })
+    conversationsStore.set({
+      items: [{ id: 'conv-1', status: 'active', priority: 'normal', unreadCount: 0 }],
+      total: 1,
+      page: 1,
+      busy: false,
+      error: null,
+    })
+    realtime.connectRealtime()
+    MockWebSocket.instances[0].open()
+
+    MockWebSocket.instances[0].receive({
+      type: 'new_message',
+      payload: {
+        conversationId: 'conv-1',
+        messageId: 'msg-own',
+        content: 'sent by me',
+        senderType: 'agent',
+        senderId: 'agent-1',
+        timestamp: '2026-06-25T12:00:00.000Z',
+      },
+    })
+
+    expect(conversationsStore.get().items[0]).toMatchObject({
+      id: 'conv-1',
+      unreadCount: 0,
+    })
+    expect(conversationsStore.get().items[0].lastMessage).toBeUndefined()
+  })
 })

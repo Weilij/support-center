@@ -9,12 +9,15 @@ import { applyIncomingMessage } from '../stores/conversations'
 type Handler = (payload: Record<string, unknown>) => void
 
 const MAX_BACKOFF_MS = 30_000
+const RECENT_MESSAGE_ID_LIMIT = 500
 
 let socket: WebSocket | null = null
 let backoff = 1000
 let closedByUs = false
 let openedOnce = false
 const handlers = new Map<string, Set<Handler>>()
+const recentMessageIds: string[] = []
+const seenMessageIds = new Set<string>()
 // Conversations the UI wants live updates for. Subscribe frames sent before the
 // socket reaches OPEN are dropped (sendFrame has no queue), so we remember the
 // desired set and (re)send it on every successful handshake — this fixes both
@@ -30,6 +33,18 @@ export function onEvent(event: string, fn: Handler): () => void {
 
 function route(event: string, payload: Record<string, unknown>) {
   handlers.get(event)?.forEach((fn) => fn(payload))
+}
+
+function rememberMessageId(id: string): boolean {
+  if (!id) return true
+  if (seenMessageIds.has(id)) return false
+  seenMessageIds.add(id)
+  recentMessageIds.push(id)
+  while (recentMessageIds.length > RECENT_MESSAGE_ID_LIMIT) {
+    const evicted = recentMessageIds.shift()
+    if (evicted) seenMessageIds.delete(evicted)
+  }
+  return true
 }
 
 export interface IncomingMessage {
@@ -119,7 +134,13 @@ export function connectRealtime(): void {
       // The server wraps events as { type, payload, timestamp }. Hand the inner
       // payload to handlers — they read fields like conversationId/message off
       // it directly. Raw frames without a payload wrapper fall back to the frame.
-      if (frame.type) route(frame.type, (frame.payload ?? frame) as Record<string, unknown>)
+      if (frame.type) {
+        const payload = (frame.payload ?? frame) as Record<string, unknown>
+        if (frame.type === 'new_message' && !rememberMessageId(readMessageEvent(payload).id)) {
+          return
+        }
+        route(frame.type, payload)
+      }
     } catch {
       /* non-JSON frames are ignored */
     }
@@ -138,6 +159,8 @@ export function connectRealtime(): void {
 export function disconnectRealtime(): void {
   closedByUs = true
   openedOnce = false
+  recentMessageIds.length = 0
+  seenMessageIds.clear()
   socket?.close()
   socket = null
 }

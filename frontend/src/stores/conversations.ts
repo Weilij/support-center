@@ -36,19 +36,53 @@ export const conversationsStore = new Store<ConversationsState>({
 
 /// The list endpoint returns the conversations as a bare array in `data`;
 /// lastMessage is an object whose preview lives at .content.
-function normalize(raw: unknown): Conversation[] {
-  const list = Array.isArray(raw)
-    ? raw
-    : ((raw as { items?: unknown[]; conversations?: unknown[] })?.items ??
-       (raw as { conversations?: unknown[] })?.conversations ??
-       [])
-  return (list as Record<string, unknown>[]).map((c) => ({
-    ...(c as Conversation),
-    lastMessage:
-      typeof c.lastMessage === 'object' && c.lastMessage !== null
-        ? String((c.lastMessage as { content?: unknown }).content ?? '')
-        : (c.lastMessage as string | undefined),
-  }))
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function listPayload(raw: unknown): unknown[] {
+  if (Array.isArray(raw)) return raw
+  if (!isRecord(raw)) return []
+  if (Array.isArray(raw.items)) return raw.items
+  if (Array.isArray(raw.conversations)) return raw.conversations
+  return []
+}
+
+function lastMessagePreview(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (!isRecord(value)) return undefined
+  const content = value.content
+  return content === undefined || content === null ? '' : String(content)
+}
+
+function normalizeConversationRow(c: Record<string, unknown>): Conversation | null {
+  if (typeof c.id !== 'string' || typeof c.status !== 'string' || typeof c.priority !== 'string') {
+    return null
+  }
+  return {
+    ...c,
+    id: c.id,
+    status: c.status,
+    priority: c.priority,
+    lastMessage: lastMessagePreview(c.lastMessage),
+  }
+}
+
+export function normalizeConversations(raw: unknown): Conversation[] {
+  return listPayload(raw)
+    .filter(isRecord)
+    .map(normalizeConversationRow)
+    .filter((c): c is Conversation => c !== null)
+}
+
+function responseTotal(resp: unknown, fallback: number): number {
+  if (!isRecord(resp)) return fallback
+  const pagination = isRecord(resp.pagination) ? resp.pagination : undefined
+  return finiteNumber(pagination?.total) ?? finiteNumber(resp.total) ?? fallback
 }
 
 export async function loadConversations(page = 1, force = false): Promise<void> {
@@ -57,8 +91,8 @@ export async function loadConversations(page = 1, force = false): Promise<void> 
   conversationsStore.update((s) => ({ ...s, busy: true, error: null }))
   const resp = await get<unknown>(`/api/conversations?page=${page}`)
   if (resp.success && resp.data !== undefined) {
-    const items = normalize(resp.data)
-    const total = (resp as { pagination?: { total?: number } }).pagination?.total ?? items.length
+    const items = normalizeConversations(resp.data)
+    const total = responseTotal(resp, items.length)
     conversationsStore.set({
       items,
       total,

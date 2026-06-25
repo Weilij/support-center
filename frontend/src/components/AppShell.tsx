@@ -15,6 +15,7 @@ import { session, authChanged } from '../auth/session'
 import { useHotkeys } from '../hooks/useHotkeys'
 import { notificationsStore } from '../stores/notifications'
 import { useStore } from '../stores/store'
+import { loadTeams, teamsStore } from '../stores/teams'
 import { Icon } from './Icon'
 import { ThemeToggle } from './ThemeToggle'
 
@@ -227,9 +228,11 @@ export default function AppShell({
   const navigate = useNavigate()
   const location = useLocation()
   const notifications = useStore(notificationsStore)
+  const teams = useStore(teamsStore)
   const who = session.identity()
   const pos = session.position()
   const unread = notifications.unread
+  const [contextTeamId, setContextTeamId] = useState(session.contextTeamId() ?? '')
 
   useHotkeys({
     'mod+k': (e) => {
@@ -274,6 +277,31 @@ export default function AppShell({
   useEffect(() => {
     setDrawerOpen(false)
   }, [location.pathname])
+
+  useEffect(() => {
+    if (session.isAdmin() && teams.items.length === 0) {
+      void loadTeams()
+    }
+  }, [teams.items.length])
+
+  const ownTeamOptions = session.teamOptions()
+  const contextOptions =
+    ownTeamOptions.length > 0
+      ? ownTeamOptions
+      : session.isAdmin()
+        ? teams.items.map((team) => ({ id: String(team.id), name: team.name }))
+        : []
+
+  const switchTeam = (next: string) => {
+    if (!next && session.isAdmin()) {
+      if (session.clearContextTeam()) setContextTeamId('')
+      return
+    }
+    if (!next) return
+    if (session.switchContextTeam(next)) {
+      setContextTeamId(next)
+    }
+  }
 
   const logout = async () => {
     // Server logout is best-effort (CRD §8.1 sign-out: failures ignored).
@@ -383,6 +411,37 @@ export default function AppShell({
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="cs-page-title">{title ?? ''}</div>
           </div>
+
+          {/* Team context */}
+          {contextOptions.length > 1 && (
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 12,
+                color: 'var(--muted)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              團隊
+              <select
+                value={contextTeamId}
+                onChange={(e) => switchTeam(e.target.value)}
+                aria-label="切換團隊"
+                style={{ minWidth: isMobile ? 96 : 140 }}
+              >
+                {session.isAdmin() && ownTeamOptions.length === 0 && (
+                  <option value="">全部團隊</option>
+                )}
+                {contextOptions.map((team) => (
+                  <option key={team.id} value={team.id}>
+                    {team.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
 
           {/* Light/dark toggle */}
           <ThemeToggle />

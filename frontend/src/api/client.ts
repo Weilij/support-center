@@ -201,16 +201,30 @@ export interface ListResult<T> {
   page: number
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function listItems<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : []
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
 export function unwrapList<T>(resp: Envelope<T[] | { items?: T[] }>, page = 1): ListResult<T> {
-  const data = resp.data as unknown
-  const items: T[] = Array.isArray(data)
-    ? (data as T[])
-    : (((data as { items?: T[]; rows?: T[] })?.items ??
-        (data as { rows?: T[] })?.rows ??
-        []) as T[])
-  const pag = (resp as { pagination?: { total?: number; page?: number } }).pagination
-  const total = pag?.total ?? (resp as { total?: number }).total ?? items.length
-  return { items, total, page: pag?.page ?? page }
+  const data: unknown = resp.data
+  const items = Array.isArray(data)
+    ? listItems<T>(data)
+    : isRecord(data)
+      ? listItems<T>(data.items ?? data.rows)
+      : []
+
+  const pagination = isRecord(resp.pagination) ? resp.pagination : undefined
+  const total = optionalNumber(pagination?.total) ?? optionalNumber(resp.total) ?? items.length
+  const currentPage = optionalNumber(pagination?.page) ?? page
+  return { items, total, page: currentPage }
 }
 
 /// multipart/form-data upload — the JSON `api()` path can't carry binaries.
