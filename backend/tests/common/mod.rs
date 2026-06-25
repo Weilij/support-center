@@ -43,14 +43,15 @@ fn admin_url() -> String {
 async fn sweep_stale_test_dbs(admin: &sqlx::PgPool) {
     static ONCE: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
     ONCE.get_or_init(|| async {
-        let names: Vec<String> = sqlx::query_scalar(
-            "SELECT datname FROM pg_database WHERE datname LIKE 'mcss_test_%'",
-        )
-        .fetch_all(admin)
-        .await
-        .unwrap_or_default();
+        let names: Vec<String> =
+            sqlx::query_scalar("SELECT datname FROM pg_database WHERE datname LIKE 'mcss_test_%'")
+                .fetch_all(admin)
+                .await
+                .unwrap_or_default();
         for name in names {
-            let _ = sqlx::query(&format!("DROP DATABASE \"{name}\"")).execute(admin).await;
+            let _ = sqlx::query(&format!("DROP DATABASE \"{name}\""))
+                .execute(admin)
+                .await;
         }
     })
     .await;
@@ -58,7 +59,9 @@ async fn sweep_stale_test_dbs(admin: &sqlx::PgPool) {
 
 pub async fn spawn_app_custom(customize: impl FnOnce(&mut Config)) -> TestApp {
     let dir = tempfile::tempdir().expect("tempdir");
-    let admin = sqlx::PgPool::connect(&admin_url()).await.expect("admin pg connect");
+    let admin = sqlx::PgPool::connect(&admin_url())
+        .await
+        .expect("admin pg connect");
     sweep_stale_test_dbs(&admin).await;
     let db_name = format!("mcss_test_{}", uuid::Uuid::new_v4().simple());
     sqlx::query(&format!("CREATE DATABASE \"{db_name}\""))
@@ -66,7 +69,10 @@ pub async fn spawn_app_custom(customize: impl FnOnce(&mut Config)) -> TestApp {
         .await
         .expect("create test db");
     let base = admin_url();
-    let url = format!("{}/{db_name}", base.rsplit_once('/').map(|(b, _)| b).unwrap_or(&base));
+    let url = format!(
+        "{}/{db_name}",
+        base.rsplit_once('/').map(|(b, _)| b).unwrap_or(&base)
+    );
     let pool = db::init_pool(&url).await.expect("db init");
     let mut config = Config {
         database_url: url,
@@ -99,7 +105,11 @@ pub async fn spawn_app_custom(customize: impl FnOnce(&mut Config)) -> TestApp {
     };
     customize(&mut config);
     let state = AppState::new(pool, config);
-    TestApp { router: app::build_router(state.clone()), state, _dir: dir }
+    TestApp {
+        router: app::build_router(state.clone()),
+        state,
+        _dir: dir,
+    }
 }
 
 pub fn spawn_peer_app(primary: &TestApp) -> TestApp {
@@ -107,7 +117,11 @@ pub fn spawn_peer_app(primary: &TestApp) -> TestApp {
     let mut config = primary.state.config.clone();
     config.upload_dir = dir.path().join("uploads").display().to_string();
     let state = AppState::new(primary.state.db.clone(), config);
-    TestApp { router: app::build_router(state.clone()), state, _dir: dir }
+    TestApp {
+        router: app::build_router(state.clone()),
+        state,
+        _dir: dir,
+    }
 }
 
 impl TestApp {
@@ -118,7 +132,8 @@ impl TestApp {
         token: Option<&str>,
         body: Option<Value>,
     ) -> (StatusCode, Value, HeaderMap) {
-        self.request_with_headers(method, path, token, body, &[]).await
+        self.request_with_headers(method, path, token, body, &[])
+            .await
     }
 
     pub async fn request_with_headers(
@@ -206,13 +221,14 @@ impl TestApp {
     }
 
     pub async fn seed_team(&self, name: &str) -> i64 {
-        sqlx::query_scalar::<_, i64>("INSERT INTO teams (name, created_at) VALUES ($1, $2) RETURNING id")
-            .bind(name)
-            .bind(chrono::Utc::now().to_rfc3339())
-            .fetch_one(&self.state.db)
-            .await
-            .unwrap()
-            
+        sqlx::query_scalar::<_, i64>(
+            "INSERT INTO teams (name, created_at) VALUES ($1, $2) RETURNING id",
+        )
+        .bind(name)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .fetch_one(&self.state.db)
+        .await
+        .unwrap()
     }
 
     pub async fn add_membership(&self, agent_id: &str, team_id: i64, role: &str, primary: bool) {
@@ -249,7 +265,6 @@ impl TestApp {
         .fetch_one(&self.state.db)
         .await
         .unwrap()
-        
     }
 
     /// Insert an active, global tag directly and return its id.
@@ -277,7 +292,6 @@ impl TestApp {
         .fetch_one(&self.state.db)
         .await
         .unwrap()
-        
     }
 
     /// Insert a conversation directly and return its id.
@@ -311,7 +325,15 @@ impl TestApp {
         content: &str,
         created_at: Option<&str>,
     ) -> String {
-        self.seed_message_full(conversation_id, sender_type, content, created_at, None, None).await
+        self.seed_message_full(
+            conversation_id,
+            sender_type,
+            content,
+            created_at,
+            None,
+            None,
+        )
+        .await
     }
 
     /// Insert a message with explicit session linkage.
@@ -346,11 +368,9 @@ impl TestApp {
         .bind(content)
         .bind(session_id)
         .bind(session_seq)
-        .bind(
-            created_at
-                .map(str::to_string)
-                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
-        )
+        .bind(created_at.map(str::to_string).unwrap_or_else(|| {
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        }))
         .execute(&self.state.db)
         .await
         .unwrap();
@@ -379,9 +399,17 @@ impl TestApp {
         .bind(&id)
         .bind(conversation_id)
         .bind(topic)
-        .bind(started_at.map(str::to_string).unwrap_or_else(|| now.clone()))
+        .bind(
+            started_at
+                .map(str::to_string)
+                .unwrap_or_else(|| now.clone()),
+        )
         .bind(if is_active { None } else { Some(now.clone()) })
-        .bind(last_activity_at.map(str::to_string).unwrap_or_else(|| now.clone()))
+        .bind(
+            last_activity_at
+                .map(str::to_string)
+                .unwrap_or_else(|| now.clone()),
+        )
         .bind(message_count)
         .bind(is_active as i64)
         .bind(&now)
@@ -422,8 +450,7 @@ impl TestApp {
                 .fetch_optional(&self.state.db)
                 .await
                 .unwrap();
-        let (name, role) =
-            actor.unwrap_or_else(|| ("seed user".to_string(), "agent".to_string()));
+        let (name, role) = actor.unwrap_or_else(|| ("seed user".to_string(), "agent".to_string()));
         sqlx::query_scalar::<_, i64>(
             "INSERT INTO activity_logs (agent_id, agent_name, agent_role, action, resource_type, resource_id, details, created_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
@@ -441,7 +468,6 @@ impl TestApp {
         .fetch_one(&self.state.db)
         .await
         .unwrap()
-        
     }
 
     /// Login and return (accessToken, refreshToken, sessionId).

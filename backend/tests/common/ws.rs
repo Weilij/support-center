@@ -36,7 +36,9 @@ pub fn mint(sub: &str, role: &str, ttl_secs: i64) -> String {
 /// Open a websocket against an arbitrary path (path includes the query).
 pub async fn ws_connect(addr: SocketAddr, path_and_query: &str) -> Result<Ws, WsError> {
     let url = format!("ws://{addr}{path_and_query}");
-    tokio_tungstenite::connect_async(url).await.map(|(ws, _)| ws)
+    tokio_tungstenite::connect_async(url)
+        .await
+        .map(|(ws, _)| ws)
 }
 
 /// Expect the handshake to be rejected; return (status, body).
