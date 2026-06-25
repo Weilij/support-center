@@ -79,9 +79,10 @@ Remaining external/infrastructure boundaries:
       multiple instances.
 - [x] Configured alert webhook sink: monitoring/test alerts POST JSON to the
       admin-configured webhook URL and record per-channel attempt outcomes.
-- [ ] Remaining alert polish: live email/Slack-specific dispatch beyond generic
-      webhook POST, plus live welcome-reply push polish where TODO markers
-      remain.
+- [x] Slack-specific alert dispatch: chat-channel alerts send Slack Incoming
+      Webhook `text` payloads instead of generic alert JSON.
+- [ ] Remaining alert polish: live email dispatch plus live welcome-reply push
+      polish where TODO markers remain.
 
 ## Current Routing Decision
 
@@ -225,3 +226,6 @@ conversation routing as "指派至團隊 / 轉接團隊 / 取消指派" only.
   configuration is now used by monitoring/test alerts, which best-effort POST
   a JSON payload to the configured URL and persist success/failure in
   `channelAttempts`.
+- 2026-06-26: Slack alert dispatch hardened: configured `alert.slack` now
+  receives Slack Incoming Webhook `text` payloads for chat-channel alerts, with
+  delivery success/failure still recorded in `channelAttempts`.

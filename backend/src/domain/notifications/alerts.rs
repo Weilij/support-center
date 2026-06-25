@@ -171,6 +171,16 @@ async fn dispatch_webhook(
     Ok(())
 }
 
+fn slack_payload(level: &str, title: &str, description: &str, metadata: Option<&Value>) -> Value {
+    let mut text = format!("*[{level}]* {title}\n{description}");
+    if let Some(meta) = metadata.filter(|v| !v.is_null()) {
+        text.push_str("\n```");
+        text.push_str(&meta.to_string());
+        text.push_str("```");
+    }
+    json!({ "text": text })
+}
+
 /// Monitoring alert with rate limiting and escalation (CRD 5064-5067).
 pub async fn send_monitoring_alert(
     state: &AppState,
@@ -218,7 +228,11 @@ pub async fn send_monitoring_alert(
                     Ok(())
                 }
                 "webhook" => dispatch_webhook(state, &payload, "alert.webhook").await,
-                "chat" => dispatch_webhook(state, &payload, "alert.slack").await,
+                "chat" => {
+                    let payload =
+                        slack_payload(level, title, description, metadata.as_ref());
+                    dispatch_webhook(state, &payload, "alert.slack").await
+                }
                 other => Err(format!("{other}: not configured")),
             };
             let success = result.is_ok();

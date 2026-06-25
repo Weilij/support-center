@@ -530,6 +530,41 @@ async fn monitoring_alert_posts_configured_webhook_channel() {
 }
 
 #[tokio::test]
+async fn monitoring_alert_posts_slack_specific_payload_for_chat_channel() {
+    let app = spawn_app().await;
+    let (url, seen) = webhook_sink().await;
+    sqlx::query(
+        "INSERT INTO system_settings (key, value, updated_at) VALUES ($1, $2, $3)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    )
+    .bind("alert.slack")
+    .bind(json!({"webhookUrl": url}).to_string())
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+
+    let alert = alerts::send_monitoring_alert(
+        &app.state,
+        "emergency",
+        "Queue down",
+        "worker heartbeat missing",
+        None,
+    )
+    .await;
+    let attempts = alert["channelAttempts"].as_array().unwrap();
+    assert!(attempts.iter().any(|a| a["channel"] == "chat" && a["success"] == true));
+
+    let received = seen.lock().await;
+    assert_eq!(received.len(), 1);
+    assert!(received[0]["text"].as_str().unwrap().contains("Queue down"));
+    assert!(
+        received[0].get("type").is_none(),
+        "Slack payload should use Incoming Webhook text format, not generic alert JSON"
+    );
+}
+
+#[tokio::test]
 async fn security_alerts_gate_by_severity_and_configuration() {
     // No destinations configured: selected destinations fail gracefully.
     let (ok, failed, errors) =
