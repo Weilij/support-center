@@ -102,9 +102,10 @@ Remaining external/infrastructure boundaries:
       events relay across backend instances through Postgres event/ack tables.
 - [x] Multi-instance routed broadcaster fan-out: queued broadcaster events relay
       across backend instances through Postgres event/ack tables.
-- [ ] Broader realtime scale-out hardening for non-customer-channel rooms and
-      presence, if deployment requirements need every realtime surface to span
-      multiple instances.
+- [~] Broader realtime scale-out hardening: injected room broadcasts now reuse
+      the Postgres-backed routed broadcaster fan-out across backend instances;
+      presence remains local-only unless deployment requirements need
+      cross-instance presence.
 - [x] Configured alert webhook sink: monitoring/test alerts POST JSON to the
       admin-configured webhook URL and record per-channel attempt outcomes.
 - [x] Slack-specific alert dispatch: chat-channel alerts send Slack Incoming

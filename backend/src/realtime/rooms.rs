@@ -277,7 +277,8 @@ pub async fn broadcast(
         .map(|Json(v)| v)
         .filter(|v| v.is_object())
         .ok_or_else(|| AppError::BadRequest("event body is required".into()))?;
-    let delivered = state.realtime.room_broadcast_raw(&conversation_id, event);
+    let delivered = state.realtime.room_broadcast_raw(&conversation_id, event.clone());
+    super::broadcaster::publish_remote_room_broadcast(&state, &conversation_id, &event).await;
     Ok(envelope::ok(json!({ "delivered": delivered })))
 }
 

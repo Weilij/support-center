@@ -414,6 +414,23 @@ async fn room_http_status_participants_metrics_broadcast_and_disconnect() {
     assert_eq!(status, StatusCode::OK);
     let evt = wait_for_event(&mut ws, "announcement").await;
     assert_eq!(evt["payload"]["data"]["note"], "hello");
+    let fanout: (String, String, String) = sqlx::query_as(
+        "SELECT event, targets, options FROM realtime_broadcast_fanout_events
+         WHERE source_instance = $1
+         ORDER BY created_at DESC
+         LIMIT 1",
+    )
+    .bind(app.state.realtime.instance_id())
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
+    let event: serde_json::Value = serde_json::from_str(&fanout.0).unwrap();
+    let targets: serde_json::Value = serde_json::from_str(&fanout.1).unwrap();
+    let options: serde_json::Value = serde_json::from_str(&fanout.2).unwrap();
+    assert_eq!(event["type"], "announcement");
+    assert_eq!(targets[0]["type"], "conversation");
+    assert_eq!(targets[0]["ids"][0], s.team_conv);
+    assert_eq!(options["priority"], "high");
 
     // POST /disconnect — removes the connection; unknown ids are a successful
     // no-op (CRD 3524-3528).

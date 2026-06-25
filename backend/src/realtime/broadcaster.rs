@@ -273,6 +273,17 @@ async fn publish_remote_broadcast(
     }
 }
 
+/// Relay an injected room broadcast to peer instances serving the same
+/// conversation. Local delivery still happens synchronously in `rooms`.
+pub async fn publish_remote_room_broadcast(
+    state: &Arc<AppState>,
+    conversation_id: &str,
+    event: &Value,
+) {
+    let targets = vec![json!({ "type": "conversation", "ids": [conversation_id] })];
+    publish_remote_broadcast(state, event, &targets, &json!({ "priority": "high" })).await;
+}
+
 #[derive(sqlx::FromRow)]
 struct RemoteBroadcastEvent {
     id: String,
