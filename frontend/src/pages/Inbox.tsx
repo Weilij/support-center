@@ -454,9 +454,10 @@ function Thread({
       }
     })
     // Fetch messages
-    void get<{ items?: Message[]; messages?: Message[] }>(
-      `/api/conversations/${convId}/messages`,
-    ).then((resp) => {
+    const loadMessages = async () => {
+      const resp = await get<{ items?: Message[]; messages?: Message[] }>(
+        `/api/conversations/${convId}/messages`,
+      )
       if (resp.success && resp.data) {
         const items = (resp.data.items ?? resp.data.messages ?? []) as Array<
           Message & { metadata?: { media?: Record<string, unknown> } }
@@ -466,7 +467,8 @@ function Thread({
       } else {
         setError(resp.message ?? null)
       }
-    })
+    }
+    void loadMessages()
     subscribeConversation(convId)
     const off = onEvent('new_message', (payload) => {
       const m = readMessageEvent(payload)
@@ -484,8 +486,12 @@ function Thread({
             }],
       )
     })
+    const offReconnect = onEvent('realtime_reconnected', () => {
+      void loadMessages()
+    })
     return () => {
       off()
+      offReconnect()
       unsubscribeConversation(convId)
     }
   }, [convId]) // onMetaLoaded intentionally omitted — stable callback ref

@@ -113,16 +113,18 @@ export default function ConversationDetail() {
 
   useEffect(() => {
     if (!id) return
-    void get<{ items?: Message[]; messages?: Message[] }>(
-      `/api/conversations/${id}/messages`,
-    ).then((resp) => {
+    const loadMessages = async () => {
+      const resp = await get<{ items?: Message[]; messages?: Message[] }>(
+        `/api/conversations/${id}/messages`,
+      )
       if (resp.success && resp.data) {
         const items = resp.data.items ?? resp.data.messages ?? []
         setMessages([...items].reverse())
       } else {
         setError(resp.message ?? null)
       }
-    })
+    }
+    void loadMessages()
     subscribeConversation(id)
     // Realtime reconciliation: append pushed messages for this conversation.
     const off = onEvent('new_message', (payload) => {
@@ -139,8 +141,12 @@ export default function ConversationDetail() {
             }],
       )
     })
+    const offReconnect = onEvent('realtime_reconnected', () => {
+      void loadMessages()
+    })
     return () => {
       off()
+      offReconnect()
       unsubscribeConversation(id)
     }
   }, [id])

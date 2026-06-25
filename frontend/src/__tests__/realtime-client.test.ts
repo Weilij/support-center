@@ -111,4 +111,24 @@ describe('realtime client', () => {
     third.open()
     expect(third.sent).toEqual([])
   })
+
+  it('emits an internal reconnect event after an unexpected disconnect', async () => {
+    const { session } = await import('../auth/session')
+    const realtime = await import('../realtime/client')
+    const reconnects: Record<string, unknown>[] = []
+
+    realtime.onEvent('realtime_reconnected', (payload) => reconnects.push(payload))
+    session.storeLogin('session-1', { id: 'agent-1', role: 'agent' })
+    realtime.connectRealtime()
+    realtime.subscribeConversation('conv-1')
+
+    MockWebSocket.instances[0].open()
+    expect(reconnects).toEqual([])
+
+    MockWebSocket.instances[0].serverClose()
+    await vi.advanceTimersByTimeAsync(1000)
+    MockWebSocket.instances[1].open()
+
+    expect(reconnects).toEqual([{ subscribedConversationIds: ['conv-1'] }])
+  })
 })

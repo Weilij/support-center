@@ -13,6 +13,7 @@ const MAX_BACKOFF_MS = 30_000
 let socket: WebSocket | null = null
 let backoff = 1000
 let closedByUs = false
+let openedOnce = false
 const handlers = new Map<string, Set<Handler>>()
 // Conversations the UI wants live updates for. Subscribe frames sent before the
 // socket reaches OPEN are dropped (sendFrame has no queue), so we remember the
@@ -99,10 +100,15 @@ export function connectRealtime(): void {
   socket = ws
 
   ws.onopen = () => {
+    const reconnected = openedOnce
+    openedOnce = true
     backoff = 1000 // reset after a successful handshake
     // Flush every desired subscription now that the socket is OPEN — covers the
     // initial-load race and re-establishes subscriptions after a reconnect.
     desiredConversations.forEach((id) => sendFrame({ type: 'subscribe', conversationId: id }))
+    if (reconnected) {
+      route('realtime_reconnected', { subscribedConversationIds: [...desiredConversations] })
+    }
   }
   ws.onmessage = (raw) => {
     try {
@@ -131,6 +137,7 @@ export function connectRealtime(): void {
 
 export function disconnectRealtime(): void {
   closedByUs = true
+  openedOnce = false
   socket?.close()
   socket = null
 }
