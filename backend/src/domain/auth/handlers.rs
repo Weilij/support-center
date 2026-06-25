@@ -32,6 +32,28 @@ fn user_agent(headers: &HeaderMap) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+fn request_is_tls(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.split(',').any(|p| p.trim().eq_ignore_ascii_case("https")))
+        || headers
+            .get("forwarded")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| {
+                v.split(';')
+                    .any(|part| part.trim().eq_ignore_ascii_case("proto=https"))
+            })
+        || headers
+            .get("x-forwarded-ssl")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.eq_ignore_ascii_case("on"))
+}
+
+fn secure_cookies(state: &AppState, headers: &HeaderMap) -> bool {
+    state.config.is_production() || request_is_tls(headers)
+}
+
 fn token_issued_before_valid_after(iat: i64, valid_after: &Option<String>) -> bool {
     valid_after
         .as_deref()
@@ -178,7 +200,7 @@ pub async fn login(
     .await;
 
     let csrf_token = uuid::Uuid::new_v4().simple().to_string();
-    let secure = state.config.is_production();
+    let secure = secure_cookies(&state, &headers);
     let mut response = envelope::ok(json!({
         "token": access_token,
         "refreshToken": refresh_token,
@@ -383,7 +405,7 @@ pub async fn logout(
     )
     .await;
 
-    let secure = state.config.is_production();
+    let secure = secure_cookies(&state, &headers);
     let mut response = envelope::message_only("Logged out successfully");
     for cookie_str in cookies::clear_auth_cookies(secure) {
         if let Ok(hv) = HeaderValue::from_str(&cookie_str) {
@@ -455,7 +477,7 @@ pub async fn refresh(
     let (access_token, refresh_token) = issue_token_pair(&state, &agent, &teams).await?;
 
     let csrf_token = uuid::Uuid::new_v4().simple().to_string();
-    let secure = state.config.is_production();
+    let secure = secure_cookies(&state, &headers);
     let mut response = envelope::ok(json!({
         "token": access_token,
         "refreshToken": refresh_token,
@@ -967,7 +989,8 @@ pub async fn auth_status(
 
 #[cfg(test)]
 mod tests {
-    use super::bounded_service_ttl;
+    use super::{bounded_service_ttl, request_is_tls};
+    use axum::http::{HeaderMap, HeaderValue};
 
     #[test]
     fn bounded_service_ttl_caps_refresh_to_absolute_lifetime() {
@@ -983,5 +1006,27 @@ mod tests {
     fn bounded_service_ttl_rejects_after_absolute_lifetime() {
         assert_eq!(bounded_service_ttl(100, 0, 60, 100), None);
         assert_eq!(bounded_service_ttl(101, 0, 60, 100), None);
+    }
+
+    #[test]
+    fn request_is_tls_accepts_forwarded_https_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        assert!(request_is_tls(&headers));
+
+        let mut headers = HeaderMap::new();
+        headers.insert("forwarded", HeaderValue::from_static("for=1.2.3.4;proto=https"));
+        assert!(request_is_tls(&headers));
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-ssl", HeaderValue::from_static("on"));
+        assert!(request_is_tls(&headers));
+    }
+
+    #[test]
+    fn request_is_tls_rejects_plain_http_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("http"));
+        assert!(!request_is_tls(&headers));
     }
 }

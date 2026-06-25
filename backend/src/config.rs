@@ -56,8 +56,7 @@ impl Config {
             jwt_secret: std::env::var("JWT_SECRET")
                 .unwrap_or_else(|_| "dev-only-insecure-secret".into()),
             encryption_key: std::env::var("ENCRYPTION_KEY").ok().filter(|s| !s.is_empty()),
-            environment: std::env::var("ENVIRONMENT")
-                .unwrap_or_else(|_| "development".into()),
+            environment: std::env::var("ENVIRONMENT").unwrap_or_else(|_| "production".into()),
             frontend_url: std::env::var("FRONTEND_URL").ok().filter(|s| !s.is_empty()),
             backend_url: std::env::var("BACKEND_URL")
                 .ok()
@@ -122,7 +121,10 @@ impl Config {
     }
 
     pub fn is_production(&self) -> bool {
-        self.environment == "production"
+        !matches!(
+            self.environment.trim().to_ascii_lowercase().as_str(),
+            "development" | "dev" | "test" | "local"
+        )
     }
 
     /// Key used to sign/verify file download URLs (review #8). Falls back to the
@@ -131,7 +133,8 @@ impl Config {
         self.file_signing_secret.as_deref().unwrap_or(&self.jwt_secret)
     }
 
-    /// Reject insecure production configuration (review #1/#2). No-op outside production.
+    /// Reject insecure production-like configuration. Unknown/missing environments
+    /// fail closed as production; only explicit dev/test/local names are relaxed.
     pub fn validate_for_production(&self) -> Result<(), String> {
         if !self.is_production() {
             return Ok(());
@@ -220,12 +223,26 @@ fn parse_trusted_proxies(raw: &str) -> Vec<std::net::IpAddr> {
 mod validate_production_tests {
     use super::*;
 
-    /// Development config (test_config) must always pass — guard is a no-op.
+    /// Development config (test_config) must always pass because its environment
+    /// explicitly opts into the dev/test relaxation.
     #[test]
     fn dev_config_passes() {
         let cfg = test_config();
         assert_eq!(cfg.environment, "development");
         assert!(cfg.validate_for_production().is_ok());
+    }
+
+    #[test]
+    fn unknown_environment_is_production_like() {
+        let cfg = Config {
+            environment: "prodution".into(),
+            jwt_secret: "dev-only-insecure-secret".into(),
+            encryption_key: Some("some-key".into()),
+            ..test_config()
+        };
+        assert!(cfg.is_production());
+        let err = cfg.validate_for_production().unwrap_err();
+        assert!(err.contains("JWT_SECRET must be set"), "unexpected error: {err}");
     }
 
     /// Production config using the insecure default secret must be rejected.
