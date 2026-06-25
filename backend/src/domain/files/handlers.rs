@@ -63,7 +63,7 @@ fn signed_download_url(state: &AppState, file_id: &str, key: &str, ttl: i64) -> 
     (format!("{base}/api/files/download/{file_id}?expires={expires}&sig={sig}"), expires)
 }
 
-fn signed_public_url(state: &AppState, key: &str, ttl: i64) -> String {
+pub(crate) fn signed_public_url(state: &AppState, key: &str, ttl: i64) -> String {
     let base = state.config.backend_url.clone().unwrap_or_default();
     let (sig, expires) = sign::sign(state.config.file_signing_key(), key, ttl);
     format!("{base}/api/files/public/{key}?expires={expires}&sig={sig}")
@@ -137,6 +137,13 @@ pub async fn public_proxy(
     };
     let content_type = content_type_for_key(&state, &path).await;
     Ok(stream_bytes(bytes, &content_type, None, "public, max-age=86400"))
+}
+
+/// GET /api/assets/video-placeholder.png — a static thumbnail used as the
+/// `previewImageUrl` for outbound LINE video messages (public, no auth).
+pub async fn video_placeholder() -> Response {
+    const PNG: &[u8] = include_bytes!("../../../assets/video-placeholder.png");
+    stream_bytes(PNG.to_vec(), "image/png", None, "public, max-age=604800")
 }
 
 async fn content_type_for_key(state: &AppState, key: &str) -> String {

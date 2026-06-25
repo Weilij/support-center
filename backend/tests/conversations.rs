@@ -4,7 +4,7 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use common::{spawn_app, TestApp};
+use common::{spawn_app, spawn_app_custom, TestApp};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -774,6 +774,61 @@ async fn send_message_links_uploaded_attachments() {
     let linked: Option<String> =
         sqlx::query_scalar("SELECT message_id FROM attachments WHERE id = $1")
             .bind(&attachment_id)
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    assert_eq!(linked, Some(message_id));
+}
+
+#[tokio::test]
+async fn video_placeholder_asset_is_public_png() {
+    let app = spawn_app().await;
+    // Public, no auth required.
+    let (status, _, headers) =
+        app.request("GET", "/api/assets/video-placeholder.png", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let ct = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(ct.contains("image/png"), "content-type was {ct}");
+}
+
+#[tokio::test]
+async fn send_message_delivers_image_attachment_as_media() {
+    // backend_url must be set so a signed public URL can be minted for the media.
+    let app = spawn_app_custom(|c| c.backend_url = Some("https://example.test".into())).await;
+    let token = admin_token(&app).await;
+    let agent_id: String =
+        sqlx::query_scalar("SELECT id FROM agents LIMIT 1").fetch_one(&app.state.db).await.unwrap();
+    let cust = app.seed_customer("line", "U1", "Alice", None).await;
+    let conv = app.seed_conversation(cust, None, "active").await;
+
+    // Seed an unlinked image attachment (message_id NULL) scoped to the conversation.
+    sqlx::query(
+        "INSERT INTO attachments (id, message_id, conversation_id, file_name, content_type, file_size, file_url, storage_key, created_at)
+         VALUES ('img-att-1', NULL, $1, 'pic.png', 'image/png', 99, '/uploads/pic.png', 'system/image/pic.png', $2)",
+    )
+    .bind(&conv)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+
+    let (status, body, _) = app
+        .request(
+            "POST",
+            &format!("/api/conversations/{conv}/messages"),
+            Some(&token),
+            Some(json!({"content": "", "senderId": agent_id, "attachmentIds": ["img-att-1"]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The attachment is now linked to the persisted message.
+    let message_id = body["data"]["id"].as_str().unwrap().to_string();
+    let linked: Option<String> =
+        sqlx::query_scalar("SELECT message_id FROM attachments WHERE id = 'img-att-1'")
             .fetch_one(&app.state.db)
             .await
             .unwrap();

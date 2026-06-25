@@ -30,6 +30,9 @@ fn permission_denied() -> AppError {
     AppError::Forbidden("Permission denied".into())
 }
 
+/// Signed-URL lifetime for outbound media (LINE fetches at send time).
+const OUTBOUND_MEDIA_TTL_SECS: i64 = 7 * 24 * 3600;
+
 fn epoch_ms(iso: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(iso).ok().map(|d| d.timestamp_millis())
 }
@@ -594,6 +597,14 @@ struct MediaMsgRow {
     metadata: Option<String>,
 }
 
+#[derive(sqlx::FromRow)]
+struct OutAttRow {
+    content_type: Option<String>,
+    storage_key: Option<String>,
+    file_name: Option<String>,
+    file_url: Option<String>,
+}
+
 /// `metadata.media.fileName` if present (for the download filename).
 fn file_name_from_metadata(metadata: Option<&str>) -> Option<String> {
     let v: Value = serde_json::from_str(metadata?).ok()?;
@@ -822,15 +833,51 @@ pub async fn send_message(
     if !attachment_ids.is_empty() {
         let placeholders = vec!["?"; attachment_ids.len()].join(", ");
         let sql = format!(
-            "SELECT COALESCE(file_url, '') FROM attachments WHERE id IN ({placeholders}) AND message_id = $1"
+            "SELECT content_type, storage_key, file_name, file_url FROM attachments
+             WHERE id IN ({placeholders}) AND message_id = $1"
         );
         let sql = crate::db::pg_params(&sql);
-        let mut q = sqlx::query_scalar::<_, String>(&sql);
+        let mut q = sqlx::query_as::<_, OutAttRow>(&sql);
         for aid in &attachment_ids {
             q = q.bind(aid);
         }
-        for url in q.bind(&message_id).fetch_all(&state.db).await? {
-            items.push(OutboundItem::text(url));
+        let has_public_base = state.config.backend_url.is_some();
+        for a in q.bind(&message_id).fetch_all(&state.db).await? {
+            let name = a.file_name.clone();
+            let public_url = match (has_public_base, a.storage_key.as_deref()) {
+                (true, Some(key)) => Some(crate::domain::files::handlers::signed_public_url(
+                    &state, key, OUTBOUND_MEDIA_TTL_SECS,
+                )),
+                _ => None,
+            };
+            match public_url {
+                Some(url) => {
+                    let kind = channels::classify_mime(a.content_type.as_deref().unwrap_or(""));
+                    let preview_url = match kind {
+                        channels::MediaKind::Image => Some(url.clone()),
+                        channels::MediaKind::Video => Some(format!(
+                            "{}/api/assets/video-placeholder.png",
+                            state.config.backend_url.clone().unwrap_or_default()
+                        )),
+                        _ => None,
+                    };
+                    items.push(OutboundItem {
+                        content: name.clone().unwrap_or_default(),
+                        media: Some(channels::OutboundMedia {
+                            kind,
+                            url,
+                            preview_url,
+                            file_name: name,
+                            duration_ms: None,
+                        }),
+                    });
+                }
+                None => items.push(OutboundItem::text(format!(
+                    "📎 {}\n{}",
+                    name.unwrap_or_default(),
+                    a.file_url.unwrap_or_default()
+                ))),
+            }
         }
     }
     let platform = conv.cust_platform.clone().unwrap_or_default();

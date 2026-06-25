@@ -34,6 +34,7 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let public = Router::new()
         .route("/api/files/health", get(handlers::health))
         .route("/api/files/public/{*path}", get(handlers::public_proxy))
+        .route("/api/assets/video-placeholder.png", get(handlers::video_placeholder))
         .route("/api/files/download/{attachmentId}", get(handlers::public_download))
         .route("/api/r2-public/{folder}/{filename}", get(handlers::r2_public))
         .merge(direct);
