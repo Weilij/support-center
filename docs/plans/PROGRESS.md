@@ -95,6 +95,8 @@ Remaining external/infrastructure boundaries:
 - [ ] Installer production artifact upload and Pages deployment assets.
 - [x] Multi-instance customer-channel realtime fan-out: customer conversation
       events relay across backend instances through Postgres event/ack tables.
+- [x] Multi-instance routed broadcaster fan-out: queued broadcaster events relay
+      across backend instances through Postgres event/ack tables.
 - [ ] Broader realtime scale-out hardening for non-customer-channel rooms and
       presence, if deployment requirements need every realtime surface to span
       multiple instances.

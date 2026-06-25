@@ -567,6 +567,86 @@ async fn normal_queue_overflow_evicts_oldest_entries() {
 }
 
 #[tokio::test]
+async fn routed_broadcaster_events_relay_across_instances() {
+    let app = spawn_app().await;
+    let s = seed(&app).await;
+    let addr = serve(&app).await;
+    let mut room = ws_connect(addr, &room_ws(&s.team_conv, &format!("?token={}", s.admin_token)))
+        .await
+        .unwrap();
+    wait_for_event(&mut room, "connection_established").await;
+
+    sqlx::query(
+        "INSERT INTO realtime_broadcast_fanout_events
+         (id, source_instance, event, targets, options, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind("broadcast-peer-1")
+    .bind("peer-instance")
+    .bind(event("remote-broadcast-1", "remote_conv_event", json!({ "k": "remote" })).to_string())
+    .bind(json!([{ "type": "conversation", "ids": [s.team_conv] }]).to_string())
+    .bind(json!({ "priority": "normal" }).to_string())
+    .bind(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+
+    let processed =
+        mcss_backend::realtime::broadcaster::process_remote_broadcast_events(&app.state, 10)
+            .await
+            .unwrap();
+    assert_eq!(processed, 1);
+    let evt = wait_for_event(&mut room, "remote_conv_event").await;
+    assert_eq!(evt["payload"]["k"], "remote");
+    assert_eq!(evt["payload"]["eventId"], "remote-broadcast-1");
+
+    let ack: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM realtime_broadcast_fanout_acks
+         WHERE event_id = 'broadcast-peer-1' AND instance_id = $1",
+    )
+    .bind(app.state.realtime.instance_id())
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
+    assert_eq!(ack, 1);
+}
+
+#[tokio::test]
+async fn queued_broadcaster_events_are_published_for_peer_instances() {
+    let app = spawn_app().await;
+    let s = seed(&app).await;
+
+    let (status, body, _) = app
+        .request(
+            "POST",
+            "/api/realtime/broadcaster/queue-event",
+            Some(&s.admin_token),
+            Some(json!({
+                "event": event("fanout-local-1", "fanout_event", json!({ "k": "local" })),
+                "targets": [{ "type": "conversation", "ids": [s.team_conv] }],
+                "options": { "priority": "normal" },
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let row: (String, String, String) = sqlx::query_as(
+        "SELECT event, targets, source_instance
+         FROM realtime_broadcast_fanout_events
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
+    assert_eq!(row.2, app.state.realtime.instance_id());
+    let event_body: Value = serde_json::from_str(&row.0).unwrap();
+    assert_eq!(event_body["id"], "fanout-local-1");
+    let targets: Value = serde_json::from_str(&row.1).unwrap();
+    assert_eq!(targets[0]["type"], "conversation");
+    assert_eq!(targets[0]["ids"][0], s.team_conv);
+}
+
+#[tokio::test]
 async fn broadcast_to_conversations_and_users() {
     let app = spawn_app().await;
     let s = seed(&app).await;

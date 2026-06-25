@@ -31,6 +31,10 @@ pub const MAX_RETRIES: u32 = 3;
 const FAST_LOOP: Duration = Duration::from_millis(100);
 /// Slow-loop interval draining the normal queue (CRD 3692).
 const SLOW_LOOP: Duration = Duration::from_millis(2_000);
+const REMOTE_FANOUT_INTERVAL: Duration = Duration::from_millis(500);
+const REMOTE_FANOUT_CLEANUP_INTERVAL: Duration = Duration::from_secs(300);
+const REMOTE_FANOUT_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
+const REMOTE_FANOUT_BATCH: i64 = 100;
 
 /// One queued event with its audience, options and retry accounting
 /// (CRD 3670).
@@ -244,6 +248,148 @@ pub fn spawn_loops(state: Arc<AppState>) {
     spawn_loop(state, SLOW_LOOP, false);
 }
 
+async fn publish_remote_broadcast(
+    state: &Arc<AppState>,
+    event: &Value,
+    targets: &[Value],
+    options: &Value,
+) {
+    let event_id = uuid::Uuid::new_v4().to_string();
+    if let Err(err) = sqlx::query(
+        "INSERT INTO realtime_broadcast_fanout_events
+         (id, source_instance, event, targets, options, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(event_id)
+    .bind(state.realtime.instance_id())
+    .bind(event.to_string())
+    .bind(Value::Array(targets.to_vec()).to_string())
+    .bind(options.to_string())
+    .bind(crate::db::now_iso())
+    .execute(&state.db)
+    .await
+    {
+        tracing::warn!(error = %err, "routed broadcaster fanout publish failed");
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct RemoteBroadcastEvent {
+    id: String,
+    event: String,
+    targets: String,
+}
+
+/// Deliver peer-instance routed-broadcaster events into this process's local
+/// hub and ack them once processed. Invalid persisted payloads are acked after
+/// logging so a bad row cannot permanently block a receiver.
+pub async fn process_remote_broadcast_events(
+    state: &Arc<AppState>,
+    limit: i64,
+) -> std::result::Result<usize, sqlx::Error> {
+    let rows = sqlx::query_as::<_, RemoteBroadcastEvent>(
+        "SELECT e.id, e.event, e.targets
+         FROM realtime_broadcast_fanout_events e
+         WHERE e.source_instance <> $1
+           AND NOT EXISTS (
+             SELECT 1 FROM realtime_broadcast_fanout_acks a
+             WHERE a.event_id = e.id AND a.instance_id = $1
+           )
+         ORDER BY e.created_at ASC
+         LIMIT $2",
+    )
+    .bind(state.realtime.instance_id())
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await?;
+
+    let mut processed = 0usize;
+    for row in rows {
+        let event = serde_json::from_str::<Value>(&row.event);
+        let targets = serde_json::from_str::<Vec<Value>>(&row.targets);
+        match (event, targets) {
+            (Ok(event), Ok(targets)) => {
+                if let Err(err) = deliver_targets(state, &event, &targets).await {
+                    tracing::warn!(
+                        error = %err,
+                        event_id = %row.id,
+                        "routed broadcaster fanout delivery failed"
+                    );
+                }
+            }
+            (Err(err), _) => tracing::warn!(
+                error = %err,
+                event_id = %row.id,
+                "routed broadcaster fanout event payload was not valid JSON"
+            ),
+            (_, Err(err)) => tracing::warn!(
+                error = %err,
+                event_id = %row.id,
+                "routed broadcaster fanout targets payload was not valid JSON"
+            ),
+        }
+        sqlx::query(
+            "INSERT INTO realtime_broadcast_fanout_acks (event_id, instance_id, acked_at)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (event_id, instance_id) DO NOTHING",
+        )
+        .bind(&row.id)
+        .bind(state.realtime.instance_id())
+        .bind(crate::db::now_iso())
+        .execute(&state.db)
+        .await?;
+        processed += 1;
+    }
+    Ok(processed)
+}
+
+pub async fn cleanup_remote_broadcast_events(
+    state: &AppState,
+    older_than: &str,
+) -> std::result::Result<u64, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM realtime_broadcast_fanout_events WHERE created_at < $1")
+        .bind(older_than)
+        .execute(&state.db)
+        .await?;
+    Ok(result.rows_affected())
+}
+
+fn remote_fanout_cutoff(retention: Duration) -> String {
+    let retention =
+        chrono::Duration::from_std(retention).unwrap_or_else(|_| chrono::Duration::hours(24));
+    (chrono::Utc::now() - retention).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+pub fn spawn_remote_fanout_loop(state: Arc<AppState>) {
+    let state: Weak<AppState> = Arc::downgrade(&state);
+    let cleanup_state = state.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(REMOTE_FANOUT_INTERVAL);
+        loop {
+            ticker.tick().await;
+            let Some(state) = state.upgrade() else {
+                break;
+            };
+            if let Err(err) = process_remote_broadcast_events(&state, REMOTE_FANOUT_BATCH).await {
+                tracing::warn!(error = %err, "routed broadcaster remote fanout loop failed");
+            }
+        }
+    });
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(REMOTE_FANOUT_CLEANUP_INTERVAL);
+        loop {
+            ticker.tick().await;
+            let Some(state) = cleanup_state.upgrade() else {
+                break;
+            };
+            let cutoff = remote_fanout_cutoff(REMOTE_FANOUT_RETENTION);
+            if let Err(err) = cleanup_remote_broadcast_events(&state, &cutoff).await {
+                tracing::warn!(error = %err, "routed broadcaster remote fanout cleanup failed");
+            }
+        }
+    });
+}
+
 /// Drain one queue and deliver every event to its audiences. Returns the
 /// number of events processed. Failed high/normal-priority events are
 /// re-queued with an incremented retry counter up to the ceiling; low-priority
@@ -432,7 +578,9 @@ pub async fn queue_event(
         .cloned()
         .unwrap_or_else(|| vec![json!({ "type": "global" })]);
     let options = body.get("options").cloned().unwrap_or(json!({}));
-    let queue_size = state.realtime.queue.enqueue(event, targets, options);
+    let queue_size =
+        state.realtime.queue.enqueue(event.clone(), targets.clone(), options.clone());
+    publish_remote_broadcast(&state, &event, &targets, &options).await;
     Ok(envelope::ok(json!({
         "eventId": event_id,
         "queuedAt": crate::db::now_iso(),
