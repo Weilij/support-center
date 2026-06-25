@@ -86,8 +86,10 @@ Remaining external/infrastructure boundaries:
 - [x] Installer Workers/Pages deployment bootstrap: backend provisioning uploads
       a Cloudflare Worker script and frontend provisioning creates a Pages
       project.
-- [ ] Installer production artifact upload, Worker bindings/routes, and Pages
-      deployment assets.
+- [x] Installer Worker bindings: backend Worker settings bind the provisioned
+      D1, KV, R2, and Queue resources.
+- [ ] Installer production artifact upload, Worker routes/custom domains, and
+      Pages deployment assets.
 - [x] Multi-instance customer-channel realtime fan-out: customer conversation
       events relay across backend instances through Postgres event/ack tables.
 - [ ] Broader realtime scale-out hardening for non-customer-channel rooms and

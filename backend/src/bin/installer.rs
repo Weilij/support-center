@@ -85,6 +85,15 @@ struct ProvisionedResource {
     result: Value,
 }
 
+#[derive(Debug, Default)]
+struct ProvisionContext {
+    d1_database_id: Option<String>,
+    sessions_kv_namespace_id: Option<String>,
+    cache_kv_namespace_id: Option<String>,
+    r2_bucket_name: Option<String>,
+    queue_name: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct OAuthTokenResponse {
     access_token: String,
@@ -288,6 +297,7 @@ impl CloudflareApi {
         step: &'static str,
         project: &str,
         creds: &CloudCredentials,
+        context: &mut ProvisionContext,
     ) -> Result<Option<ProvisionedResource>, String> {
         let account = &creds.account_id;
         let resource = match step {
@@ -301,6 +311,7 @@ impl CloudflareApi {
                         Some(json!({ "name": name })),
                     )
                     .await?;
+                context.d1_database_id = cloudflare_result_id(&result);
                 ProvisionedResource {
                     step,
                     kind: "d1_database",
@@ -318,6 +329,11 @@ impl CloudflareApi {
                         Some(json!({ "title": name })),
                     )
                     .await?;
+                if step == "kv-sessions" {
+                    context.sessions_kv_namespace_id = cloudflare_result_id(&result);
+                } else {
+                    context.cache_kv_namespace_id = cloudflare_result_id(&result);
+                }
                 ProvisionedResource {
                     step,
                     kind: "kv_namespace",
@@ -335,6 +351,7 @@ impl CloudflareApi {
                         Some(json!({ "name": name })),
                     )
                     .await?;
+                context.r2_bucket_name = Some(name.clone());
                 ProvisionedResource {
                     step,
                     kind: "r2_bucket",
@@ -352,6 +369,7 @@ impl CloudflareApi {
                         Some(json!({ "queue_name": name })),
                     )
                     .await?;
+                context.queue_name = Some(name.clone());
                 ProvisionedResource {
                     step,
                     kind: "queue",
@@ -371,11 +389,24 @@ impl CloudflareApi {
                         script,
                     )
                     .await?;
+                let settings = self
+                    .request_json(
+                        reqwest::Method::PATCH,
+                        &format!("/accounts/{account}/workers/scripts/{name}/settings"),
+                        creds,
+                        Some(json!({
+                            "bindings": worker_bindings(context)?,
+                        })),
+                    )
+                    .await?;
                 ProvisionedResource {
                     step,
                     kind: "worker_script",
                     name,
-                    result,
+                    result: json!({
+                        "script": result,
+                        "settings": settings,
+                    }),
                 }
             }
             "frontend-site" => {
@@ -406,6 +437,67 @@ impl CloudflareApi {
         };
         Ok(Some(resource))
     }
+}
+
+fn cloudflare_result_id(value: &Value) -> Option<String> {
+    ["id", "uuid", "database_id"]
+        .iter()
+        .find_map(|field| value.pointer(&format!("/result/{field}")))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
+fn worker_bindings(context: &ProvisionContext) -> Result<Vec<Value>, String> {
+    let mut bindings = Vec::new();
+    let d1_database_id = context
+        .d1_database_id
+        .as_deref()
+        .ok_or_else(|| "Cloudflare D1 database id missing from provisioning result".to_string())?;
+    bindings.push(json!({
+        "type": "d1",
+        "name": "DB",
+        "id": d1_database_id,
+    }));
+
+    let sessions_namespace_id = context.sessions_kv_namespace_id.as_deref().ok_or_else(|| {
+        "Cloudflare sessions KV namespace id missing from provisioning result".to_string()
+    })?;
+    bindings.push(json!({
+        "type": "kv_namespace",
+        "name": "SESSIONS",
+        "namespace_id": sessions_namespace_id,
+    }));
+
+    let cache_namespace_id = context.cache_kv_namespace_id.as_deref().ok_or_else(|| {
+        "Cloudflare cache KV namespace id missing from provisioning result".to_string()
+    })?;
+    bindings.push(json!({
+        "type": "kv_namespace",
+        "name": "CACHE",
+        "namespace_id": cache_namespace_id,
+    }));
+
+    let bucket_name = context
+        .r2_bucket_name
+        .as_deref()
+        .ok_or_else(|| "Cloudflare R2 bucket name missing from provisioning context".to_string())?;
+    bindings.push(json!({
+        "type": "r2_bucket",
+        "name": "FILES",
+        "bucket_name": bucket_name,
+    }));
+
+    let queue_name = context
+        .queue_name
+        .as_deref()
+        .ok_or_else(|| "Cloudflare queue name missing from provisioning context".to_string())?;
+    bindings.push(json!({
+        "type": "queue",
+        "name": "JOBS",
+        "queue_name": queue_name,
+    }));
+
+    Ok(bindings)
 }
 
 fn worker_bootstrap_script(project: &str) -> String {
@@ -665,6 +757,7 @@ async fn deployment_start(
     tokio::spawn(async move {
         let mut completed: Vec<&str> = Vec::new();
         let mut resources: Vec<ProvisionedResource> = Vec::new();
+        let mut provision_context = ProvisionContext::default();
         if let Err(error) = cloud.verify(&creds).await {
             if let Ok(mut runs) = runs.lock() {
                 if let Some(run) = runs.get_mut(&id) {
@@ -677,7 +770,10 @@ async fn deployment_start(
             return;
         }
         for (i, step) in STEPS.iter().enumerate() {
-            match cloud.provision_step(step, &project, &creds).await {
+            match cloud
+                .provision_step(step, &project, &creds, &mut provision_context)
+                .await
+            {
                 Ok(Some(resource)) => resources.push(resource),
                 Ok(None) => {}
                 Err(error) => {
@@ -802,11 +898,13 @@ mod tests {
         async fn record(
             State(calls): State<Arc<Mutex<Vec<Value>>>>,
             OriginalUri(uri): OriginalUri,
+            method: axum::http::Method,
             headers: axum::http::HeaderMap,
             body: axum::body::Bytes,
         ) -> Json<Value> {
             let body = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
             calls.lock().unwrap().push(json!({
+                "method": method.as_str(),
                 "path": uri.path(),
                 "auth": headers
                     .get("authorization")
@@ -819,11 +917,13 @@ mod tests {
         async fn verify_token(
             State((calls, status)): State<(Arc<Mutex<Vec<Value>>>, &'static str)>,
             OriginalUri(uri): OriginalUri,
+            method: axum::http::Method,
             headers: axum::http::HeaderMap,
             body: axum::body::Bytes,
         ) -> Json<Value> {
             let body = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
             calls.lock().unwrap().push(json!({
+                "method": method.as_str(),
                 "path": uri.path(),
                 "auth": headers
                     .get("authorization")
@@ -851,6 +951,10 @@ mod tests {
                     .route(
                         "/client/v4/accounts/{account}/workers/scripts/{script}/content",
                         axum::routing::put(record),
+                    )
+                    .route(
+                        "/client/v4/accounts/{account}/workers/scripts/{script}/settings",
+                        axum::routing::patch(record),
                     )
                     .route("/client/v4/accounts/{account}/pages/projects", post(record))
                     .with_state(calls.clone()),
@@ -1097,6 +1201,45 @@ mod tests {
                 &"/client/v4/accounts/acc_123/workers/scripts/smoke-tenant-backend/content"
             ),
             "{paths:?}"
+        );
+        let settings_call = calls
+            .iter()
+            .find(|c| {
+                c["path"]
+                    == "/client/v4/accounts/acc_123/workers/scripts/smoke-tenant-backend/settings"
+            })
+            .expect("worker settings bindings call");
+        assert_eq!(settings_call["method"], "PATCH");
+        let bindings = settings_call["body"]["bindings"].as_array().unwrap();
+        assert!(
+            bindings
+                .iter()
+                .any(|b| b["type"] == "d1" && b["name"] == "DB"),
+            "{bindings:?}"
+        );
+        assert!(
+            bindings
+                .iter()
+                .any(|b| b["type"] == "kv_namespace" && b["name"] == "SESSIONS"),
+            "{bindings:?}"
+        );
+        assert!(
+            bindings
+                .iter()
+                .any(|b| b["type"] == "kv_namespace" && b["name"] == "CACHE"),
+            "{bindings:?}"
+        );
+        assert!(
+            bindings
+                .iter()
+                .any(|b| b["type"] == "r2_bucket" && b["name"] == "FILES"),
+            "{bindings:?}"
+        );
+        assert!(
+            bindings
+                .iter()
+                .any(|b| b["type"] == "queue" && b["name"] == "JOBS"),
+            "{bindings:?}"
         );
         assert!(
             paths.contains(&"/client/v4/accounts/acc_123/pages/projects"),
