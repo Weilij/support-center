@@ -30,14 +30,48 @@ type HmacSha256 = Hmac<Sha256>;
 /// Payload-size ceiling: about one megabyte (CRD 2723, 2736).
 pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
+#[cfg(test)]
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+#[cfg(test)]
 fn hmac_sha256(secret: &str, body: &[u8]) -> Vec<u8> {
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("hmac accepts any key size");
     mac.update(body);
     mac.finalize().into_bytes().to_vec()
+}
+
+fn verify_hmac_sha256(secret: &str, body: &[u8], presented: &[u8]) -> bool {
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("hmac accepts any key size");
+    mac.update(body);
+    mac.verify_slice(presented).is_ok()
+}
+
+fn valid_line_signature(secret: &str, body: &[u8], signature: &str) -> bool {
+    B64.decode(signature)
+        .ok()
+        .is_some_and(|presented| verify_hmac_sha256(secret, body, &presented))
+}
+
+fn decode_hex_signature(signature: &str) -> Option<Vec<u8>> {
+    let bytes = signature.as_bytes();
+    if bytes.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks_exact(2) {
+        let hi = (pair[0] as char).to_digit(16)?;
+        let lo = (pair[1] as char).to_digit(16)?;
+        out.push(((hi << 4) | lo) as u8);
+    }
+    Some(out)
+}
+
+fn valid_facebook_signature(secret: &str, body: &[u8], signature: &str) -> bool {
+    let presented_hex = signature.strip_prefix("sha256=").unwrap_or(signature);
+    decode_hex_signature(presented_hex)
+        .is_some_and(|presented| verify_hmac_sha256(secret, body, &presented))
 }
 
 fn client_ip(headers: &HeaderMap) -> Option<String> {
@@ -147,8 +181,7 @@ pub async fn line_webhook(
             .await;
         return fail(StatusCode::UNAUTHORIZED, "Missing signature header");
     };
-    let expected = B64.encode(hmac_sha256(secret, &body));
-    if signature != expected {
+    if !valid_line_signature(secret, &body, signature) {
         security_event(&state.db, "invalid_signature", "high", "line", ip.as_deref(), json!({}))
             .await;
         return fail(StatusCode::UNAUTHORIZED, "Invalid signature");
@@ -371,9 +404,7 @@ pub async fn facebook_webhook(
         .await;
         return fail(StatusCode::UNAUTHORIZED, "Invalid signature");
     };
-    let presented = signature.strip_prefix("sha256=").unwrap_or(signature);
-    let expected = hex(&hmac_sha256(secret, &body));
-    if !presented.eq_ignore_ascii_case(&expected) {
+    if !valid_facebook_signature(secret, &body, signature) {
         security_event(
             &state.db,
             "invalid_signature",
@@ -448,4 +479,33 @@ pub async fn facebook_webhook(
         );
     }
     batch_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn line_signature_uses_raw_mac_verification() {
+        let body = br#"{"events":[]}"#;
+        let sig = B64.encode(hmac_sha256("secret", body));
+
+        assert!(valid_line_signature("secret", body, &sig));
+        assert!(!valid_line_signature("other", body, &sig));
+        assert!(!valid_line_signature("secret", body, "not-base64"));
+    }
+
+    #[test]
+    fn facebook_signature_uses_raw_mac_verification() {
+        let body = br#"{"object":"page","entry":[]}"#;
+        let hex_sig = hex(&hmac_sha256("secret", body));
+        let sig = format!("sha256={hex_sig}");
+        let upper = format!("sha256={}", hex_sig.to_uppercase());
+
+        assert!(valid_facebook_signature("secret", body, &sig));
+        assert!(valid_facebook_signature("secret", body, &upper));
+        assert!(!valid_facebook_signature("other", body, &sig));
+        assert!(!valid_facebook_signature("secret", body, "sha256=not-hex"));
+        assert!(!valid_facebook_signature("secret", body, "sha256=abc"));
+    }
 }
