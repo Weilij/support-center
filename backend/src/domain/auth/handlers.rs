@@ -858,6 +858,10 @@ pub struct VerifyTokenBody {
     pub token: Option<String>,
 }
 
+fn public_token_verification(valid: bool) -> Value {
+    json!({ "valid": valid })
+}
+
 pub async fn verify_token(
     State(state): State<Arc<AppState>>,
     Json(body): Json<VerifyTokenBody>,
@@ -866,28 +870,11 @@ pub async fn verify_token(
         .token
         .filter(|t| !t.is_empty())
         .ok_or_else(|| AppError::BadRequest("token is required".into()))?;
-    // Does not consult revocation state (CRD 245).
+    // Public introspection is deliberately minimal: callers may learn whether
+    // their presented token verifies, but not decoded identity or timing claims.
     match tokens::verify(&raw, &state.config.jwt_secret) {
-        Ok(claims) => {
-            let remaining = (claims.exp - chrono::Utc::now().timestamp()).max(0);
-            Ok(envelope::ok(json!({
-                "valid": true,
-                "payload": {
-                    "userId": claims.sub,
-                    "displayName": claims.name,
-                    "role": claims.role,
-                    "teamId": claims.primary_team_id,
-                    "systemToken": claims.monitoring.unwrap_or(false),
-                },
-                "expiresAt": chrono::DateTime::from_timestamp(claims.exp, 0).map(|t| t.to_rfc3339()),
-                "remainingSeconds": remaining,
-                "expiringSoon": remaining < 3600,
-            })))
-        }
-        Err(e) => Ok(envelope::ok(json!({
-            "valid": false,
-            "error": format!("Invalid token: {e}"),
-        }))),
+        Ok(_) => Ok(envelope::ok(public_token_verification(true))),
+        Err(_) => Ok(envelope::ok(public_token_verification(false))),
     }
 }
 
@@ -1028,5 +1015,14 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-proto", HeaderValue::from_static("http"));
         assert!(!request_is_tls(&headers));
+    }
+
+    #[test]
+    fn public_token_verification_does_not_expose_claims() {
+        let body = super::public_token_verification(true);
+        assert_eq!(body["valid"], true);
+        assert!(body.get("payload").is_none());
+        assert!(body.get("remainingSeconds").is_none());
+        assert!(body.get("expiresAt").is_none());
     }
 }
