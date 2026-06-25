@@ -743,6 +743,70 @@ async fn service_token_endpoints_are_admin_gated_and_validated() {
 }
 
 #[tokio::test]
+async fn service_token_refresh_requires_admin_access_and_rotates_tokens() {
+    let app = spawn_app().await;
+    app.seed_agent("admin@test.dev", "pw123456", "admin").await;
+    app.seed_agent("agent@test.dev", "pw123456", "agent").await;
+    let (admin, _, _) = app.login("admin@test.dev", "pw123456").await;
+    let (agent, _, _) = app.login("agent@test.dev", "pw123456").await;
+
+    let (_, issued, _) = app
+        .request("POST", "/phase2-auth/monitoring-token", Some(&admin), None)
+        .await;
+    let service_token = issued["data"]["token"].as_str().unwrap().to_string();
+
+    let (status, _, _) = app
+        .request(
+            "POST",
+            "/phase2-auth/refresh-token",
+            None,
+            Some(json!({"token": service_token})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "refresh is not public");
+
+    let (status, _, _) = app
+        .request(
+            "POST",
+            "/phase2-auth/refresh-token",
+            Some(&agent),
+            Some(json!({"token": service_token})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "non-admin access denied");
+
+    let (status, body, _) = app
+        .request(
+            "POST",
+            "/phase2-auth/refresh-token",
+            Some(&admin),
+            Some(json!({"token": service_token})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["type"], "monitoring");
+    let refreshed = body["data"]["token"].as_str().unwrap();
+    assert_ne!(refreshed, service_token);
+
+    let refreshed_claims =
+        mcss_backend::domain::auth::tokens::verify(refreshed, &app.state.config.jwt_secret)
+            .unwrap();
+    assert_eq!(refreshed_claims.token_type, "monitoring");
+    let root_iat = refreshed_claims.service_root_iat.unwrap();
+    assert!(root_iat <= refreshed_claims.iat);
+
+    let (status, _, _) = app
+        .request(
+            "POST",
+            "/phase2-auth/refresh-token",
+            Some(&admin),
+            Some(json!({"token": service_token})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "old token was revoked");
+}
+
+#[tokio::test]
 async fn verify_token_reports_validity_without_http_errors() {
     let app = spawn_app().await;
     app.seed_agent("v@test.dev", "pw123456", "agent").await;
@@ -763,8 +827,8 @@ async fn verify_token_reports_validity_without_http_errors() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["valid"], true);
-    assert_eq!(body["data"]["payload"]["role"], "agent");
-    assert!(body["data"]["remainingSeconds"].as_i64().unwrap() > 0);
+    assert!(body["data"].get("payload").is_none());
+    assert!(body["data"].get("remainingSeconds").is_none());
 
     // Invalid token: still HTTP 200, valid:false (CRD 247).
     let (status, body, _) = app
