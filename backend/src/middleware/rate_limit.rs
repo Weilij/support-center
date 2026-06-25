@@ -98,7 +98,8 @@ impl RateLimiter {
         }
     }
 
-    /// Consume one request from the caller's sliding window; never panics (fail-open).
+    /// Consume one request from the caller's sliding window; never panics.
+    /// Auth/login scopes fail closed if limiter state is poisoned.
     pub fn check(&self, policy: &RatePolicy, caller: &str) -> RateDecision {
         use std::sync::atomic::Ordering;
         self.total_checks.fetch_add(1, Ordering::Relaxed);
@@ -106,7 +107,16 @@ impl RateLimiter {
         let mut buckets = match self.buckets.lock() {
             Ok(g) => g,
             Err(_) => {
-                return RateDecision { allowed: true, limit: policy.max_requests, remaining: policy.max_requests, reset_secs: policy.window.as_secs() }
+                let fail_closed = matches!(policy.scope, "auth" | "login");
+                if fail_closed {
+                    self.total_blocked.fetch_add(1, Ordering::Relaxed);
+                }
+                return RateDecision {
+                    allowed: !fail_closed,
+                    limit: policy.max_requests,
+                    remaining: if fail_closed { 0 } else { policy.max_requests },
+                    reset_secs: policy.window.as_secs(),
+                };
             }
         };
         let key = (policy.scope.to_string(), caller.to_string());
@@ -270,5 +280,22 @@ mod tests {
         let req = request(None, &[("cf-connecting-ip", "198.51.100.1")]);
         let trusted = ["127.0.0.1".parse().unwrap()];
         assert_eq!(caller_ip(&req, &trusted), "unknown");
+    }
+
+    #[test]
+    fn poisoned_lock_fails_closed_for_auth_scopes() {
+        let limiter = RateLimiter::default();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = limiter.buckets.lock().unwrap();
+            panic!("poison rate limiter lock");
+        }));
+
+        let login = limiter.check(&RatePolicy::LOGIN, "198.51.100.7");
+        assert!(!login.allowed);
+        assert_eq!(login.remaining, 0);
+
+        let auth = limiter.check(&RatePolicy::AUTH, "198.51.100.7");
+        assert!(!auth.allowed);
+        assert_eq!(auth.remaining, 0);
     }
 }
