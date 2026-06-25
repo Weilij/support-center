@@ -2,9 +2,32 @@
 
 mod common;
 
+use axum::extract::Form;
 use axum::http::StatusCode;
+use axum::routing::post;
+use axum::{Json, Router};
 use common::{spawn_app, spawn_app_custom};
 use serde_json::json;
+use std::collections::HashMap;
+
+async fn line_verify_server() -> String {
+    async fn verify(Form(form): Form<HashMap<String, String>>) -> Json<serde_json::Value> {
+        let sub = form
+            .get("id_token")
+            .and_then(|token| token.strip_prefix("token:"))
+            .unwrap_or("");
+        Json(json!({ "sub": sub }))
+    }
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/verify", post(verify)))
+            .await
+            .unwrap();
+    });
+    format!("http://{addr}/verify")
+}
 
 #[tokio::test]
 async fn health_and_config_are_public() {
@@ -50,7 +73,8 @@ async fn team_info_validates_and_returns_public_fields() {
 
 #[tokio::test]
 async fn assign_team_is_idempotent_per_user_team_pair() {
-    let app = spawn_app().await;
+    let verify_url = line_verify_server().await;
+    let app = spawn_app_custom(|c| c.line_id_token_verify_url = verify_url).await;
     let team = app.seed_team("Routing").await;
     // Seed the LIFF code record so the scan counter applies.
     sqlx::query(
@@ -66,16 +90,20 @@ async fn assign_team_is_idempotent_per_user_team_pair() {
     let (status, _, _) = app
         .request("POST", "/api/liff/assign-team", None, Some(json!({"teamId": team})))
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "lineUserId required");
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "LINE ID token required");
+    let (status, _, _) = app
+        .request("POST", "/api/liff/assign-team", None, Some(json!({"lineIdToken": "token:U-x"})))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "teamId required");
     let (status, _, _) = app
         .request("POST", "/api/liff/assign-team", None,
-            Some(json!({"lineUserId": "U-x", "teamId": 999})))
+            Some(json!({"lineIdToken": "token:U-x", "lineUserId": "U-spoof", "teamId": 999})))
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     let (status, body, _) = app
         .request("POST", "/api/liff/assign-team", None,
-            Some(json!({"lineUserId": "U-x", "teamId": team, "displayName": "Scanner"})))
+            Some(json!({"lineIdToken": "token:U-x", "lineUserId": "U-spoof", "teamId": team, "displayName": "Scanner"})))
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let first_id = body["data"]["assignmentId"].as_str().unwrap().to_string();
@@ -84,7 +112,7 @@ async fn assign_team_is_idempotent_per_user_team_pair() {
     // Repeat: same record, no duplicate, counter not re-incremented.
     let (status, body, _) = app
         .request("POST", "/api/liff/assign-team", None,
-            Some(json!({"lineUserId": "U-x", "teamId": team})))
+            Some(json!({"lineIdToken": "token:U-x", "teamId": team})))
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["assignmentId"], first_id.as_str());
@@ -116,24 +144,32 @@ async fn welcome_validates_and_reconciles_conversations() {
     // The LIFF welcome handler validates a configured LINE channel token before
     // reconciling (returns Internal when absent). Opt in to a present token; no
     // real network call is made (the push is a TODO stub).
-    let app = spawn_app_custom(|c| c.line_channel_access_token = Some("test-push-token".into())).await;
+    let verify_url = line_verify_server().await;
+    let app = spawn_app_custom(|c| {
+        c.line_channel_access_token = Some("test-push-token".into());
+        c.line_id_token_verify_url = verify_url;
+    }).await;
     let team_a = app.seed_team("A").await;
     let team_b = app.seed_team("B").await;
 
     let (status, _, _) = app
         .request("POST", "/api/liff/welcome", None, Some(json!({"teamId": team_a})))
         .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = app
+        .request("POST", "/api/liff/welcome", None, Some(json!({"lineIdToken": "token:U-w"})))
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _, _) = app
         .request("POST", "/api/liff/welcome", None,
-            Some(json!({"lineUserId": "U-w", "teamId": 999})))
+            Some(json!({"lineIdToken": "token:U-w", "lineUserId": "U-spoof", "teamId": 999})))
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // No customer record: reconciliation skipped, welcome still succeeds.
     let (status, body, _) = app
         .request("POST", "/api/liff/welcome", None,
-            Some(json!({"lineUserId": "U-ghost", "teamId": team_a})))
+            Some(json!({"lineIdToken": "token:U-ghost", "teamId": team_a})))
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["data"]["message"].is_string());
@@ -143,7 +179,7 @@ async fn welcome_validates_and_reconciles_conversations() {
     let conversation = app.seed_conversation(customer, Some(team_a), "active").await;
     let (status, _, _) = app
         .request("POST", "/api/liff/welcome", None,
-            Some(json!({"lineUserId": "U-w", "teamId": team_b})))
+            Some(json!({"lineIdToken": "token:U-w", "lineUserId": "U-spoof", "teamId": team_b})))
         .await;
     assert_eq!(status, StatusCode::OK);
     let assigned: Option<i64> = sqlx::query_scalar("SELECT team_id FROM conversations WHERE id = $1")
@@ -161,7 +197,7 @@ async fn welcome_validates_and_reconciles_conversations() {
         .unwrap();
     let (status, _, _) = app
         .request("POST", "/api/liff/welcome", None,
-            Some(json!({"lineUserId": "U-w", "teamId": team_a})))
+            Some(json!({"lineIdToken": "token:U-w", "teamId": team_a})))
         .await;
     assert_eq!(status, StatusCode::OK);
     let open_count: i64 = sqlx::query_scalar(
@@ -184,11 +220,15 @@ async fn welcome_validates_and_reconciles_conversations() {
 
 #[tokio::test]
 async fn welcome_requires_push_credential() {
-    let app = spawn_app_custom(|c| c.line_channel_access_token = None).await;
+    let verify_url = line_verify_server().await;
+    let app = spawn_app_custom(|c| {
+        c.line_channel_access_token = None;
+        c.line_id_token_verify_url = verify_url;
+    }).await;
     let team = app.seed_team("A").await;
     let (status, _, _) = app
         .request("POST", "/api/liff/welcome", None,
-            Some(json!({"lineUserId": "U-w", "teamId": team})))
+            Some(json!({"lineIdToken": "token:U-w", "teamId": team})))
         .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }

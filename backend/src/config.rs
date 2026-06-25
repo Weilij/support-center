@@ -28,6 +28,10 @@ pub struct Config {
     pub instagram_access_token: Option<String>,
     /// LINE front-end (LIFF) application identifier.
     pub liff_id: Option<String>,
+    /// LINE Login channel id used to verify LIFF ID tokens.
+    pub line_login_channel_id: Option<String>,
+    /// LINE ID-token verification endpoint.
+    pub line_id_token_verify_url: String,
     /// Messaging-account handle, e.g. "@support".
     pub line_bot_id: Option<String>,
     /// LINE push credential (required by the LIFF welcome flow).
@@ -87,6 +91,14 @@ impl Config {
                 .filter(|s| !s.is_empty())
                 .or_else(|| std::env::var("FB_APP_SECRET").ok().filter(|s| !s.is_empty())),
             liff_id: std::env::var("LIFF_ID").ok().filter(|s| !s.is_empty()),
+            line_login_channel_id: std::env::var("LINE_LOGIN_CHANNEL_ID")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| std::env::var("LIFF_CHANNEL_ID").ok().filter(|s| !s.is_empty())),
+            line_id_token_verify_url: std::env::var("LINE_ID_TOKEN_VERIFY_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "https://api.line.me/oauth2/v2.1/verify".into()),
             line_bot_id: std::env::var("LINE_BOT_ID").ok().filter(|s| !s.is_empty()),
             line_channel_access_token: std::env::var("LINE_CHANNEL_ACCESS_TOKEN")
                 .ok()
@@ -180,6 +192,8 @@ pub fn test_config() -> Config {
         facebook_page_access_token: None,
         instagram_access_token: None,
         liff_id: None,
+        line_login_channel_id: None,
+        line_id_token_verify_url: "https://api.line.me/oauth2/v2.1/verify".into(),
         line_bot_id: None,
         line_channel_access_token: None,
         file_signing_secret: None,

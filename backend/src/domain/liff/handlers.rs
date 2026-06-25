@@ -1,12 +1,13 @@
 //! LIFF public + admin handlers (CRD §4.3).
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::sync::Arc;
 
 use crate::db::now_iso;
@@ -20,6 +21,75 @@ type Result<T = Response> = std::result::Result<T, AppError>;
 const AUTO_CLOSE_DELAY_MS: i64 = 2000;
 const VERSION: &str = "1.0.0";
 const DEFAULT_BOT_HANDLE: &str = "@support";
+
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("reqwest client")
+    })
+}
+
+fn id_token_from(headers: &HeaderMap, body_token: Option<&str>) -> Option<String> {
+    body_token
+        .filter(|t| !t.trim().is_empty())
+        .map(|t| t.trim().to_string())
+        .or_else(|| {
+            headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|h| h.strip_prefix("Bearer ").or_else(|| h.strip_prefix("bearer ")))
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            headers
+                .get("x-line-id-token")
+                .and_then(|v| v.to_str().ok())
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+        })
+}
+
+#[derive(Deserialize)]
+struct LineVerifyResponse {
+    sub: Option<String>,
+}
+
+async fn verified_line_user_id(
+    state: &AppState,
+    headers: &HeaderMap,
+    body_token: Option<&str>,
+) -> Result<String> {
+    let token = id_token_from(headers, body_token)
+        .ok_or_else(|| AppError::Unauthorized("LINE ID token is required".into()))?;
+    let client_id = state
+        .config
+        .line_login_channel_id
+        .as_deref()
+        .ok_or_else(|| AppError::Internal("LINE Login channel id is not configured".into()))?;
+    let resp = http_client()
+        .post(&state.config.line_id_token_verify_url)
+        .form(&[("id_token", token.as_str()), ("client_id", client_id)])
+        .send()
+        .await
+        .map_err(|_| AppError::Unauthorized("Unable to verify LINE ID token".into()))?;
+    if !resp.status().is_success() {
+        return Err(AppError::Unauthorized("Invalid LINE ID token".into()));
+    }
+    let verified: LineVerifyResponse = resp
+        .json()
+        .await
+        .map_err(|_| AppError::Unauthorized("Invalid LINE ID token".into()))?;
+    verified
+        .sub
+        .filter(|sub| !sub.is_empty())
+        .ok_or_else(|| AppError::Unauthorized("LINE ID token has no subject".into()))
+}
 
 // ---------------------------------------------------------------- public ops
 
@@ -80,6 +150,8 @@ pub async fn team_info(
 pub struct AssignTeamBody {
     #[serde(rename = "lineUserId")]
     pub line_user_id: Option<String>,
+    #[serde(rename = "lineIdToken")]
+    pub line_id_token: Option<String>,
     #[serde(rename = "teamId")]
     pub team_id: Option<i64>,
     #[serde(rename = "displayName")]
@@ -89,16 +161,13 @@ pub struct AssignTeamBody {
 
 pub async fn assign_team(
     State(state): State<Arc<AppState>>,
-    headers: axum::http::HeaderMap,
+    headers: HeaderMap,
     Json(body): Json<AssignTeamBody>,
 ) -> Result {
-    let user_id = body.line_user_id.as_deref().unwrap_or("");
+    let user_id = verified_line_user_id(&state, &headers, body.line_id_token.as_deref()).await?;
     let Some(team_id) = body.team_id else {
-        return Err(AppError::BadRequest("缺少必要欄位 lineUserId 或 teamId".into()));
+        return Err(AppError::BadRequest("缺少必要欄位 teamId".into()));
     };
-    if user_id.is_empty() {
-        return Err(AppError::BadRequest("缺少必要欄位 lineUserId 或 teamId".into()));
-    }
     let team_name: Option<String> =
         sqlx::query_scalar("SELECT name FROM teams WHERE id = $1 AND deleted_at IS NULL")
             .bind(team_id)
@@ -113,7 +182,7 @@ pub async fn assign_team(
     let existing: Option<String> = sqlx::query_scalar(
         "SELECT id FROM customer_team_assignments WHERE platform_user_id = $1 AND team_id = $2",
     )
-    .bind(user_id)
+    .bind(&user_id)
     .bind(team_id)
     .fetch_optional(&state.db)
     .await?;
@@ -137,7 +206,7 @@ pub async fn assign_team(
          VALUES ($1, $2, $3, 'scan', $4, $5, $6)",
     )
     .bind(&assignment_id)
-    .bind(user_id)
+    .bind(&user_id)
     .bind(team_id)
     .bind(&body.display_name)
     .bind(&now)
@@ -196,21 +265,21 @@ pub async fn assign_team(
 pub struct WelcomeBody {
     #[serde(rename = "lineUserId")]
     pub line_user_id: Option<String>,
+    #[serde(rename = "lineIdToken")]
+    pub line_id_token: Option<String>,
     #[serde(rename = "teamId")]
     pub team_id: Option<i64>,
 }
 
 pub async fn welcome(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(body): Json<WelcomeBody>,
 ) -> Result {
-    let user_id = body.line_user_id.as_deref().unwrap_or("");
+    let user_id = verified_line_user_id(&state, &headers, body.line_id_token.as_deref()).await?;
     let Some(team_id) = body.team_id else {
-        return Err(AppError::BadRequest("缺少必要欄位 lineUserId 或 teamId".into()));
+        return Err(AppError::BadRequest("缺少必要欄位 teamId".into()));
     };
-    if user_id.is_empty() {
-        return Err(AppError::BadRequest("缺少必要欄位 lineUserId 或 teamId".into()));
-    }
     let team_name: Option<String> =
         sqlx::query_scalar("SELECT name FROM teams WHERE id = $1 AND deleted_at IS NULL")
             .bind(team_id)
@@ -225,7 +294,7 @@ pub async fn welcome(
 
     // Best-effort, non-blocking reconciliation (CRD 2907): failures are
     // logged but never fail the welcome push.
-    if let Err(e) = reconcile(&state, user_id, team_id, &team_name).await {
+    if let Err(e) = reconcile(&state, &user_id, team_id, &team_name).await {
         tracing::warn!(error = %e, "LIFF welcome reconciliation skipped");
     }
 

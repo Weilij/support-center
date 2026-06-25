@@ -84,6 +84,8 @@ pub async fn spawn_app_custom(customize: impl FnOnce(&mut Config)) -> TestApp {
         // sign payloads; individual tests override via spawn_app_custom.
         line_channel_secret: Some("test-line-secret".into()),
         liff_id: Some("test-liff-id".into()),
+        line_login_channel_id: Some("test-line-channel".into()),
+        line_id_token_verify_url: "https://api.line.me/oauth2/v2.1/verify".into(),
         line_bot_id: Some("@testbot".into()),
         line_channel_access_token: None,
         facebook_app_secret: Some("test-fb-secret".into()),
