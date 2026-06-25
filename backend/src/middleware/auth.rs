@@ -88,8 +88,9 @@ pub async fn authenticate(
     let claims = tokens::verify(token, &state.config.jwt_secret)
         .map_err(|_| AppError::Unauthorized("Invalid or expired token".into()))?;
 
-    // A renewal credential cannot directly access protected resources (CRD line 268).
-    if claims.token_type == "refresh" {
+    // Only full access credentials may reach protected resources. Renewal and
+    // forced-password-change tokens are intentionally narrower.
+    if !matches!(claims.token_type.as_str(), "access" | "user" | "monitoring") {
         return Err(AppError::Unauthorized("Invalid token type".into()));
     }
 

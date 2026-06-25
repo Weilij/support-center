@@ -102,6 +102,10 @@ async fn must_change_policy_diverts_login_to_forced_change_flow() {
     assert_eq!(body["data"]["mustChangePassword"], true);
     assert!(body["data"]["tempToken"].is_string());
     assert!(body["data"].get("token").is_none(), "no full sign-in");
+
+    let temp = body["data"]["tempToken"].as_str().unwrap();
+    let (status, _, _) = app.request("GET", "/api/auth/me", Some(temp), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "temp-change token is not full access");
 }
 
 // ---------------------------------------------------------------- Create Account
