@@ -18,6 +18,22 @@ fn s(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
+fn first_str(v: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| v.get(*key).and_then(Value::as_str))
+        .map(str::to_string)
+}
+
+fn first_i64(v: &Value, keys: &[&str]) -> Option<i64> {
+    keys.iter().find_map(|key| {
+        v.get(*key).and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_str().and_then(|s| s.parse::<i64>().ok()))
+        })
+    })
+}
+
 fn f(v: &Value, key: &str) -> f64 {
     v.get(key).and_then(Value::as_f64).unwrap_or(0.0)
 }
@@ -318,23 +334,38 @@ pub fn normalize_shopee(message: &Value) -> Normalized {
     }
 
     if matches!(message_type, "image" | "video" | "audio" | "file") {
-        let url = content
-            .get("url")
-            .or_else(|| content.get("file_url"))
-            .or_else(|| message.get("url"))
-            .and_then(Value::as_str);
-        let file_name = content
-            .get("file_name")
-            .or_else(|| content.get("fileName"))
-            .or_else(|| message.get("file_name"))
-            .and_then(Value::as_str);
+        let url = first_str(
+            content,
+            &["url", "file_url", "fileUrl", "image_url", "imageUrl"],
+        )
+        .or_else(|| {
+            first_str(
+                message,
+                &["url", "file_url", "fileUrl", "image_url", "imageUrl"],
+            )
+        });
+        let preview_url = first_str(
+            content,
+            &["thumbnail_url", "thumbnailUrl", "preview_url", "previewUrl"],
+        )
+        .or_else(|| {
+            first_str(
+                message,
+                &["thumbnail_url", "thumbnailUrl", "preview_url", "previewUrl"],
+            )
+        });
+        let file_name = first_str(content, &["file_name", "fileName", "name"])
+            .or_else(|| first_str(message, &["file_name", "fileName", "name"]));
         let label = match message_type {
             "image" => "[Image]".to_string(),
             "video" => "[Video]".to_string(),
             "audio" => "[Voice message]".to_string(),
-            _ => format!("[File] {}", file_name.unwrap_or("Unknown file")),
+            _ => format!("[File] {}", file_name.as_deref().unwrap_or("Unknown file")),
         };
         let mut media = json!({ "type": message_type, "contentUrl": url });
+        if let Some(url) = preview_url {
+            media["previewUrl"] = json!(url);
+        }
         if let Some(name) = file_name {
             media["fileName"] = json!(name);
         }
@@ -342,6 +373,96 @@ pub fn normalize_shopee(message: &Value) -> Normalized {
             content: label,
             kind: message_type.into(),
             media: Some(media),
+            metadata,
+        };
+    }
+
+    if message_type == "sticker" {
+        let sticker_id = first_str(content, &["sticker_id", "stickerId", "id"])
+            .or_else(|| first_str(message, &["sticker_id", "stickerId"]));
+        let package_id = first_str(content, &["package_id", "packageId"])
+            .or_else(|| first_str(message, &["package_id", "packageId"]));
+        let url = first_str(content, &["url", "image_url", "imageUrl"])
+            .or_else(|| first_str(message, &["url", "image_url", "imageUrl"]));
+        return Normalized {
+            content: "[Sticker]".into(),
+            kind: "sticker".into(),
+            media: Some(json!({
+                "type": "sticker",
+                "stickerId": sticker_id,
+                "packageId": package_id,
+                "contentUrl": url,
+            })),
+            metadata,
+        };
+    }
+
+    if matches!(
+        message_type,
+        "product" | "item" | "order" | "invoice" | "voucher" | "bundle_message"
+    ) {
+        let title = first_str(
+            content,
+            &[
+                "name",
+                "title",
+                "item_name",
+                "itemName",
+                "order_sn",
+                "orderSn",
+            ],
+        )
+        .or_else(|| {
+            first_str(
+                message,
+                &[
+                    "name",
+                    "title",
+                    "item_name",
+                    "itemName",
+                    "order_sn",
+                    "orderSn",
+                ],
+            )
+        });
+        let url = first_str(content, &["url", "item_url", "itemUrl"])
+            .or_else(|| first_str(message, &["url", "item_url", "itemUrl"]));
+        let image_url = first_str(
+            content,
+            &["image_url", "imageUrl", "thumbnail_url", "thumbnailUrl"],
+        )
+        .or_else(|| {
+            first_str(
+                message,
+                &["image_url", "imageUrl", "thumbnail_url", "thumbnailUrl"],
+            )
+        });
+        let item_id = first_i64(content, &["item_id", "itemId"])
+            .or_else(|| first_i64(message, &["item_id", "itemId"]));
+        let mut rich = json!({
+            "type": message_type,
+            "title": title,
+            "url": url,
+            "imageUrl": image_url,
+        });
+        if let Some(id) = item_id {
+            rich["itemId"] = json!(id);
+        }
+        metadata.insert("shopeeRichContent".into(), rich);
+        let label = match message_type {
+            "product" | "item" => "Product",
+            "order" | "invoice" => "Order",
+            "voucher" => "Voucher",
+            "bundle_message" => "Bundle message",
+            _ => "Shopee card",
+        };
+        let content = title
+            .map(|title| format!("[{label}] {title}"))
+            .unwrap_or_else(|| format!("[{label}]"));
+        return Normalized {
+            content,
+            kind: "text".into(),
+            media: None,
             metadata,
         };
     }
@@ -498,6 +619,35 @@ mod tests {
         }));
         assert_eq!((n.kind.as_str(), n.content.as_str()), ("image", "[Image]"));
         assert_eq!(n.media.unwrap()["contentUrl"], "https://cdn/i.jpg");
+    }
+
+    #[test]
+    fn shopee_rich_chat_cards_are_labelled_and_preserved() {
+        let n = normalize_shopee(&json!({
+            "message_type": "sticker",
+            "content": { "sticker_id": "s1", "package_id": "p1", "url": "https://cdn/s.png" }
+        }));
+        assert_eq!(
+            (n.kind.as_str(), n.content.as_str()),
+            ("sticker", "[Sticker]")
+        );
+        assert_eq!(n.media.unwrap()["stickerId"], "s1");
+
+        let n = normalize_shopee(&json!({
+            "message_type": "product",
+            "content": {
+                "item_id": "123",
+                "name": "Sneakers",
+                "image_url": "https://cdn/p.jpg",
+                "url": "https://shop/p/123"
+            }
+        }));
+        assert_eq!(
+            (n.kind.as_str(), n.content.as_str()),
+            ("text", "[Product] Sneakers")
+        );
+        assert_eq!(n.metadata["shopeeRichContent"]["itemId"], 123);
+        assert_eq!(n.metadata["shopeeRichContent"]["url"], "https://shop/p/123");
     }
 
     #[test]

@@ -99,6 +99,26 @@ fn shopee_text_event(shop_id: i64, buyer_id: i64, mid: &str, text: &str) -> Stri
     .to_string()
 }
 
+fn shopee_image_event(shop_id: i64, buyer_id: i64, mid: &str, url: &str) -> String {
+    json!({
+        "push_type": "webchat_message",
+        "shop_id": shop_id,
+        "data": {
+            "message_id": mid,
+            "from_id": buyer_id,
+            "to_id": shop_id,
+            "message_type": "image",
+            "content": {
+                "url": url,
+                "thumbnail_url": format!("{url}?thumb=1")
+            },
+            "conversation_id": format!("conv-{shop_id}-{buyer_id}"),
+            "timestamp": 1700000000i64
+        }
+    })
+    .to_string()
+}
+
 // ---------------------------------------------------------------- LINE probe & gates
 
 #[tokio::test]
@@ -1188,6 +1208,37 @@ async fn shopee_text_message_creates_customer_conversation_and_message() {
     assert_eq!(metadata["platform"], "shopee");
     assert_eq!(metadata["shopId"], 42);
     assert_eq!(metadata["buyerId"], 9001);
+}
+
+#[tokio::test]
+async fn shopee_image_message_creates_media_message() {
+    let app = spawn_app_custom(|c| {
+        c.shopee_partner_id = Some(1);
+        c.shopee_partner_key = Some("test-shopee-key".into());
+    })
+    .await;
+    let body = shopee_image_event(42, 9003, "sp-mid-img", "https://cdn.example/i.jpg");
+    let (status, resp) = post_shopee(&app, &body, Some(&shopee_sig(&body))).await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+
+    let (content, content_type, metadata): (String, String, String) = sqlx::query_as(
+        "SELECT content, content_type, metadata
+         FROM messages WHERE platform_message_id = 'sp-mid-img'",
+    )
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
+    assert_eq!(content, "[Image]");
+    assert_eq!(content_type, "image");
+    let metadata: Value = serde_json::from_str(&metadata).unwrap();
+    assert_eq!(metadata["media"]["type"], "image");
+    assert_eq!(metadata["media"]["contentUrl"], "https://cdn.example/i.jpg");
+    assert_eq!(
+        metadata["media"]["previewUrl"],
+        "https://cdn.example/i.jpg?thumb=1"
+    );
+    assert_eq!(metadata["shopId"], 42);
+    assert_eq!(metadata["buyerId"], 9003);
 }
 
 #[tokio::test]

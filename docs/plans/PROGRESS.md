@@ -69,7 +69,10 @@ external-stub boundary:
 
 Remaining external/infrastructure boundaries:
 
-- [ ] Shopee richer media/chat surface coverage beyond text and link-style
+- [x] Shopee inbound richer media/chat surface: Webchat media/card payloads
+      preserve image preview media, sticker data, and product/order-style
+      metadata for downstream rendering.
+- [ ] Shopee outbound native media delivery beyond text and link-style
       fallback delivery.
 - [ ] Installer real cloud-provider provisioning (`TODO(cloud)`).
 - [x] Multi-instance customer-channel realtime fan-out: customer conversation
