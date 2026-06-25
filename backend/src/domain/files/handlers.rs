@@ -1005,6 +1005,7 @@ pub async fn presigned_url(
     if filename.chars().count() > 255 {
         return Err(AppError::BadRequest("filename exceeds 255 characters".into()));
     }
+    validate::validate_filename(filename).map_err(AppError::BadRequest)?;
     let content_type = body.content_type.as_deref().unwrap_or("");
     if content_type.is_empty() || !validate::allowed_types("admin").contains(&content_type) {
         return Err(AppError::BadRequest(format!(

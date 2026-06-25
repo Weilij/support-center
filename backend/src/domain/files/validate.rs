@@ -185,3 +185,27 @@ pub fn extension_for_type(content_type: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::validate_filename;
+
+    #[test]
+    fn validate_filename_rejects_paths_and_parent_segments() {
+        assert!(validate_filename("../secret.txt").is_err());
+        assert!(validate_filename("nested/file.txt").is_err());
+        assert!(validate_filename("safe..txt").is_err());
+    }
+
+    #[test]
+    fn validate_filename_rejects_blocked_extensions() {
+        assert!(validate_filename("run.sh").is_err());
+        assert!(validate_filename("payload.js").is_err());
+    }
+
+    #[test]
+    fn validate_filename_accepts_safe_names() {
+        assert!(validate_filename("report.csv").is_ok());
+        assert!(validate_filename("photo 1.png").is_ok());
+    }
+}
