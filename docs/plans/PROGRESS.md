@@ -33,8 +33,9 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   - [x] §8.2 views: ALL destination screens implemented — conversations
         list/detail, notifications, tags, teams, settings, profile, reports,
         activity, auto-reply, channels
-  - [x] §8.3 realtime client core: connect/auth/reconnect/event routing
-        (deeper protocol coverage pending: sync-after-reconnect, presence)
+  - [x] §8.3 realtime client core: connect/auth/reconnect/event routing,
+        reconnect re-subscribe, and reconnect message resync; presence coverage
+        remains a deeper follow-up.
   - [ ] §8.4 remaining: full endpoint contract map, team context switcher
   - [ ] §8.5 traceability matrix check (6689-6723)
 - [x] Phase 8: web installer — provisioning service (§9.1) + setup wizard (§9.2); real cloud calls remain TODO(cloud)
@@ -207,3 +208,7 @@ conversation routing as "指派至團隊 / 轉接團隊 / 取消指派" only.
   customer conversation events now relay across backend instances via
   Postgres-backed fan-out events and per-instance acks. Remaining scale-out work
   is limited to broader room/presence surfaces if required by deployment.
+- 2026-06-26: Frontend realtime reconnect hardening: vitest coverage now guards
+  deferred subscribe flushing, reconnect re-subscription, and reconnect events;
+  Inbox and ConversationDetail reload message history after reconnect to resync
+  any events missed while offline.
