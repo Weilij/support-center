@@ -278,6 +278,59 @@ async fn notify_message_reaches_customer_channel_on_peer_instance() {
 }
 
 #[tokio::test]
+async fn remote_customer_fanout_cleanup_prunes_expired_events_and_acks() {
+    let app = spawn_app().await;
+    let old_at = (chrono::Utc::now() - chrono::Duration::hours(48))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let fresh_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+    sqlx::query(
+        "INSERT INTO realtime_customer_fanout_events
+         (id, source_instance, conversation_id, event, created_at)
+         VALUES
+         ('old-event', 'peer-a', 'conv-old', '{\"type\":\"new_message\"}', $1),
+         ('fresh-event', 'peer-a', 'conv-fresh', '{\"type\":\"new_message\"}', $2)",
+    )
+    .bind(&old_at)
+    .bind(&fresh_at)
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO realtime_customer_fanout_acks (event_id, instance_id, acked_at)
+         VALUES
+         ('old-event', 'receiver-a', $1),
+         ('fresh-event', 'receiver-a', $2)",
+    )
+    .bind(&old_at)
+    .bind(&fresh_at)
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+
+    let cutoff = (chrono::Utc::now() - chrono::Duration::hours(24))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let deleted =
+        mcss_backend::realtime::customer::cleanup_remote_customer_events(&app.state, &cutoff)
+            .await
+            .unwrap();
+    assert_eq!(deleted, 1);
+
+    let event_ids: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM realtime_customer_fanout_events ORDER BY id")
+            .fetch_all(&app.state.db)
+            .await
+            .unwrap();
+    assert_eq!(event_ids, vec!["fresh-event"]);
+    let ack_ids: Vec<String> =
+        sqlx::query_scalar("SELECT event_id FROM realtime_customer_fanout_acks ORDER BY event_id")
+            .fetch_all(&app.state.db)
+            .await
+            .unwrap();
+    assert_eq!(ack_ids, vec!["fresh-event"]);
+}
+
+#[tokio::test]
 async fn notify_message_updated_broadcasts_attachment_data() {
     let app = spawn_app().await;
     let s = seed(&app).await;

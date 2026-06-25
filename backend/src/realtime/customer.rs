@@ -30,6 +30,10 @@ use crate::state::AppState;
 
 const REMOTE_FANOUT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 const REMOTE_FANOUT_BATCH: i64 = 100;
+const REMOTE_FANOUT_RETENTION: std::time::Duration =
+    std::time::Duration::from_secs(24 * 60 * 60);
+const REMOTE_FANOUT_CLEANUP_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(60 * 60);
 
 // ------------------------------------------------------------ channel registry
 
@@ -220,8 +224,26 @@ pub async fn process_remote_customer_events(
     Ok(processed)
 }
 
+pub async fn cleanup_remote_customer_events(
+    state: &AppState,
+    older_than: &str,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM realtime_customer_fanout_events WHERE created_at < $1")
+        .bind(older_than)
+        .execute(&state.db)
+        .await?;
+    Ok(result.rows_affected())
+}
+
+fn remote_fanout_cutoff(retention: std::time::Duration) -> String {
+    let retention =
+        chrono::Duration::from_std(retention).unwrap_or_else(|_| chrono::Duration::hours(24));
+    (chrono::Utc::now() - retention).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
 pub fn spawn_remote_fanout_loop(state: Arc<AppState>) {
     let state: Weak<AppState> = Arc::downgrade(&state);
+    let cleanup_state = state.clone();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(REMOTE_FANOUT_INTERVAL);
         loop {
@@ -231,6 +253,19 @@ pub fn spawn_remote_fanout_loop(state: Arc<AppState>) {
             };
             if let Err(err) = process_remote_customer_events(&state, REMOTE_FANOUT_BATCH).await {
                 tracing::warn!(error = %err, "customer-channel remote fanout loop failed");
+            }
+        }
+    });
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(REMOTE_FANOUT_CLEANUP_INTERVAL);
+        loop {
+            ticker.tick().await;
+            let Some(state) = cleanup_state.upgrade() else {
+                break;
+            };
+            let cutoff = remote_fanout_cutoff(REMOTE_FANOUT_RETENTION);
+            if let Err(err) = cleanup_remote_customer_events(&state, &cutoff).await {
+                tracing::warn!(error = %err, "customer-channel remote fanout cleanup failed");
             }
         }
     });
