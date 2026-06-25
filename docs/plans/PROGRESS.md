@@ -81,8 +81,11 @@ Remaining external/infrastructure boundaries:
       admin-configured webhook URL and record per-channel attempt outcomes.
 - [x] Slack-specific alert dispatch: chat-channel alerts send Slack Incoming
       Webhook `text` payloads instead of generic alert JSON.
-- [ ] Remaining alert polish: live email dispatch plus live welcome-reply push
-      polish where TODO markers remain.
+- [x] Live email alert dispatch: monitoring alerts can send SMTP `email`
+      channel attempts from the admin-configured email settings and record
+      success/failure outcomes.
+- [ ] Remaining alert polish: live welcome-reply push polish where TODO
+      markers remain.
 
 ## Current Routing Decision
 

@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
+use crate::crypto;
 use crate::db::now_iso;
 use crate::envelope;
 use crate::error::AppError;
@@ -91,8 +92,10 @@ pub async fn config_email(
         return Err(AppError::BadRequest("sender and recipients must be valid emails".into()));
     }
     let port = body.port.unwrap_or(587);
+    let protected_password = crypto::protect(state.config.encryption_key.as_deref(), password)
+        .map_err(|e| AppError::Internal(format!("email credential protection failed: {e}")))?;
     put_setting(&state, "alert.email",
-        &json!({"host": host, "port": port, "sender": sender, "recipients": recipients})).await;
+        &json!({"host": host, "port": port, "sender": sender, "password": protected_password, "recipients": recipients})).await;
     Ok(envelope::ok_msg(
         json!({
             "host": host, "port": port, "sender": sender,

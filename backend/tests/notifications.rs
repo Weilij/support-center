@@ -12,6 +12,7 @@ use mcss_backend::domain::notifications::{alerts, reminders};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
 async fn users(app: &TestApp) -> (String, String, String) {
@@ -38,6 +39,56 @@ async fn webhook_sink() -> (String, Arc<Mutex<Vec<Value>>>) {
         axum::serve(listener, app).await.unwrap();
     });
     (format!("http://{addr}/alert"), seen)
+}
+
+async fn smtp_sink() -> (String, u16, Arc<Mutex<Vec<String>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen_task = seen.clone();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+        writer.write_all(b"220 local smtp sink\r\n").await.unwrap();
+
+        let mut line = String::new();
+        let mut authed = false;
+        loop {
+            line.clear();
+            if reader.read_line(&mut line).await.unwrap() == 0 {
+                break;
+            }
+            let command = line.trim_end_matches(['\r', '\n']);
+            if command.eq_ignore_ascii_case("DATA") {
+                writer.write_all(b"354 end with dot\r\n").await.unwrap();
+                let mut message = String::new();
+                loop {
+                    line.clear();
+                    if reader.read_line(&mut line).await.unwrap() == 0 {
+                        break;
+                    }
+                    if line == ".\r\n" || line == ".\n" {
+                        break;
+                    }
+                    message.push_str(&line);
+                }
+                seen_task.lock().await.push(message);
+                writer.write_all(b"250 queued\r\n").await.unwrap();
+            } else if command.starts_with("AUTH PLAIN ") {
+                authed = true;
+                writer.write_all(b"235 authenticated\r\n").await.unwrap();
+            } else if command.starts_with("MAIL FROM:") && !authed {
+                writer.write_all(b"530 authentication required\r\n").await.unwrap();
+            } else if command.eq_ignore_ascii_case("QUIT") {
+                writer.write_all(b"221 bye\r\n").await.unwrap();
+                break;
+            } else {
+                writer.write_all(b"250 ok\r\n").await.unwrap();
+            }
+        }
+    });
+    ("127.0.0.1".to_string(), addr.port(), seen)
 }
 
 // ---------------------------------------------------------------- inbox
@@ -562,6 +613,54 @@ async fn monitoring_alert_posts_slack_specific_payload_for_chat_channel() {
         received[0].get("type").is_none(),
         "Slack payload should use Incoming Webhook text format, not generic alert JSON"
     );
+}
+
+#[tokio::test]
+async fn monitoring_alert_sends_configured_email_channel() {
+    let app = spawn_app().await;
+    let (host, port, seen) = smtp_sink().await;
+    sqlx::query(
+        "INSERT INTO system_settings (key, value, updated_at) VALUES ($1, $2, $3)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    )
+    .bind("alert.email")
+    .bind(json!({
+        "host": host,
+        "port": port,
+        "sender": "ops@example.test",
+        "password": "smtp-secret",
+        "recipients": ["lead@example.test", "oncall@example.test"],
+    }).to_string())
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+    alerts::update_config(
+        &app.state.db,
+        &json!({
+            "levelChannels": {"critical": ["email"]},
+            "rateLimiting": {"enabled": false},
+        }),
+    )
+    .await;
+
+    let alert = alerts::send_monitoring_alert(
+        &app.state,
+        "critical",
+        "DB latency",
+        "p95 crossed threshold",
+        Some(json!({"metric": "db.p95"})),
+    )
+    .await;
+    let attempts = alert["channelAttempts"].as_array().unwrap();
+    assert!(attempts.iter().any(|a| a["channel"] == "email" && a["success"] == true));
+
+    let received = seen.lock().await;
+    assert_eq!(received.len(), 1);
+    assert!(received[0].contains("Subject: [critical] DB latency"));
+    assert!(received[0].contains("To: lead@example.test, oncall@example.test"));
+    assert!(received[0].contains("p95 crossed threshold"));
+    assert!(received[0].contains("\"metric\":\"db.p95\""));
 }
 
 #[tokio::test]

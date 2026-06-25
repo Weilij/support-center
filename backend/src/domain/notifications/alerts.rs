@@ -3,9 +3,15 @@
 //! ack/resolve, and persisted configuration. External destinations are
 //! configuration-gated; unconfigured destinations fail gracefully.
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
 use serde_json::{json, Value};
 use sqlx::PgPool;
+use std::time::Duration;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
 
+use crate::crypto;
 use crate::db::now_iso;
 use crate::state::AppState;
 
@@ -13,6 +19,7 @@ pub const SEVERITIES: &[&str] = &["low", "medium", "high", "critical"];
 pub const LEVELS: &[&str] = &["info", "warning", "critical", "emergency"];
 const CONFIG_KEY: &str = "alerting_config";
 const DEFAULT_MAX_PER_HOUR: i64 = 20;
+const SMTP_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn http_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
@@ -181,6 +188,192 @@ fn slack_payload(level: &str, title: &str, description: &str, metadata: Option<&
     json!({ "text": text })
 }
 
+fn email_message(
+    sender: &str,
+    recipients: &[String],
+    level: &str,
+    title: &str,
+    description: &str,
+    metadata: Option<&Value>,
+) -> String {
+    let mut body = format!(
+        "From: {sender}\r\nTo: {}\r\nSubject: [{level}] {title}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{description}\r\n",
+        recipients.join(", ")
+    );
+    if let Some(meta) = metadata.filter(|v| !v.is_null()) {
+        body.push_str("\r\nMetadata:\r\n");
+        body.push_str(&meta.to_string());
+        body.push_str("\r\n");
+    }
+    body
+}
+
+async fn read_smtp_reply<R>(reader: &mut R) -> Result<u16, String>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read = tokio::time::timeout(SMTP_TIMEOUT, reader.read_line(&mut line))
+            .await
+            .map_err(|_| "email: SMTP read timed out".to_string())?
+            .map_err(|e| format!("email: SMTP read failed: {e}"))?;
+        if read == 0 {
+            return Err("email: SMTP connection closed".into());
+        }
+        let bytes = line.as_bytes();
+        if bytes.len() >= 4 && bytes[3] == b' ' {
+            let code = line[..3]
+                .parse::<u16>()
+                .map_err(|_| format!("email: invalid SMTP reply: {}", line.trim_end()))?;
+            return Ok(code);
+        }
+        if bytes.len() < 4 || bytes[3] != b'-' {
+            return Err(format!("email: invalid SMTP reply: {}", line.trim_end()));
+        }
+    }
+}
+
+fn ensure_smtp_code(code: u16, accepted: &[u16], context: &str) -> Result<(), String> {
+    if accepted.contains(&code) {
+        Ok(())
+    } else {
+        Err(format!("email: SMTP {context} failed with {code}"))
+    }
+}
+
+fn dot_stuff(message: &str) -> String {
+    let normalized = message.replace("\r\n", "\n").replace('\r', "\n");
+    normalized
+        .split('\n')
+        .map(|line| {
+            if line.starts_with('.') {
+                format!(".{line}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\r\n")
+}
+
+async fn send_plain_smtp(
+    host: &str,
+    port: u16,
+    sender: &str,
+    recipients: &[String],
+    message: &str,
+    auth: Option<(&str, &str)>,
+) -> Result<(), String> {
+    let stream = tokio::time::timeout(SMTP_TIMEOUT, TcpStream::connect((host, port)))
+        .await
+        .map_err(|_| "email: SMTP connect timed out".to_string())?
+        .map_err(|e| format!("email: SMTP connect failed: {e}"))?;
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+
+    ensure_smtp_code(read_smtp_reply(&mut reader).await?, &[220], "greeting")?;
+
+    writer
+        .write_all(b"HELO localhost\r\n")
+        .await
+        .map_err(|e| format!("email: SMTP write failed: {e}"))?;
+    ensure_smtp_code(read_smtp_reply(&mut reader).await?, &[250], "HELO")?;
+
+    if let Some((username, password)) = auth {
+        let auth = B64.encode(format!("\0{username}\0{password}"));
+        writer
+            .write_all(format!("AUTH PLAIN {auth}\r\n").as_bytes())
+            .await
+            .map_err(|e| format!("email: SMTP write failed: {e}"))?;
+        ensure_smtp_code(read_smtp_reply(&mut reader).await?, &[235, 503], "AUTH PLAIN")?;
+    }
+
+    writer
+        .write_all(format!("MAIL FROM:<{sender}>\r\n").as_bytes())
+        .await
+        .map_err(|e| format!("email: SMTP write failed: {e}"))?;
+    ensure_smtp_code(read_smtp_reply(&mut reader).await?, &[250], "MAIL FROM")?;
+
+    for recipient in recipients {
+        writer
+            .write_all(format!("RCPT TO:<{recipient}>\r\n").as_bytes())
+            .await
+            .map_err(|e| format!("email: SMTP write failed: {e}"))?;
+        ensure_smtp_code(read_smtp_reply(&mut reader).await?, &[250, 251], "RCPT TO")?;
+    }
+
+    writer
+        .write_all(b"DATA\r\n")
+        .await
+        .map_err(|e| format!("email: SMTP write failed: {e}"))?;
+    ensure_smtp_code(read_smtp_reply(&mut reader).await?, &[354], "DATA")?;
+
+    writer
+        .write_all(format!("{}\r\n.\r\n", dot_stuff(message)).as_bytes())
+        .await
+        .map_err(|e| format!("email: SMTP write failed: {e}"))?;
+    ensure_smtp_code(read_smtp_reply(&mut reader).await?, &[250], "message")?;
+
+    let _ = writer.write_all(b"QUIT\r\n").await;
+    Ok(())
+}
+
+async fn dispatch_email(
+    state: &AppState,
+    level: &str,
+    title: &str,
+    description: &str,
+    metadata: Option<&Value>,
+) -> Result<(), String> {
+    let setting = get_channel_setting(&state.db, "alert.email")
+        .await
+        .ok_or_else(|| "email: not configured".to_string())?;
+    let host = setting["host"]
+        .as_str()
+        .filter(|h| !h.is_empty())
+        .ok_or_else(|| "email: host not configured".to_string())?;
+    let port = setting["port"]
+        .as_u64()
+        .and_then(|p| u16::try_from(p).ok())
+        .ok_or_else(|| "email: invalid port".to_string())?;
+    let sender = setting["sender"]
+        .as_str()
+        .filter(|s| s.contains('@'))
+        .ok_or_else(|| "email: sender not configured".to_string())?;
+    let recipients: Vec<String> = setting["recipients"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|v| v.as_str().filter(|s| s.contains('@')).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if recipients.is_empty() {
+        return Err("email: recipients not configured".into());
+    }
+    let password = setting["password"]
+        .as_str()
+        .map(|stored| {
+            crypto::reveal(state.config.encryption_key.as_deref(), stored)
+                .map_err(|e| format!("email: credential reveal failed: {e}"))
+        })
+        .transpose()?;
+
+    let message = email_message(sender, &recipients, level, title, description, metadata);
+    send_plain_smtp(
+        host,
+        port,
+        sender,
+        &recipients,
+        &message,
+        password.as_deref().map(|p| (sender, p)),
+    )
+    .await
+}
+
 /// Monitoring alert with rate limiting and escalation (CRD 5064-5067).
 pub async fn send_monitoring_alert(
     state: &AppState,
@@ -232,6 +425,9 @@ pub async fn send_monitoring_alert(
                     let payload =
                         slack_payload(level, title, description, metadata.as_ref());
                     dispatch_webhook(state, &payload, "alert.slack").await
+                }
+                "email" => {
+                    dispatch_email(state, level, title, description, metadata.as_ref()).await
                 }
                 other => Err(format!("{other}: not configured")),
             };
