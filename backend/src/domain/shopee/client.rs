@@ -61,6 +61,23 @@ impl ShopeeClient {
         format!("{}{}?{}", self.host, path, query)
     }
 
+    pub fn authorization_url(&self, redirect_url: &str, timestamp: i64) -> String {
+        let path = "/api/v2/shop/auth_partner";
+        let base = base_string(self.partner_id, path, timestamp, None, None);
+        let s = sign(&self.partner_key, &base);
+        reqwest::Url::parse_with_params(
+            &format!("{}{}", self.host, path),
+            &[
+                ("partner_id", self.partner_id.to_string()),
+                ("timestamp", timestamp.to_string()),
+                ("sign", s),
+                ("redirect", redirect_url.to_string()),
+            ],
+        )
+        .expect("Shopee authorization URL")
+        .to_string()
+    }
+
     async fn post_token(&self, path: &str, body: serde_json::Value) -> Result<TokenResponse, String> {
         let ts = chrono::Utc::now().timestamp();
         let url = self.url(path, &self.signed_query(path, ts, None, None));
@@ -127,6 +144,19 @@ mod tests {
     #[test]
     fn url_joins_host_path_query() {
         assert_eq!(client().url("/api/v2/x", "a=1"), "https://h/api/v2/x?a=1");
+    }
+
+    #[test]
+    fn authorization_url_embeds_signed_redirect() {
+        let url = client().authorization_url(
+            "https://app.example/api/shopee/auth/callback?state=abc",
+            1610000000,
+        );
+        assert!(url.starts_with("https://h/api/v2/shop/auth_partner?"));
+        assert!(url.contains("partner_id=1"));
+        assert!(url.contains("timestamp=1610000000"));
+        assert!(url.contains("sign="));
+        assert!(url.contains("redirect=https%3A%2F%2Fapp.example%2Fapi%2Fshopee%2Fauth%2Fcallback%3Fstate%3Dabc"));
     }
 
     #[test]

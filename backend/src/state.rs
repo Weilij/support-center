@@ -110,6 +110,42 @@ impl BatchUndoStore {
     }
 }
 
+pub struct ShopeeOAuthEntry {
+    pub user_id: String,
+    pub shop_id: i64,
+    pub team_id: Option<i64>,
+    pub created: Instant,
+}
+
+pub const SHOPEE_OAUTH_STATE_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+#[derive(Default)]
+pub struct ShopeeOAuthStateStore {
+    entries: Mutex<HashMap<String, ShopeeOAuthEntry>>,
+}
+
+impl ShopeeOAuthStateStore {
+    pub fn put(&self, token: &str, user_id: &str, shop_id: i64, team_id: Option<i64>) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.retain(|_, e| e.created.elapsed() < SHOPEE_OAUTH_STATE_TTL);
+            entries.insert(
+                token.to_string(),
+                ShopeeOAuthEntry { user_id: user_id.to_string(), shop_id, team_id, created: Instant::now() },
+            );
+        }
+    }
+
+    pub fn take(&self, token: &str) -> Option<ShopeeOAuthEntry> {
+        let mut entries = self.entries.lock().ok()?;
+        let entry = entries.get(token)?;
+        if entry.created.elapsed() >= SHOPEE_OAUTH_STATE_TTL {
+            entries.remove(token);
+            return None;
+        }
+        entries.remove(token)
+    }
+}
+
 /// Fast-lookup recallability markers for pending delayed messages (CRD 987,
 /// 1014): present while an item is still cancellable, expiring shortly after
 /// its scheduled send time.
@@ -152,6 +188,7 @@ pub struct AppState {
     pub team_cache: TeamCache,
     pub last_active: LastActiveDebounce,
     pub batch_undo: BatchUndoStore,
+    pub shopee_oauth: ShopeeOAuthStateStore,
     pub auto_reply_cache: crate::domain::auto_reply::engine::RuleCache,
     pub files_limiter: crate::domain::files::limiter::UploadLimiter,
     pub queue: crate::domain::queue::JobQueue,
@@ -171,6 +208,7 @@ impl AppState {
             team_cache: TeamCache::default(),
             last_active: LastActiveDebounce::default(),
             batch_undo: BatchUndoStore::default(),
+            shopee_oauth: ShopeeOAuthStateStore::default(),
             auto_reply_cache: crate::domain::auto_reply::engine::RuleCache::default(),
             files_limiter: crate::domain::files::limiter::UploadLimiter::default(),
             queue: crate::domain::queue::JobQueue::default(),
@@ -178,5 +216,22 @@ impl AppState {
             recallable_messages: RecallableMarkers::default(),
             realtime: Arc::new(crate::realtime::RealtimeHub::new()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShopeeOAuthStateStore;
+
+    #[test]
+    fn shopee_oauth_state_is_one_time_and_bound_to_expected_shop() {
+        let store = ShopeeOAuthStateStore::default();
+        store.put("state-1", "admin-1", 42, Some(7));
+
+        let entry = store.take("state-1").expect("state exists");
+        assert_eq!(entry.user_id, "admin-1");
+        assert_eq!(entry.shop_id, 42);
+        assert_eq!(entry.team_id, Some(7));
+        assert!(store.take("state-1").is_none());
     }
 }
