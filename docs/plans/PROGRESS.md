@@ -88,8 +88,8 @@ Remaining external/infrastructure boundaries:
       through the outbound LINE gateway and persist platform message outcomes.
 - [x] LIFF welcome endpoint live push: verified LIFF users receive the fixed
       welcome text through the outbound LINE gateway.
-- [ ] Remaining alert polish: env-driven security-alert sinks still log-only
-      where `TODO(channels)` markers remain.
+- [x] Env-driven security-alert sinks: selected email API, chat webhook, and
+      generic webhook destinations POST live payloads and report failures.
 
 ## Current Routing Decision
 

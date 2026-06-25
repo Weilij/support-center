@@ -35,6 +35,63 @@ fn severity_rank(s: &str) -> usize {
     SEVERITIES.iter().position(|x| *x == s).unwrap_or(0)
 }
 
+async fn post_alert_json(
+    destination: &str,
+    url: &str,
+    payload: &Value,
+    bearer: Option<&str>,
+) -> Result<(), String> {
+    let url = url
+        .trim()
+        .strip_prefix("http://")
+        .map(|_| url.trim())
+        .or_else(|| url.trim().strip_prefix("https://").map(|_| url.trim()))
+        .ok_or_else(|| format!("{destination}: invalid URL"))?;
+    let mut req = http_client().post(url).json(payload);
+    if let Some(token) = bearer.filter(|t| !t.trim().is_empty()) {
+        req = req.bearer_auth(token);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("{destination}: request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("{destination}: HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
+fn security_payload(
+    title: &str,
+    message: &str,
+    severity: &str,
+    metadata: Option<&Value>,
+) -> Value {
+    json!({
+        "type": "security_alert",
+        "title": title,
+        "message": message,
+        "severity": severity,
+        "metadata": metadata.cloned().unwrap_or(Value::Null),
+        "timestamp": now_iso(),
+    })
+}
+
+fn security_email_payload(
+    title: &str,
+    message: &str,
+    severity: &str,
+    metadata: Option<&Value>,
+) -> Value {
+    json!({
+        "subject": format!("[{severity}] {title}"),
+        "message": message,
+        "severity": severity,
+        "metadata": metadata.cloned().unwrap_or(Value::Null),
+        "timestamp": now_iso(),
+    })
+}
+
 /// Multi-destination security alert (CRD 5058-5062). Destination set comes
 /// from environment configuration; missing configuration skips or fails the
 /// destination gracefully. Returns (successes, failures, errors).
@@ -42,7 +99,7 @@ pub async fn send_security_alert(
     title: &str,
     message: &str,
     severity: &str,
-    _metadata: Option<Value>,
+    metadata: Option<Value>,
 ) -> (usize, usize, Vec<String>) {
     let mut successes = 0;
     let mut failures = 0;
@@ -53,23 +110,29 @@ pub async fn send_security_alert(
         configured: bool,
         min_severity: String,
     }
+    let email_api_key = std::env::var("ALERT_EMAIL_API_KEY").ok();
+    let email_api_url = std::env::var("ALERT_EMAIL_API_URL").ok();
+    let chat_webhook_url = std::env::var("ALERT_CHAT_WEBHOOK_URL").ok();
+    let webhook_url = std::env::var("ALERT_WEBHOOK_URL").ok();
     let destinations = [
         Destination {
             name: "email",
-            configured: std::env::var("ALERT_EMAIL_API_KEY").is_ok(),
+            configured: email_api_key.as_ref().is_some_and(|v| !v.trim().is_empty())
+                && email_api_url.as_ref().is_some_and(|v| !v.trim().is_empty()),
             min_severity: std::env::var("ALERT_EMAIL_MIN_SEVERITY").unwrap_or_else(|_| "high".into()),
         },
         Destination {
             name: "chat-webhook",
-            configured: std::env::var("ALERT_CHAT_WEBHOOK_URL").is_ok(),
+            configured: chat_webhook_url.as_ref().is_some_and(|v| !v.trim().is_empty()),
             min_severity: std::env::var("ALERT_CHAT_MIN_SEVERITY").unwrap_or_else(|_| "medium".into()),
         },
         Destination {
             name: "webhook",
-            configured: std::env::var("ALERT_WEBHOOK_URL").is_ok(),
+            configured: webhook_url.as_ref().is_some_and(|v| !v.trim().is_empty()),
             min_severity: std::env::var("ALERT_WEBHOOK_MIN_SEVERITY").unwrap_or_else(|_| "low".into()),
         },
     ];
+    let generic_payload = security_payload(title, message, severity, metadata.as_ref());
     for dest in &destinations {
         if severity_rank(severity) < severity_rank(&dest.min_severity) {
             continue; // severity gate not satisfied: destination not selected
@@ -79,9 +142,48 @@ pub async fn send_security_alert(
             errors.push(format!("{}: not configured", dest.name));
             continue;
         }
-        // TODO(channels): real outbound dispatch (email API / webhook POST).
-        tracing::info!(destination = dest.name, severity, title, message, "security alert dispatched");
-        successes += 1;
+        let result = match dest.name {
+            "email" => {
+                let payload = security_email_payload(title, message, severity, metadata.as_ref());
+                post_alert_json(
+                    dest.name,
+                    email_api_url.as_deref().unwrap_or_default(),
+                    &payload,
+                    email_api_key.as_deref(),
+                )
+                .await
+            }
+            "chat-webhook" => {
+                let payload = slack_payload(severity, title, message, metadata.as_ref());
+                post_alert_json(
+                    dest.name,
+                    chat_webhook_url.as_deref().unwrap_or_default(),
+                    &payload,
+                    None,
+                )
+                .await
+            }
+            "webhook" => {
+                post_alert_json(
+                    dest.name,
+                    webhook_url.as_deref().unwrap_or_default(),
+                    &generic_payload,
+                    None,
+                )
+                .await
+            }
+            _ => Err(format!("{}: not configured", dest.name)),
+        };
+        match result {
+            Ok(()) => {
+                tracing::info!(destination = dest.name, severity, title, message, "security alert dispatched");
+                successes += 1;
+            }
+            Err(e) => {
+                failures += 1;
+                errors.push(e);
+            }
+        }
     }
     (successes, failures, errors)
 }

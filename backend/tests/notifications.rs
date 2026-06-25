@@ -11,9 +11,14 @@ use common::{spawn_app, TestApp};
 use mcss_backend::domain::notifications::{alerts, reminders};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
+
+fn security_env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 async fn users(app: &TestApp) -> (String, String, String) {
     app.seed_agent("admin@test.dev", "pw123456", "admin").await;
@@ -27,6 +32,33 @@ async fn webhook_sink() -> (String, Arc<Mutex<Vec<Value>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     async fn capture(State(seen): State<Arc<Mutex<Vec<Value>>>>, body: Bytes) -> Json<Value> {
         let parsed = serde_json::from_slice::<Value>(&body).unwrap_or_else(|_| json!({}));
+        seen.lock().await.push(parsed);
+        Json(json!({"ok": true}))
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route("/alert", post(capture))
+        .with_state(seen.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}/alert"), seen)
+}
+
+async fn security_sink() -> (String, Arc<Mutex<Vec<Value>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    async fn capture(
+        State(seen): State<Arc<Mutex<Vec<Value>>>>,
+        headers: axum::http::HeaderMap,
+        body: Bytes,
+    ) -> Json<Value> {
+        let mut parsed = serde_json::from_slice::<Value>(&body).unwrap_or_else(|_| json!({}));
+        parsed["_authorization"] = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| Value::String(v.to_string()))
+            .unwrap_or(Value::Null);
         seen.lock().await.push(parsed);
         Json(json!({"ok": true}))
     }
@@ -665,6 +697,19 @@ async fn monitoring_alert_sends_configured_email_channel() {
 
 #[tokio::test]
 async fn security_alerts_gate_by_severity_and_configuration() {
+    let _guard = security_env_lock().lock().await;
+    for key in [
+        "ALERT_EMAIL_API_KEY",
+        "ALERT_EMAIL_API_URL",
+        "ALERT_EMAIL_MIN_SEVERITY",
+        "ALERT_CHAT_WEBHOOK_URL",
+        "ALERT_CHAT_MIN_SEVERITY",
+        "ALERT_WEBHOOK_URL",
+        "ALERT_WEBHOOK_MIN_SEVERITY",
+    ] {
+        std::env::remove_var(key);
+    }
+
     // No destinations configured: selected destinations fail gracefully.
     let (ok, failed, errors) =
         alerts::send_security_alert("攻擊偵測", "signature mismatch burst", "critical", None).await;
@@ -675,4 +720,53 @@ async fn security_alerts_gate_by_severity_and_configuration() {
     // A low-severity alert selects fewer destinations than critical.
     let (_, failed_low, _) = alerts::send_security_alert("t", "m", "low", None).await;
     assert!(failed_low <= failed);
+}
+
+#[tokio::test]
+async fn security_alert_posts_configured_env_sinks() {
+    let _guard = security_env_lock().lock().await;
+    let (webhook_url, webhook_seen) = security_sink().await;
+    let (chat_url, chat_seen) = security_sink().await;
+    let (email_url, email_seen) = security_sink().await;
+    std::env::set_var("ALERT_WEBHOOK_URL", &webhook_url);
+    std::env::set_var("ALERT_CHAT_WEBHOOK_URL", &chat_url);
+    std::env::set_var("ALERT_EMAIL_API_URL", &email_url);
+    std::env::set_var("ALERT_EMAIL_API_KEY", "email-key");
+
+    let (ok, failed, errors) = alerts::send_security_alert(
+        "攻擊偵測",
+        "signature mismatch burst",
+        "critical",
+        Some(json!({"source": "ids"})),
+    )
+    .await;
+    for key in [
+        "ALERT_EMAIL_API_KEY",
+        "ALERT_EMAIL_API_URL",
+        "ALERT_CHAT_WEBHOOK_URL",
+        "ALERT_WEBHOOK_URL",
+    ] {
+        std::env::remove_var(key);
+    }
+
+    assert_eq!(ok, 3, "{errors:?}");
+    assert_eq!(failed, 0, "{errors:?}");
+    assert!(errors.is_empty(), "{errors:?}");
+
+    let webhook = webhook_seen.lock().await;
+    assert_eq!(webhook.len(), 1);
+    assert_eq!(webhook[0]["type"], "security_alert");
+    assert_eq!(webhook[0]["severity"], "critical");
+    assert_eq!(webhook[0]["metadata"]["source"], "ids");
+
+    let chat = chat_seen.lock().await;
+    assert_eq!(chat.len(), 1);
+    assert!(chat[0]["text"].as_str().unwrap().contains("攻擊偵測"));
+    assert!(chat[0].get("type").is_none(), "chat sink should use text payload");
+
+    let email = email_seen.lock().await;
+    assert_eq!(email.len(), 1);
+    assert_eq!(email[0]["subject"], "[critical] 攻擊偵測");
+    assert_eq!(email[0]["message"], "signature mismatch burst");
+    assert_eq!(email[0]["_authorization"], "Bearer email-key");
 }
