@@ -38,7 +38,9 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
         remains a deeper follow-up.
   - [ ] §8.4 remaining: full endpoint contract map, team context switcher
   - [ ] §8.5 traceability matrix check (6689-6723)
-- [x] Phase 8: web installer — provisioning service (§9.1) + setup wizard (§9.2); real cloud calls remain TODO(cloud)
+- [x] Phase 8: web installer — provisioning service (§9.1) + setup wizard (§9.2);
+      Cloudflare API-token verification and core resource provisioning are wired,
+      with OAuth grant exchange and Workers/Pages deployment still external.
 
 ## Current Integration Status
 
@@ -74,7 +76,10 @@ Remaining external/infrastructure boundaries:
       metadata for downstream rendering.
 - [ ] Shopee outbound native media delivery beyond text and link-style
       fallback delivery.
-- [ ] Installer real cloud-provider provisioning (`TODO(cloud)`).
+- [x] Installer Cloudflare API-token verification and core resource
+      provisioning: `/auth/token` verifies the Bearer token/account through
+      Cloudflare API, and deployment creates D1, KV, R2, and Queue resources.
+- [ ] Installer OAuth grant exchange and Workers/Pages application deployment.
 - [x] Multi-instance customer-channel realtime fan-out: customer conversation
       events relay across backend instances through Postgres event/ack tables.
 - [ ] Broader realtime scale-out hardening for non-customer-channel rooms and

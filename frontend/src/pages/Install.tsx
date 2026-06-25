@@ -48,7 +48,7 @@ export default function Install() {
   const startProvision = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
-    const { ok, data } = await call('/deployment/start', { projectName })
+    const { ok, data } = await call('/deployment/start', { projectName, apiToken, accountId })
     if (!ok) {
       setError(String(data.error ?? '啟動失敗'))
       return
