@@ -1,7 +1,7 @@
 // Renders one message's media by kind. Downloadable LINE media (image/video/
 // audio/file) loads through the authenticated proxy; stickers come from the
 // public LINE CDN. Anything else falls back to the text content.
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 export interface MessageMediaProps {
   convId: string
@@ -31,6 +31,16 @@ function fmtSize(n: unknown): string {
 export function MessageMedia({ convId, msgId, messageType, media, content }: MessageMediaProps) {
   const [failed, setFailed] = useState(false)
   const [zoom, setZoom] = useState(false)
+  useEffect(() => {
+    setFailed(false)
+    setZoom(false)
+  }, [msgId, messageType])
+  useEffect(() => {
+    if (!zoom) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setZoom(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [zoom])
   const mediaUrl = `/api/conversations/${convId}/messages/${msgId}/media`
   const previewUrl = `${mediaUrl}/preview`
   const text = <span>{content}</span>
@@ -51,6 +61,8 @@ export function MessageMedia({ convId, msgId, messageType, media, content }: Mes
           />
           {zoom && (
             <div
+              role="dialog"
+              aria-modal="true"
               onClick={() => setZoom(false)}
               style={{
                 position: 'fixed', inset: 0, background: 'rgba(0,0,0,.8)', display: 'flex',

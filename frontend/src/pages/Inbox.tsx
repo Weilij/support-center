@@ -672,12 +672,13 @@ function Thread({
                 <Avatar name={customerName || '?'} src={customerAvatarUrl} size="sm" />
               )}
               <div>
-                {isMediaKind(msg.messageType) ? (
+                {convId && isMediaKind(msg.messageType) ? (
+                  // Stickers float without a chat-bubble frame; other media sit inside one.
                   msg.messageType === 'sticker' ? (
-                    <MessageMedia convId={convId ?? ''} msgId={msg.id} messageType={msg.messageType!} media={msg.media} content={msg.content} />
+                    <MessageMedia convId={convId} msgId={msg.id} messageType={msg.messageType!} media={msg.media} content={msg.content} />
                   ) : (
                     <div className={`cs-bubble${isMe ? ' cs-bubble--me' : ''}`}>
-                      <MessageMedia convId={convId ?? ''} msgId={msg.id} messageType={msg.messageType!} media={msg.media} content={msg.content} />
+                      <MessageMedia convId={convId} msgId={msg.id} messageType={msg.messageType!} media={msg.media} content={msg.content} />
                     </div>
                   )
                 ) : (

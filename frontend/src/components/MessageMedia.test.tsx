@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react'
+import { render, fireEvent } from '@testing-library/react'
 import { describe, it, expect } from 'vitest'
 import { MessageMedia } from './MessageMedia'
 
@@ -33,5 +33,13 @@ describe('MessageMedia', () => {
     const { container } = render(<MessageMedia {...base} messageType="text" content="hello" />)
     expect(container.querySelector('img')).toBeNull()
     expect(container.textContent).toContain('hello')
+  })
+
+  it('image onError falls back to text content', () => {
+    const { container } = render(<MessageMedia {...base} messageType="image" content="[Image]" />)
+    const img = container.querySelector('img')!
+    fireEvent.error(img)
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.textContent).toContain('[Image]')
   })
 })
