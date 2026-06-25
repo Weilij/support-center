@@ -33,6 +33,7 @@ impl Default for Installer {
 }
 
 impl Installer {
+    #[cfg(test)]
     fn with_cloudflare_api(api_base: String) -> Self {
         Self {
             runs: Arc::new(Mutex::new(HashMap::new())),
@@ -41,6 +42,7 @@ impl Installer {
         }
     }
 
+    #[cfg(test)]
     fn with_cloudflare_services(
         api_base: String,
         oauth_base: String,
@@ -98,6 +100,23 @@ struct ProvisionContext {
 struct ProvisionConfig {
     custom_domain: Option<String>,
     zone_id: Option<String>,
+    frontend_artifact: Option<FrontendArtifact>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct FrontendArtifact {
+    manifest: HashMap<String, String>,
+    #[serde(rename = "buildOutputDir")]
+    build_output_dir: Option<String>,
+    branch: Option<String>,
+    #[serde(rename = "commitHash")]
+    commit_hash: Option<String>,
+    #[serde(rename = "commitMessage")]
+    commit_message: Option<String>,
+    #[serde(rename = "commitDirty")]
+    commit_dirty: Option<bool>,
+    #[serde(rename = "wranglerConfigHash")]
+    wrangler_config_hash: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -258,7 +277,7 @@ impl CloudflareApi {
         method: reqwest::Method,
         path: &str,
         creds: &CloudCredentials,
-        content_type: &'static str,
+        content_type: &str,
         body: String,
     ) -> Result<Value, String> {
         let url = format!("{}{}", self.api_base, path);
@@ -280,6 +299,33 @@ impl CloudflareApi {
             return Err(format!("Cloudflare API error at {path}: {value}"));
         }
         Ok(value)
+    }
+
+    async fn request_multipart_fields(
+        &self,
+        path: &str,
+        creds: &CloudCredentials,
+        fields: Vec<(&'static str, String)>,
+    ) -> Result<Value, String> {
+        let boundary = format!("mcss-installer-{}", uuid::Uuid::new_v4());
+        let mut body = String::new();
+        for (name, value) in fields {
+            body.push_str(&format!("--{boundary}\r\n"));
+            body.push_str(&format!(
+                "Content-Disposition: form-data; name=\"{name}\"\r\n\r\n"
+            ));
+            body.push_str(&value);
+            body.push_str("\r\n");
+        }
+        body.push_str(&format!("--{boundary}--\r\n"));
+        self.request_body(
+            reqwest::Method::POST,
+            path,
+            creds,
+            &format!("multipart/form-data; boundary={boundary}"),
+            body,
+        )
+        .await
     }
 
     async fn verify(&self, creds: &CloudCredentials) -> Result<Value, String> {
@@ -434,7 +480,7 @@ impl CloudflareApi {
             }
             "frontend-site" => {
                 let name = format!("{project}-frontend");
-                let result = self
+                let project_result = self
                     .request_json(
                         reqwest::Method::POST,
                         &format!("/accounts/{account}/pages/projects"),
@@ -449,16 +495,74 @@ impl CloudflareApi {
                         })),
                     )
                     .await?;
+                let deployment = match &config.frontend_artifact {
+                    Some(artifact) => Some(
+                        self.create_pages_deployment(account, &name, creds, artifact)
+                            .await?,
+                    ),
+                    None => None,
+                };
                 ProvisionedResource {
                     step,
                     kind: "pages_project",
                     name,
-                    result,
+                    result: json!({
+                        "project": project_result,
+                        "deployment": deployment,
+                        "artifact": config.frontend_artifact,
+                    }),
                 }
             }
             _ => return Ok(None),
         };
         Ok(Some(resource))
+    }
+
+    async fn create_pages_deployment(
+        &self,
+        account: &str,
+        project_name: &str,
+        creds: &CloudCredentials,
+        artifact: &FrontendArtifact,
+    ) -> Result<Value, String> {
+        let mut fields = vec![(
+            "manifest",
+            serde_json::to_string(&artifact.manifest)
+                .map_err(|e| format!("Invalid frontend artifact manifest: {e}"))?,
+        )];
+        fields.push((
+            "pages_build_output_dir",
+            artifact
+                .build_output_dir
+                .clone()
+                .unwrap_or_else(|| "dist".into()),
+        ));
+        fields.push((
+            "branch",
+            artifact.branch.clone().unwrap_or_else(|| "main".into()),
+        ));
+        if let Some(hash) = artifact.commit_hash.as_ref().filter(|v| !v.is_empty()) {
+            fields.push(("commit_hash", hash.clone()));
+        }
+        if let Some(message) = artifact.commit_message.as_ref().filter(|v| !v.is_empty()) {
+            fields.push(("commit_message", message.clone()));
+        }
+        if let Some(dirty) = artifact.commit_dirty {
+            fields.push(("commit_dirty", dirty.to_string()));
+        }
+        if let Some(hash) = artifact
+            .wrangler_config_hash
+            .as_ref()
+            .filter(|v| !v.is_empty())
+        {
+            fields.push(("wrangler_config_hash", hash.clone()));
+        }
+        self.request_multipart_fields(
+            &format!("/accounts/{account}/pages/projects/{project_name}/deployments"),
+            creds,
+            fields,
+        )
+        .await
     }
 }
 
@@ -718,6 +822,8 @@ struct StartBody {
     custom_domain: Option<String>,
     #[serde(rename = "zoneId")]
     zone_id: Option<String>,
+    #[serde(rename = "frontendArtifact")]
+    frontend_artifact: Option<FrontendArtifact>,
 }
 
 fn valid_project_name(name: &str) -> bool {
@@ -748,6 +854,38 @@ fn valid_custom_domain(domain: &str) -> bool {
                 && !label.ends_with('-')
                 && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         })
+}
+
+fn validate_frontend_artifact(artifact: &FrontendArtifact) -> Result<(), String> {
+    if artifact.manifest.is_empty() {
+        return Err("frontendArtifact.manifest must not be empty".into());
+    }
+    if artifact.manifest.len() > 20_000 {
+        return Err("frontendArtifact.manifest exceeds Cloudflare Pages 20,000 file limit".into());
+    }
+    for (path, hash) in &artifact.manifest {
+        if !valid_manifest_path(path) {
+            return Err("frontendArtifact.manifest contains an invalid asset path".into());
+        }
+        if hash.trim().is_empty() {
+            return Err("frontendArtifact.manifest contains an empty content hash".into());
+        }
+    }
+    if let Some(dir) = artifact.build_output_dir.as_ref() {
+        if dir.trim().is_empty() || dir.starts_with('/') || dir.contains("..") {
+            return Err("frontendArtifact.buildOutputDir is invalid".into());
+        }
+    }
+    Ok(())
+}
+
+fn valid_manifest_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
 fn is_cancelled(runs: &Arc<Mutex<HashMap<String, Value>>>, id: &str) -> bool {
@@ -823,6 +961,11 @@ async fn deployment_start(
                 .into_response();
         }
     }
+    if let Some(artifact) = body.frontend_artifact.as_ref() {
+        if let Err(error) = validate_frontend_artifact(artifact) {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+        }
+    }
     let creds = CloudCredentials {
         api_token: token,
         account_id: account,
@@ -830,6 +973,7 @@ async fn deployment_start(
     let provision_config = ProvisionConfig {
         custom_domain,
         zone_id,
+        frontend_artifact: body.frontend_artifact,
     };
     let run_id = uuid::Uuid::new_v4().to_string();
     installer.runs.lock().unwrap().insert(
@@ -1098,6 +1242,8 @@ mod tests {
         status: &'static str,
         delay_ms: u64,
     ) -> (String, Arc<Mutex<Vec<Value>>>) {
+        type MockTokenState = (Arc<Mutex<Vec<Value>>>, &'static str, u64);
+
         async fn record(
             State(calls): State<Arc<Mutex<Vec<Value>>>>,
             OriginalUri(uri): OriginalUri,
@@ -1105,7 +1251,8 @@ mod tests {
             headers: axum::http::HeaderMap,
             body: axum::body::Bytes,
         ) -> Json<Value> {
-            let body = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+            let raw_body = String::from_utf8_lossy(&body).to_string();
+            let parsed_body = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
             calls.lock().unwrap().push(json!({
                 "method": method.as_str(),
                 "path": uri.path(),
@@ -1113,12 +1260,17 @@ mod tests {
                     .get("authorization")
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or(""),
-                "body": body,
+                "contentType": headers
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or(""),
+                "rawBody": raw_body,
+                "body": parsed_body,
             }));
             Json(json!({"success": true, "result": {"id": "mock", "status": "active"}}))
         }
         async fn verify_token(
-            State((calls, status, delay_ms)): State<(Arc<Mutex<Vec<Value>>>, &'static str, u64)>,
+            State((calls, status, delay_ms)): State<MockTokenState>,
             OriginalUri(uri): OriginalUri,
             method: axum::http::Method,
             headers: axum::http::HeaderMap,
@@ -1164,6 +1316,10 @@ mod tests {
                     )
                     .route("/client/v4/zones/{zone}/workers/routes", post(record))
                     .route("/client/v4/accounts/{account}/pages/projects", post(record))
+                    .route(
+                        "/client/v4/accounts/{account}/pages/projects/{project}/deployments",
+                        post(record),
+                    )
                     .with_state(calls.clone()),
             );
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -1358,7 +1514,19 @@ mod tests {
                 "apiToken": "tok_live",
                 "accountId": "acc_123",
                 "customDomain": "support.example.com",
-                "zoneId": "zone_123"
+                "zoneId": "zone_123",
+                "frontendArtifact": {
+                    "manifest": {
+                        "index.html": "hash-index",
+                        "assets/app.js": "hash-app"
+                    },
+                    "buildOutputDir": "dist",
+                    "branch": "main",
+                    "commitHash": "abc123",
+                    "commitMessage": "production build",
+                    "commitDirty": false,
+                    "wranglerConfigHash": "wrangler-hash"
+                }
             })),
         )
         .await;
@@ -1383,7 +1551,7 @@ mod tests {
             last["adminCredentials"]["password"].is_string(),
             "one-time admin credentials"
         );
-        let calls = calls.lock().unwrap();
+        let calls = calls.lock().unwrap().clone();
         let paths: Vec<&str> = calls.iter().filter_map(|c| c["path"].as_str()).collect();
         assert!(
             paths.contains(&"/client/v4/user/tokens/verify"),
@@ -1454,6 +1622,53 @@ mod tests {
             paths.contains(&"/client/v4/accounts/acc_123/pages/projects"),
             "{paths:?}"
         );
+        assert!(
+            paths.contains(
+                &"/client/v4/accounts/acc_123/pages/projects/smoke-tenant-frontend/deployments"
+            ),
+            "{paths:?}"
+        );
+        let pages_deployment = calls
+            .iter()
+            .find(|c| {
+                c["path"]
+                    == "/client/v4/accounts/acc_123/pages/projects/smoke-tenant-frontend/deployments"
+            })
+            .expect("pages deployment call");
+        assert_eq!(pages_deployment["method"], "POST");
+        assert!(
+            pages_deployment["contentType"]
+                .as_str()
+                .unwrap()
+                .starts_with("multipart/form-data; boundary="),
+            "{pages_deployment}"
+        );
+        let multipart = pages_deployment["rawBody"].as_str().unwrap();
+        assert!(multipart.contains("name=\"manifest\""), "{multipart}");
+        assert!(
+            multipart.contains("\"index.html\":\"hash-index\""),
+            "{multipart}"
+        );
+        assert!(
+            multipart.contains("name=\"pages_build_output_dir\""),
+            "{multipart}"
+        );
+        assert!(multipart.contains("\r\ndist\r\n"), "{multipart}");
+        assert!(multipart.contains("name=\"branch\""), "{multipart}");
+        assert!(multipart.contains("\r\nmain\r\n"), "{multipart}");
+        let run_pages_resource = last["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|resource| resource["kind"] == "pages_project")
+            .expect("pages resource");
+        assert_eq!(
+            run_pages_resource["result"]["artifact"]["manifest"]["assets/app.js"],
+            "hash-app"
+        );
+        assert!(run_pages_resource["result"]["deployment"]["success"]
+            .as_bool()
+            .unwrap());
         let route_call = calls
             .iter()
             .find(|c| c["path"] == "/client/v4/zones/zone_123/workers/routes")
@@ -1475,6 +1690,52 @@ mod tests {
         assert_eq!(index["items"][0]["projectName"], "smoke-tenant");
         assert_eq!(index["items"][0]["status"], "completed");
         assert_eq!(index["items"][0]["customDomain"], "support.example.com");
+    }
+
+    #[tokio::test]
+    async fn deployment_rejects_invalid_frontend_artifact_manifest() {
+        let app = router(Installer::with_cloudflare_api(
+            "http://127.0.0.1:9/client/v4".into(),
+        ));
+
+        let (status, body) = send(
+            &app,
+            "POST",
+            "/deployment/start",
+            Some(json!({
+                "projectName": "bad-artifact",
+                "apiToken": "tok_live",
+                "accountId": "acc_123",
+                "frontendArtifact": {
+                    "manifest": {}
+                }
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "frontendArtifact.manifest must not be empty");
+
+        let (status, body) = send(
+            &app,
+            "POST",
+            "/deployment/start",
+            Some(json!({
+                "projectName": "bad-artifact",
+                "apiToken": "tok_live",
+                "accountId": "acc_123",
+                "frontendArtifact": {
+                    "manifest": {
+                        "../index.html": "hash-index"
+                    }
+                }
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"],
+            "frontendArtifact.manifest contains an invalid asset path"
+        );
     }
 
     #[tokio::test]
