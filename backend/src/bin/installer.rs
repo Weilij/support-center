@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 struct Installer {
     runs: Arc<Mutex<HashMap<String, Value>>>,
     cloud: CloudflareApi,
+    oauth: CloudflareOAuth,
 }
 
 impl Default for Installer {
@@ -26,6 +27,7 @@ impl Default for Installer {
         Self {
             runs: Arc::new(Mutex::new(HashMap::new())),
             cloud: CloudflareApi::from_env(),
+            oauth: CloudflareOAuth::from_env(),
         }
     }
 }
@@ -35,6 +37,20 @@ impl Installer {
         Self {
             runs: Arc::new(Mutex::new(HashMap::new())),
             cloud: CloudflareApi::new(api_base),
+            oauth: CloudflareOAuth::from_env(),
+        }
+    }
+
+    fn with_cloudflare_services(
+        api_base: String,
+        oauth_base: String,
+        oauth_client_id: Option<String>,
+        oauth_client_secret: Option<String>,
+    ) -> Self {
+        Self {
+            runs: Arc::new(Mutex::new(HashMap::new())),
+            cloud: CloudflareApi::new(api_base),
+            oauth: CloudflareOAuth::new(oauth_base, oauth_client_id, oauth_client_secret),
         }
     }
 }
@@ -42,6 +58,16 @@ impl Installer {
 #[derive(Clone)]
 struct CloudflareApi {
     api_base: String,
+    client: reqwest::Client,
+}
+
+#[derive(Clone)]
+struct CloudflareOAuth {
+    authorize_url: String,
+    token_url: String,
+    userinfo_url: String,
+    client_id: Option<String>,
+    client_secret: Option<String>,
     client: reqwest::Client,
 }
 
@@ -57,6 +83,114 @@ struct ProvisionedResource {
     kind: &'static str,
     name: String,
     result: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct OAuthTokenResponse {
+    access_token: String,
+    token_type: Option<String>,
+    expires_in: Option<i64>,
+}
+
+impl CloudflareOAuth {
+    fn from_env() -> Self {
+        let base = std::env::var("CLOUD_OAUTH_BASE_URL")
+            .unwrap_or_else(|_| "https://dash.cloudflare.com/oauth2".into());
+        Self::new(
+            base,
+            std::env::var("CLOUD_OAUTH_CLIENT_ID").ok(),
+            std::env::var("CLOUD_OAUTH_CLIENT_SECRET").ok(),
+        )
+    }
+
+    fn new(base: String, client_id: Option<String>, client_secret: Option<String>) -> Self {
+        let base = base.trim_end_matches('/').to_string();
+        let authorize_url =
+            std::env::var("CLOUD_OAUTH_AUTHORIZE_URL").unwrap_or_else(|_| format!("{base}/auth"));
+        let token_url =
+            std::env::var("CLOUD_OAUTH_TOKEN_URL").unwrap_or_else(|_| format!("{base}/token"));
+        let userinfo_url = std::env::var("CLOUD_OAUTH_USERINFO_URL")
+            .unwrap_or_else(|_| format!("{base}/userinfo"));
+        Self {
+            authorize_url,
+            token_url,
+            userinfo_url,
+            client_id,
+            client_secret,
+            client: reqwest::Client::new(),
+        }
+    }
+
+    fn configured_client_id(&self) -> Result<&str, String> {
+        self.client_id
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "OAuth not configured".into())
+    }
+
+    fn configured_client_secret(&self) -> Result<&str, String> {
+        self.client_secret
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "OAuth client secret not configured".into())
+    }
+
+    async fn exchange_code(
+        &self,
+        code: &str,
+        verifier: Option<&str>,
+        redirect_uri: Option<&str>,
+    ) -> Result<(OAuthTokenResponse, Value), String> {
+        let client_id = self.configured_client_id()?;
+        let client_secret = self.configured_client_secret()?;
+        let mut form = vec![
+            ("grant_type", "authorization_code".to_string()),
+            ("client_id", client_id.to_string()),
+            ("client_secret", client_secret.to_string()),
+            ("code", code.to_string()),
+        ];
+        if let Some(verifier) = verifier.filter(|s| !s.is_empty()) {
+            form.push(("code_verifier", verifier.to_string()));
+        }
+        if let Some(redirect_uri) = redirect_uri.filter(|s| !s.is_empty()) {
+            form.push(("redirect_uri", redirect_uri.to_string()));
+        }
+        let response = self
+            .client
+            .post(&self.token_url)
+            .form(&form)
+            .send()
+            .await
+            .map_err(|e| format!("Cloudflare OAuth token exchange failed: {e}"))?;
+        let status = response.status();
+        let token: OAuthTokenResponse = response
+            .json()
+            .await
+            .map_err(|e| format!("Cloudflare OAuth returned invalid token JSON: {e}"))?;
+        if !status.is_success() {
+            return Err(format!(
+                "Cloudflare OAuth token exchange failed with status {status}"
+            ));
+        }
+        let userinfo = self
+            .client
+            .get(&self.userinfo_url)
+            .bearer_auth(&token.access_token)
+            .send()
+            .await
+            .map_err(|e| format!("Cloudflare OAuth userinfo failed: {e}"))?;
+        let userinfo_status = userinfo.status();
+        let user: Value = userinfo
+            .json()
+            .await
+            .map_err(|e| format!("Cloudflare OAuth returned invalid userinfo JSON: {e}"))?;
+        if !userinfo_status.is_success() {
+            return Err(format!(
+                "Cloudflare OAuth userinfo failed with status {userinfo_status}"
+            ));
+        }
+        Ok((token, user))
+    }
 }
 
 impl CloudflareApi {
@@ -240,8 +374,11 @@ struct AuthorizeQuery {
 }
 
 /// GET /oauth/authorize (CRD 6751-6759): build the provider consent URL.
-async fn oauth_authorize(Query(q): Query<AuthorizeQuery>) -> Response {
-    let Ok(client_id) = std::env::var("CLOUD_OAUTH_CLIENT_ID") else {
+async fn oauth_authorize(
+    State(installer): State<Installer>,
+    Query(q): Query<AuthorizeQuery>,
+) -> Response {
+    let Ok(client_id) = installer.oauth.configured_client_id() else {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": "OAuth not configured"})),
@@ -256,37 +393,67 @@ async fn oauth_authorize(Query(q): Query<AuthorizeQuery>) -> Response {
     // The verifier is returned to the caller to echo back later; nothing is
     // persisted server-side (CRD 6756, observable note).
     let scopes = "account:read workers:write d1:write kv:write r2:write queues:write pages:write";
-    let authorize_url = std::env::var("CLOUD_OAUTH_AUTHORIZE_URL")
-        .unwrap_or_else(|_| "https://dash.cloudflare.com/oauth2/auth".into());
-    let url = format!(
-        "{authorize_url}?response_type=code&client_id={client_id}&redirect_uri={redirect}&state={state}&code_challenge={verifier}&scope={}",
-        scopes.replace(' ', "%20")
-    );
-    Json(json!({"authUrl": url, "state": state, "verifier": verifier})).into_response()
+    let Ok(mut url) = reqwest::Url::parse(&installer.oauth.authorize_url) else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "OAuth authorize URL is invalid"})),
+        )
+            .into_response();
+    };
+    url.query_pairs_mut()
+        .append_pair("response_type", "code")
+        .append_pair("client_id", client_id)
+        .append_pair("redirect_uri", &redirect)
+        .append_pair("state", &state)
+        .append_pair("code_challenge", &verifier)
+        .append_pair("scope", scopes);
+    Json(json!({"authUrl": url.as_str(), "state": state, "verifier": verifier})).into_response()
 }
 
 #[derive(Deserialize, Default)]
 struct CallbackBody {
     code: Option<String>,
+    verifier: Option<String>,
+    #[serde(rename = "codeVerifier")]
+    code_verifier: Option<String>,
+    #[serde(rename = "redirectUri")]
+    redirect_uri: Option<String>,
 }
 
 /// POST /oauth/callback (CRD 6761-6768).
-async fn oauth_callback(body: Option<Json<CallbackBody>>) -> Response {
+async fn oauth_callback(
+    State(installer): State<Installer>,
+    body: Option<Json<CallbackBody>>,
+) -> Response {
     let body = body.map(|Json(b)| b).unwrap_or_default();
-    if body.code.as_deref().unwrap_or("").is_empty() {
+    let code = body.code.as_deref().unwrap_or("");
+    if code.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "Authorization code required"})),
         )
             .into_response();
     }
-    // TODO(oauth): exchange the grant through Cloudflare's OAuth token endpoint
-    // once client-secret storage is available to this standalone installer.
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(json!({"error": "Failed to exchange code: provider unavailable in this environment"})),
-    )
-        .into_response()
+    let verifier = body.verifier.as_deref().or(body.code_verifier.as_deref());
+    match installer
+        .oauth
+        .exchange_code(code, verifier, body.redirect_uri.as_deref())
+        .await
+    {
+        Ok((token, user)) => Json(json!({
+            "provider": "cloudflare",
+            "apiToken": token.access_token,
+            "tokenType": token.token_type.unwrap_or_else(|| "bearer".into()),
+            "expiresIn": token.expires_in,
+            "user": user,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error": "Failed to exchange code", "details": error})),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -618,9 +785,9 @@ mod tests {
 
     #[tokio::test]
     async fn auth_flows_validate_inputs() {
-        let app = router(Installer::default());
         // OAuth without client id configuration -> 500 documented error.
         std::env::remove_var("CLOUD_OAUTH_CLIENT_ID");
+        let app = router(Installer::default());
         let (status, body) = send(&app, "GET", "/oauth/authorize", None).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body["error"], "OAuth not configured");
@@ -674,6 +841,91 @@ mod tests {
             "{body}"
         );
         assert_eq!(calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn oauth_callback_exchanges_code_and_fetches_userinfo() {
+        async fn oauth_token(
+            State(calls): State<Arc<Mutex<Vec<Value>>>>,
+            headers: axum::http::HeaderMap,
+            body: axum::body::Bytes,
+        ) -> Json<Value> {
+            calls.lock().unwrap().push(json!({
+                "path": "/oauth2/token",
+                "contentType": headers
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or(""),
+                "body": String::from_utf8_lossy(&body),
+            }));
+            Json(json!({
+                "access_token": "oauth-access",
+                "refresh_token": "oauth-refresh",
+                "token_type": "bearer",
+                "expires_in": 7200
+            }))
+        }
+        async fn userinfo(
+            State(calls): State<Arc<Mutex<Vec<Value>>>>,
+            headers: axum::http::HeaderMap,
+        ) -> Json<Value> {
+            calls.lock().unwrap().push(json!({
+                "path": "/oauth2/userinfo",
+                "auth": headers
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or(""),
+            }));
+            Json(json!({"sub": "user-1", "email": "owner@example.com"}))
+        }
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new()
+            .route("/oauth2/token", post(oauth_token))
+            .route("/oauth2/userinfo", get(userinfo))
+            .with_state(calls.clone());
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let installer = Installer::with_cloudflare_services(
+            "http://127.0.0.1:9/client/v4".into(),
+            format!("http://{addr}/oauth2"),
+            Some("client-1".into()),
+            Some("secret-1".into()),
+        );
+        let app = router(installer);
+        let (status, body) = send(
+            &app,
+            "POST",
+            "/oauth/callback",
+            Some(json!({
+                "code": "grant-code",
+                "verifier": "pkce-verifier",
+                "redirectUri": "https://installer.example/oauth/callback"
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["provider"], "cloudflare");
+        assert_eq!(body["apiToken"], "oauth-access");
+        assert!(body.get("refreshToken").is_none());
+        assert_eq!(body["user"]["email"], "owner@example.com");
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert_eq!(calls[0]["path"], "/oauth2/token");
+        let form = calls[0]["body"].as_str().unwrap();
+        assert!(form.contains("grant_type=authorization_code"), "{form}");
+        assert!(form.contains("code=grant-code"), "{form}");
+        assert!(form.contains("client_id=client-1"), "{form}");
+        assert!(form.contains("client_secret=secret-1"), "{form}");
+        assert!(form.contains("code_verifier=pkce-verifier"), "{form}");
+        assert_eq!(calls[1]["auth"], "Bearer oauth-access");
     }
 
     #[tokio::test]

@@ -24,6 +24,7 @@ export default function Install() {
   const [projectName, setProjectName] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [run, setRun] = useState<RunStatus | null>(null)
+  const [oauthBusy, setOauthBusy] = useState(false)
   const runId = useRef<string | null>(null)
   const timer = useRef<number | null>(null)
 
@@ -45,6 +46,20 @@ export default function Install() {
     else setError(String(data.error ?? '驗證失敗'))
   }
 
+  const startOAuth = async () => {
+    setError(null)
+    setOauthBusy(true)
+    const redirectUri = `${window.location.origin}${window.location.pathname}`
+    const { ok, data } = await call(`/oauth/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`)
+    setOauthBusy(false)
+    if (!ok || !data.authUrl || !data.verifier) {
+      setError(String(data.error ?? 'OAuth 啟動失敗'))
+      return
+    }
+    window.sessionStorage.setItem('installerOauthVerifier', String(data.verifier))
+    window.location.assign(String(data.authUrl))
+  }
+
   const startProvision = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
@@ -56,6 +71,27 @@ export default function Install() {
     runId.current = String(data.deploymentId)
     setStep('provisioning')
   }
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const code = params.get('code')
+    if (!code) return
+    const verifier = window.sessionStorage.getItem('installerOauthVerifier') ?? ''
+    const redirectUri = `${window.location.origin}${window.location.pathname}`
+    setOauthBusy(true)
+    setError(null)
+    call('/oauth/callback', { code, verifier, redirectUri }).then(({ ok, data }) => {
+      setOauthBusy(false)
+      window.sessionStorage.removeItem('installerOauthVerifier')
+      window.history.replaceState({}, document.title, window.location.pathname)
+      if (!ok || !data.apiToken) {
+        setError(String(data.error ?? 'OAuth 驗證失敗'))
+        return
+      }
+      setApiToken(String(data.apiToken))
+      setStep('config')
+    })
+  }, [])
 
   // Live status polling (CRD §9.2).
   useEffect(() => {
@@ -97,6 +133,9 @@ export default function Install() {
           <input value={accountId} onChange={(e) => setAccountId(e.target.value)}
                  placeholder="Account ID" required />
           <button type="submit">驗證</button>
+          <button type="button" onClick={startOAuth} disabled={oauthBusy}>
+            {oauthBusy ? '連線中…' : '使用 Cloudflare OAuth'}
+          </button>
         </form>
       )}
 

@@ -40,7 +40,8 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   - [ ] §8.5 traceability matrix check (6689-6723)
 - [x] Phase 8: web installer — provisioning service (§9.1) + setup wizard (§9.2);
       Cloudflare API-token verification and core resource provisioning are wired,
-      with OAuth grant exchange and Workers/Pages deployment still external.
+      OAuth grant exchange is wired, and Workers/Pages deployment remains
+      external.
 
 ## Current Integration Status
 
@@ -79,7 +80,10 @@ Remaining external/infrastructure boundaries:
 - [x] Installer Cloudflare API-token verification and core resource
       provisioning: `/auth/token` verifies the Bearer token/account through
       Cloudflare API, and deployment creates D1, KV, R2, and Queue resources.
-- [ ] Installer OAuth grant exchange and Workers/Pages application deployment.
+- [x] Installer OAuth grant exchange: `/oauth/authorize` uses Cloudflare OAuth
+      endpoints, `/oauth/callback` exchanges authorization codes for access
+      tokens, and the setup wizard consumes the returned token.
+- [ ] Installer Workers/Pages application deployment.
 - [x] Multi-instance customer-channel realtime fan-out: customer conversation
       events relay across backend instances through Postgres event/ack tables.
 - [ ] Broader realtime scale-out hardening for non-customer-channel rooms and
