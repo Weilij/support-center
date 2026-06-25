@@ -5,16 +5,16 @@
 //! These routes are PUBLIC: no session/JWT — trust is established by
 //! platform-signature verification over the exact raw request body.
 
+use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use hmac::{Hmac, Mac};
-use serde_json::{json, Value};
-use sha2::Sha256;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -74,6 +74,32 @@ fn valid_facebook_signature(secret: &str, body: &[u8], signature: &str) -> bool 
         .is_some_and(|presented| verify_hmac_sha256(secret, body, &presented))
 }
 
+fn sha256_hex(input: &[u8]) -> String {
+    Sha256::digest(input)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn meta_postback_event_key(platform: &str, sender: &str, item: &Value, postback: &Value) -> String {
+    if let Some(mid) = postback
+        .get("mid")
+        .or_else(|| item.get("mid"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        return format!("{platform}:postback:{mid}");
+    }
+    let recipient = item["recipient"]["id"].as_str().unwrap_or_default();
+    let timestamp = item
+        .get("timestamp")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let canonical = serde_json::to_vec(postback).unwrap_or_default();
+    let digest = sha256_hex(&canonical);
+    format!("{platform}:postback:{sender}:{recipient}:{timestamp}:{digest}")
+}
+
 fn client_ip(headers: &HeaderMap) -> Option<String> {
     for h in ["cf-connecting-ip", "x-forwarded-for", "x-real-ip"] {
         if let Some(v) = headers.get(h).and_then(|v| v.to_str().ok()) {
@@ -112,7 +138,10 @@ async fn security_event(
 }
 
 fn fail(status: StatusCode, error: &str) -> Response {
-    (status, Json(json!({ "success": false, "error": error, "timestamp": now_iso() })))
+    (
+        status,
+        Json(json!({ "success": false, "error": error, "timestamp": now_iso() })),
+    )
         .into_response()
 }
 
@@ -174,16 +203,36 @@ pub async fn line_webhook(
     //    the body keyed by the channel secret, base64-encoded, per LINE's
     //    published scheme.
     let Some(secret) = state.config.line_channel_secret.as_deref() else {
-        return fail(StatusCode::UNAUTHORIZED, "LINE channel secret is not configured");
+        return fail(
+            StatusCode::UNAUTHORIZED,
+            "LINE channel secret is not configured",
+        );
     };
-    let Some(signature) = headers.get("x-line-signature").and_then(|v| v.to_str().ok()) else {
-        security_event(&state.db, "missing_signature", "high", "line", ip.as_deref(), json!({}))
-            .await;
+    let Some(signature) = headers
+        .get("x-line-signature")
+        .and_then(|v| v.to_str().ok())
+    else {
+        security_event(
+            &state.db,
+            "missing_signature",
+            "high",
+            "line",
+            ip.as_deref(),
+            json!({}),
+        )
+        .await;
         return fail(StatusCode::UNAUTHORIZED, "Missing signature header");
     };
     if !valid_line_signature(secret, &body, signature) {
-        security_event(&state.db, "invalid_signature", "high", "line", ip.as_deref(), json!({}))
-            .await;
+        security_event(
+            &state.db,
+            "invalid_signature",
+            "high",
+            "line",
+            ip.as_deref(),
+            json!({}),
+        )
+        .await;
         return fail(StatusCode::UNAUTHORIZED, "Invalid signature");
     }
 
@@ -225,8 +274,10 @@ pub async fn line_webhook(
                 Some(message) => {
                     let normalized = parse::normalize_line(message);
                     let mid = message.get("id").and_then(Value::as_str);
-                    let user_id =
-                        event["source"]["userId"].as_str().unwrap_or_default().to_string();
+                    let user_id = event["source"]["userId"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
                     ingest::ingest_message(
                         &state,
                         InboundMessage {
@@ -286,10 +337,19 @@ async fn process_messaging_item(
     default_name: &str,
     item: &Value,
 ) -> ItemResult {
-    let sender = item["sender"]["id"].as_str().unwrap_or_default().to_string();
+    let sender = item["sender"]["id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     if let Some(message) = item.get("message").filter(|m| m.is_object()) {
-        if message.get("is_echo").and_then(Value::as_bool).unwrap_or(false)
-            || message.get("is_self").and_then(Value::as_bool).unwrap_or(false)
+        if message
+            .get("is_echo")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || message
+                .get("is_self")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
         {
             return ItemResult::None;
         }
@@ -300,20 +360,44 @@ async fn process_messaging_item(
         };
         let mid = message.get("mid").and_then(Value::as_str);
         return ItemResult::Ingested(
-            ingest::ingest_message(state, InboundMessage { platform, platform_user_id: &sender, default_display_name: default_name, platform_message_id: mid, normalized })
-                .await.map(|_| ()),
+            ingest::ingest_message(
+                state,
+                InboundMessage {
+                    platform,
+                    platform_user_id: &sender,
+                    default_display_name: default_name,
+                    platform_message_id: mid,
+                    normalized,
+                },
+            )
+            .await
+            .map(|_| ()),
         );
     }
     if let Some(postback) = item.get("postback") {
         let normalized = parse::normalize_facebook_postback(postback);
+        let event_key = meta_postback_event_key(platform, &sender, item, postback);
         return ItemResult::Ingested(
-            ingest::ingest_message(state, InboundMessage { platform, platform_user_id: &sender, default_display_name: default_name, platform_message_id: None, normalized })
-                .await.map(|_| ()),
+            ingest::ingest_message(
+                state,
+                InboundMessage {
+                    platform,
+                    platform_user_id: &sender,
+                    default_display_name: default_name,
+                    platform_message_id: Some(&event_key),
+                    normalized,
+                },
+            )
+            .await
+            .map(|_| ()),
         );
     }
     if let Some(delivery) = item.get("delivery") {
-        let mids: Vec<&str> = delivery.get("mids").and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        let mids: Vec<&str> = delivery
+            .get("mids")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
         ingest::mark_delivered(&state.db, &mids).await;
         return ItemResult::None;
     }
@@ -392,7 +476,10 @@ pub async fn facebook_webhook(
     let Some(secret) = state.config.facebook_app_secret.as_deref() else {
         return fail(StatusCode::UNAUTHORIZED, "Webhook not configured");
     };
-    let Some(signature) = headers.get("x-hub-signature-256").and_then(|v| v.to_str().ok()) else {
+    let Some(signature) = headers
+        .get("x-hub-signature-256")
+        .and_then(|v| v.to_str().ok())
+    else {
         security_event(
             &state.db,
             "missing_signature",
@@ -422,7 +509,10 @@ pub async fn facebook_webhook(
     let Ok(payload) = serde_json::from_slice::<Value>(&body) else {
         return fail(StatusCode::BAD_REQUEST, "Invalid JSON payload");
     };
-    let object = payload.get("object").and_then(Value::as_str).unwrap_or_default();
+    let object = payload
+        .get("object")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let entries = payload.get("entry").and_then(Value::as_array);
     if !["page", "instagram", "user"].contains(&object) || entries.is_none() {
         return (
@@ -443,10 +533,16 @@ pub async fn facebook_webhook(
     let mut failed = 0usize;
     let mut last_error: Option<String> = None;
     if object == "page" || object == "instagram" {
-        let platform = if object == "instagram" { "instagram" } else { "facebook" };
+        let platform = if object == "instagram" {
+            "instagram"
+        } else {
+            "facebook"
+        };
         let default_name = ingest::default_display_name(platform);
         for entry in entries.unwrap_or(&Vec::new()) {
-            let Some(items) = entry.get("messaging").and_then(Value::as_array) else { continue };
+            let Some(items) = entry.get("messaging").and_then(Value::as_array) else {
+                continue;
+            };
             for item in items {
                 match process_messaging_item(&state, platform, default_name, item).await {
                     ItemResult::Ingested(r) => {
@@ -507,5 +603,47 @@ mod tests {
         assert!(!valid_facebook_signature("other", body, &sig));
         assert!(!valid_facebook_signature("secret", body, "sha256=not-hex"));
         assert!(!valid_facebook_signature("secret", body, "sha256=abc"));
+    }
+
+    #[test]
+    fn meta_postback_event_key_prefers_mid() {
+        let item = json!({
+            "sender": { "id": "S1" },
+            "recipient": { "id": "R1" },
+            "timestamp": 123,
+            "postback": { "mid": "m_1", "payload": "P" }
+        });
+
+        assert_eq!(
+            meta_postback_event_key("facebook", "S1", &item, &item["postback"]),
+            "facebook:postback:m_1"
+        );
+    }
+
+    #[test]
+    fn meta_postback_event_key_is_stable_without_mid() {
+        let item = json!({
+            "sender": { "id": "S1" },
+            "recipient": { "id": "R1" },
+            "timestamp": 123,
+            "postback": { "payload": "P", "title": "Start" }
+        });
+        let same = item.clone();
+        let other_sender = json!({
+            "sender": { "id": "S2" },
+            "recipient": { "id": "R1" },
+            "timestamp": 123,
+            "postback": { "payload": "P", "title": "Start" }
+        });
+
+        let key = meta_postback_event_key("facebook", "S1", &item, &item["postback"]);
+        assert_eq!(
+            key,
+            meta_postback_event_key("facebook", "S1", &same, &same["postback"])
+        );
+        assert_ne!(
+            key,
+            meta_postback_event_key("facebook", "S2", &other_sender, &other_sender["postback"])
+        );
     }
 }

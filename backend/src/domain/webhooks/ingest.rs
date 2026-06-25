@@ -3,7 +3,7 @@
 //! the auto-reply idempotency ledger, and defer the non-critical follow-up
 //! work (real-time broadcast, latest-message refresh, activity log).
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -20,8 +20,7 @@ pub const SYSTEM_AGENT_ID: &str = "system";
 
 /// Default localized welcome message stored when no welcome rule matches a
 /// follow event, so the conversation is not empty (CRD 2824).
-pub const DEFAULT_WELCOME: &str =
-    "สวัสดีค่ะ ขอบคุณที่เพิ่มเราเป็นเพื่อน หากมีคำถามสามารถพิมพ์สอบถามได้เลยค่ะ";
+pub const DEFAULT_WELCOME: &str = "สวัสดีค่ะ ขอบคุณที่เพิ่มเราเป็นเพื่อน หากมีคำถามสามารถพิมพ์สอบถามได้เลยค่ะ";
 
 async fn ensure_system_agent(db: &PgPool) {
     let now = now_iso();
@@ -92,6 +91,57 @@ pub struct InboundMessage<'a> {
     pub normalized: Normalized,
 }
 
+/// Reserve a non-message webhook event before running side effects. Returns
+/// false when the exact event has already been processed.
+pub async fn reserve_webhook_event(
+    db: &PgPool,
+    platform: &str,
+    event_type: &str,
+    event_key: &str,
+) -> Result<bool, String> {
+    if event_key.trim().is_empty() {
+        return Ok(true);
+    }
+    let result = sqlx::query(
+        "INSERT INTO webhook_replay_events (platform, event_type, event_key, seen_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (platform, event_type, event_key) DO NOTHING",
+    )
+    .bind(platform)
+    .bind(event_type)
+    .bind(event_key)
+    .bind(now_iso())
+    .execute(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(result.rows_affected() == 1)
+}
+
+fn line_lifecycle_event_key(event_type: &str, event: &Value, user_id: &str) -> String {
+    if let Some(id) = event
+        .get("webhookEventId")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        return format!("webhook:{id}");
+    }
+    let timestamp = event
+        .get("timestamp")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let reply_token = event
+        .get("replyToken")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let tracking = event
+        .get("follow")
+        .and_then(|f| f.get("trackingId").or_else(|| f.get("token")))
+        .and_then(Value::as_str)
+        .or_else(|| event.get("trackingToken").and_then(Value::as_str))
+        .unwrap_or_default();
+    format!("{event_type}:{user_id}:{timestamp}:{reply_token}:{tracking}")
+}
+
 #[derive(sqlx::FromRow)]
 struct CustomerRow {
     id: i64,
@@ -134,17 +184,16 @@ async fn find_or_create_customer(
     .bind(now_iso())
     .fetch_one(db)
     .await
-    .map_err(|e| e.to_string())?
-    ;
-    Ok(CustomerRow { id, display_name: Some(display_name.into()), source_team_id: None })
+    .map_err(|e| e.to_string())?;
+    Ok(CustomerRow {
+        id,
+        display_name: Some(display_name.into()),
+        source_team_id: None,
+    })
 }
 
 /// Most recent customer-to-team routing assignment wins (CRD 2845-2846).
-async fn routed_team(
-    db: &PgPool,
-    platform: &str,
-    user_id: &str,
-) -> Result<Option<i64>, String> {
+async fn routed_team(db: &PgPool, platform: &str, user_id: &str) -> Result<Option<i64>, String> {
     let _ = platform; // assignments are keyed by platform user id alone (CRD 5747)
     sqlx::query_scalar(
         "SELECT team_id FROM customer_team_assignments
@@ -223,15 +272,19 @@ async fn bump_received(db: &PgPool, team_id: i64, platform: &str, now: &str) {
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_else(|| json!({}));
-    let received = parsed.get("messagesReceived").and_then(Value::as_i64).unwrap_or(0);
+    let received = parsed
+        .get("messagesReceived")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     parsed["messagesReceived"] = json!(received + 1);
     parsed["lastMessageAt"] = json!(now);
-    let _ = sqlx::query("UPDATE channel_integrations SET stats = $1, updated_at = $2 WHERE id = $3")
-        .bind(parsed.to_string())
-        .bind(now)
-        .bind(id)
-        .execute(db)
-        .await;
+    let _ =
+        sqlx::query("UPDATE channel_integrations SET stats = $1, updated_at = $2 WHERE id = $3")
+            .bind(parsed.to_string())
+            .bind(now)
+            .bind(id)
+            .execute(db)
+            .await;
 }
 
 /// Ingest one normalized inbound message end-to-end (CRD 2761-2791).
@@ -267,7 +320,10 @@ pub async fn ingest_message(
         }
     }
 
-    let lock = customer_lock(&format!("{}:{}", inbound.platform, inbound.platform_user_id));
+    let lock = customer_lock(&format!(
+        "{}:{}",
+        inbound.platform, inbound.platform_user_id
+    ));
     let _guard = lock.lock().await;
 
     let mut customer = find_or_create_customer(
@@ -284,7 +340,9 @@ pub async fn ingest_message(
     if is_placeholder_name(inbound.platform, customer.display_name.as_deref()) {
         let gateway =
             crate::domain::conversations::channels::OutboundGateway::from_config(&state.config);
-        let profile = gateway.fetch_profile(inbound.platform, inbound.platform_user_id).await;
+        let profile = gateway
+            .fetch_profile(inbound.platform, inbound.platform_user_id)
+            .await;
         if profile.display_name.is_some() || profile.avatar_url.is_some() {
             let _ = sqlx::query(
                 "UPDATE customers
@@ -340,7 +398,12 @@ pub async fn ingest_message(
     .bind(inbound.platform_message_id)
     .bind(&now)
     .bind(&metadata_json)
-    .bind(customer.display_name.as_deref().unwrap_or(inbound.default_display_name))
+    .bind(
+        customer
+            .display_name
+            .as_deref()
+            .unwrap_or(inbound.default_display_name),
+    )
     .bind(&now)
     .execute(&state.db)
     .await;
@@ -365,14 +428,13 @@ pub async fn ingest_message(
 
     // The most-recent-activity marker advances only when a row was actually
     // inserted (CRD 2791).
-    let _ = sqlx::query(
-        "UPDATE conversations SET last_message_at = $1, updated_at = $2 WHERE id = $3",
-    )
-    .bind(&now)
-    .bind(&now)
-    .bind(&conversation_id)
-    .execute(&state.db)
-    .await;
+    let _ =
+        sqlx::query("UPDATE conversations SET last_message_at = $1, updated_at = $2 WHERE id = $3")
+            .bind(&now)
+            .bind(&now)
+            .bind(&conversation_id)
+            .execute(&state.db)
+            .await;
 
     if let Some(t) = team_id {
         bump_received(&state.db, t, inbound.platform, &now).await;
@@ -454,7 +516,9 @@ fn spawn_followups(state: Arc<AppState>, ctx: FollowupContext) {
             },
             "source": "webhook",
         });
-        state.realtime.to_conversation(&ctx.conversation_id, "new_message", payload.clone());
+        state
+            .realtime
+            .to_conversation(&ctx.conversation_id, "new_message", payload.clone());
         if let Some(t) = ctx.team_id {
             state.realtime.to_team(t, "new_message", payload);
         }
@@ -466,7 +530,10 @@ fn spawn_followups(state: Arc<AppState>, ctx: FollowupContext) {
         // 5133-5148); location/sticker kinds are non-downloadable.
         if let Some(media) = &ctx.media {
             let downloadable = matches!(ctx.kind.as_str(), "image" | "video" | "audio" | "file");
-            let platform_mid = media.get("mediaId").and_then(Value::as_str).unwrap_or_default();
+            let platform_mid = media
+                .get("mediaId")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             if downloadable && !platform_mid.is_empty() {
                 state.queue.enqueue_media(serde_json::json!({
                     "type": "media_processing",
@@ -560,19 +627,35 @@ pub async fn mark_read(db: &PgPool, platform: &str, platform_user_id: &str, wate
 
 /// IG/FB message reaction: update the target message's `metadata.reactions`.
 pub async fn apply_reaction(db: &PgPool, reaction: &serde_json::Value) {
-    let Some(mid) = reaction.get("mid").and_then(serde_json::Value::as_str) else { return };
-    let action = reaction.get("action").and_then(serde_json::Value::as_str).unwrap_or("react");
+    let Some(mid) = reaction.get("mid").and_then(serde_json::Value::as_str) else {
+        return;
+    };
+    let action = reaction
+        .get("action")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("react");
     let react_type = reaction.get("reaction").and_then(serde_json::Value::as_str);
     let emoji = reaction.get("emoji").and_then(serde_json::Value::as_str);
 
     let found: Option<Option<String>> =
         sqlx::query_scalar("SELECT metadata FROM messages WHERE platform_message_id = $1")
-            .bind(mid).fetch_optional(db).await.ok().flatten();
+            .bind(mid)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
     let Some(meta_text) = found else { return };
-    let mut meta: serde_json::Value =
-        meta_text.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| json!({}));
-    if !meta.is_object() { meta = json!({}); }
-    let arr = meta.as_object_mut().unwrap().entry("reactions").or_insert_with(|| json!([]));
+    let mut meta: serde_json::Value = meta_text
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| json!({}));
+    if !meta.is_object() {
+        meta = json!({});
+    }
+    let arr = meta
+        .as_object_mut()
+        .unwrap()
+        .entry("reactions")
+        .or_insert_with(|| json!([]));
     if let Some(list) = arr.as_array_mut() {
         if action == "unreact" {
             list.retain(|r| r.get("reaction").and_then(serde_json::Value::as_str) != react_type);
@@ -580,8 +663,14 @@ pub async fn apply_reaction(db: &PgPool, reaction: &serde_json::Value) {
             list.push(json!({ "reaction": react_type, "emoji": emoji }));
         }
     }
-    if let Err(e) = sqlx::query("UPDATE messages SET metadata = $1, updated_at = $2 WHERE platform_message_id = $3")
-        .bind(meta.to_string()).bind(now_iso()).bind(mid).execute(db).await
+    if let Err(e) = sqlx::query(
+        "UPDATE messages SET metadata = $1, updated_at = $2 WHERE platform_message_id = $3",
+    )
+    .bind(meta.to_string())
+    .bind(now_iso())
+    .bind(mid)
+    .execute(db)
+    .await
     {
         tracing::warn!(error = %e, "reaction metadata update failed");
     }
@@ -592,7 +681,11 @@ pub async fn apply_reaction(db: &PgPool, reaction: &serde_json::Value) {
 pub async fn mark_read_by_mid(db: &PgPool, platform: &str, platform_user_id: &str, mid: &str) {
     let at: Option<Option<String>> =
         sqlx::query_scalar("SELECT sent_at FROM messages WHERE platform_message_id = $1")
-            .bind(mid).fetch_optional(db).await.ok().flatten();
+            .bind(mid)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
     let Some(Some(sent_at)) = at else { return };
     if let Err(e) = sqlx::query(
         "UPDATE messages SET read_at = $1
@@ -603,7 +696,12 @@ pub async fn mark_read_by_mid(db: &PgPool, platform: &str, platform_user_id: &st
              WHERE cu.platform = $3 AND cu.platform_user_id = $4
            )",
     )
-    .bind(now_iso()).bind(&sent_at).bind(platform).bind(platform_user_id).execute(db).await
+    .bind(now_iso())
+    .bind(&sent_at)
+    .bind(platform)
+    .bind(platform_user_id)
+    .execute(db)
+    .await
     {
         tracing::warn!(error = %e, "read-by-mid update failed");
     }
@@ -616,6 +714,10 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
     let Some(user_id) = event["source"]["userId"].as_str().filter(|s| !s.is_empty()) else {
         return Ok(()); // absent end-user identifier: silently ignored (CRD 2826)
     };
+    let event_key = line_lifecycle_event_key("follow", event, user_id);
+    if !reserve_webhook_event(&state.db, "line", "follow", &event_key).await? {
+        return Ok(());
+    }
     let now = now_iso();
 
     // Capture the real profile (name + avatar) on follow when we still only have
@@ -718,12 +820,11 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
     // Real-time assignment/transfer event with reconciliation markers
     // (CRD 2822, 2857).
     if let (Some(t), Some(cid)) = (team_id, conversation_id.as_ref()) {
-        let team_name: Option<String> =
-            sqlx::query_scalar("SELECT name FROM teams WHERE id = $1")
-                .bind(t)
-                .fetch_optional(&state.db)
-                .await
-                .unwrap_or(None);
+        let team_name: Option<String> = sqlx::query_scalar("SELECT name FROM teams WHERE id = $1")
+            .bind(t)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None);
         state.realtime.to_teams_and_admins(
             &[t],
             "conversation_transferred",
@@ -819,6 +920,10 @@ pub async fn handle_line_unfollow(state: &Arc<AppState>, event: &Value) -> Resul
     let Some(user_id) = event["source"]["userId"].as_str().filter(|s| !s.is_empty()) else {
         return Ok(()); // absent identifier: ignored (CRD 2833)
     };
+    let event_key = line_lifecycle_event_key("unfollow", event, user_id);
+    if !reserve_webhook_event(&state.db, "line", "unfollow", &event_key).await? {
+        return Ok(());
+    }
     let Some(customer) = find_customer(&state.db, "line", user_id).await? else {
         return Ok(()); // no customer found: the event is a no-op (CRD 2831)
     };
@@ -851,7 +956,8 @@ pub async fn handle_line_unfollow(state: &Arc<AppState>, event: &Value) -> Resul
 
 #[cfg(test)]
 mod placeholder_tests {
-    use super::{default_display_name, is_placeholder_name};
+    use super::{default_display_name, is_placeholder_name, line_lifecycle_event_key};
+    use serde_json::json;
 
     #[test]
     fn defaults_per_platform() {
@@ -872,5 +978,35 @@ mod placeholder_tests {
         // A real name that happens to match another platform's placeholder is
         // still real for this platform.
         assert!(!is_placeholder_name("line", Some("Facebook User")));
+    }
+
+    #[test]
+    fn line_lifecycle_event_key_prefers_webhook_event_id() {
+        let event = json!({
+            "webhookEventId": "01HABC",
+            "timestamp": 123,
+            "replyToken": "reply",
+            "source": { "userId": "U1" }
+        });
+
+        assert_eq!(
+            line_lifecycle_event_key("follow", &event, "U1"),
+            "webhook:01HABC"
+        );
+    }
+
+    #[test]
+    fn line_lifecycle_event_key_has_stable_fallback() {
+        let event = json!({
+            "timestamp": 123,
+            "replyToken": "reply",
+            "source": { "userId": "U1" },
+            "follow": { "trackingId": "track" }
+        });
+
+        assert_eq!(
+            line_lifecycle_event_key("follow", &event, "U1"),
+            "follow:U1:123:reply:track"
+        );
     }
 }
