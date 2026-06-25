@@ -42,6 +42,8 @@ export interface IncomingMessage {
   /// already rendered it optimistically, so handlers skip it (avoids duplicate
   /// bubbles and a wrong unread bump on one's own messages).
   isOwn: boolean
+  messageType: string
+  media?: Record<string, unknown>
 }
 
 // The server uses two `new_message` payload shapes: inbound (webhook) nests the
@@ -52,6 +54,19 @@ export function readMessageEvent(payload: Record<string, unknown>): IncomingMess
   const senderId = String(nested.senderId ?? payload.senderId ?? '')
   const senderType = String(nested.senderType ?? payload.senderType ?? 'customer')
   const me = session.identity()?.id
+  const messageType = String(nested.type ?? payload.messageType ?? nested.messageType ?? 'text')
+  let media = nested.media as Record<string, unknown> | undefined
+  if (!media && nested.metadata != null) {
+    let meta: Record<string, unknown> | undefined
+    if (typeof nested.metadata === 'string') {
+      try { meta = JSON.parse(nested.metadata) as Record<string, unknown> } catch { meta = undefined }
+    } else {
+      meta = nested.metadata as Record<string, unknown>
+    }
+    // REST nests under metadata.media; the realtime inbound payload puts the
+    // media object directly in metadata — accept either.
+    media = (meta?.media as Record<string, unknown> | undefined) ?? meta
+  }
   return {
     conversationId: String(payload.conversationId ?? ''),
     id: String(nested.id ?? payload.messageId ?? ''),
@@ -60,6 +75,8 @@ export function readMessageEvent(payload: Record<string, unknown>): IncomingMess
     senderId,
     timestamp: String(nested.timestamp ?? payload.timestamp ?? ''),
     isOwn: senderType === 'agent' && me != null && senderId === String(me),
+    messageType,
+    media,
   }
 }
 

@@ -60,6 +60,8 @@ interface Message {
   senderName?: string
   createdAt?: string
   pending?: boolean
+  messageType?: string
+  media?: Record<string, unknown>
 }
 
 interface ConvMeta {
@@ -428,8 +430,11 @@ function Thread({
       `/api/conversations/${convId}/messages`,
     ).then((resp) => {
       if (resp.success && resp.data) {
-        const items = resp.data.items ?? resp.data.messages ?? []
-        setMessages([...items].reverse())
+        const items = (resp.data.items ?? resp.data.messages ?? []) as Array<
+          Message & { metadata?: { media?: Record<string, unknown> } }
+        >
+        const mapped = items.map((m) => ({ ...m, media: m.media ?? m.metadata?.media }))
+        setMessages([...mapped].reverse())
       } else {
         setError(resp.message ?? null)
       }
@@ -446,6 +451,8 @@ function Thread({
               content: m.content,
               senderType: m.senderType,
               createdAt: m.timestamp,
+              messageType: m.messageType,
+              media: m.media,
             }],
       )
     })
