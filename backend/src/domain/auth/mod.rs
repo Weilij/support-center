@@ -22,7 +22,6 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
 
     let public_routes = Router::new()
         .route("/phase2-auth/verify-token", post(handlers::verify_token))
-        .route("/phase2-auth/refresh-token", post(handlers::refresh_service_token))
         .route("/api/auth/logout", post(handlers::logout));
 
     let authed_routes = Router::new()
@@ -33,6 +32,7 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/teams/members/{memberId}/reset", post(handlers::reset_member_password))
         .route("/phase2-auth/monitoring-token", post(handlers::monitoring_token))
         .route("/phase2-auth/user-token", post(handlers::user_token))
+        .route("/phase2-auth/refresh-token", post(handlers::refresh_service_token))
         .route("/phase2-auth/batch-tokens", post(handlers::batch_tokens))
         .route("/phase2-auth/status", get(handlers::auth_status))
         .layer(from_fn_with_state(state.clone(), require_auth));

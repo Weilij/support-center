@@ -33,6 +33,8 @@ pub struct Claims {
     pub token_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub monitoring: Option<bool>,
+    #[serde(rename = "serviceRootIat", skip_serializing_if = "Option::is_none")]
+    pub service_root_iat: Option<i64>,
     pub jti: String,
     pub iat: i64,
     pub exp: i64,
@@ -55,6 +57,7 @@ impl Claims {
             teams: None,
             token_type: token_type.to_string(),
             monitoring: None,
+            service_root_iat: None,
             jti: uuid::Uuid::new_v4().to_string(),
             iat: now,
             exp: now + ttl_secs,

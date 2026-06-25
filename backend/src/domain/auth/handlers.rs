@@ -20,6 +20,11 @@ use super::tokens::{self, Claims, TeamClaim};
 
 type Result<T = Response> = std::result::Result<T, AppError>;
 
+const MONITORING_TOKEN_REFRESH_TTL_SECS: i64 = 604_800;
+const MONITORING_TOKEN_MAX_LIFETIME_SECS: i64 = 2_592_000;
+const USER_TOKEN_REFRESH_TTL_SECS: i64 = 3600;
+const USER_TOKEN_MAX_LIFETIME_SECS: i64 = 86_400;
+
 fn user_agent(headers: &HeaderMap) -> Option<String> {
     headers
         .get("user-agent")
@@ -32,6 +37,24 @@ fn token_issued_before_valid_after(iat: i64, valid_after: &Option<String>) -> bo
         .as_deref()
         .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
         .is_some_and(|valid_after| iat.saturating_mul(1000) < valid_after.timestamp_millis())
+}
+
+fn require_admin_access(user: &AuthUser) -> Result<()> {
+    if user.is_admin() && user.token_type == "access" {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden("Administrator access token required".into()))
+    }
+}
+
+fn bounded_service_ttl(
+    now: i64,
+    root_iat: i64,
+    refresh_ttl: i64,
+    max_lifetime: i64,
+) -> Option<i64> {
+    let remaining = root_iat.saturating_add(max_lifetime).saturating_sub(now);
+    (remaining > 0).then_some(refresh_ttl.min(remaining))
 }
 
 /// Compact agent view used by login/me (CRD line 140: createdAt as epoch milliseconds).
@@ -675,9 +698,7 @@ pub async fn monitoring_token(
     Extension(user): Extension<AuthUser>,
     Query(q): Query<ExpiresQuery>,
 ) -> Result {
-    if !user.is_admin() {
-        return Err(AppError::Forbidden("Administrator role required".into()));
-    }
+    require_admin_access(&user)?;
     let expires_in = q.expires_in.unwrap_or(604_800);
     if !(3600..=2_592_000).contains(&expires_in) {
         return Err(AppError::BadRequest(
@@ -686,6 +707,7 @@ pub async fn monitoring_token(
     }
     let mut claims = Claims::new("system-monitoring", "admin", "monitoring", expires_in);
     claims.monitoring = Some(true);
+    claims.service_root_iat = Some(claims.iat);
     let token = tokens::sign(&claims, &state.config.jwt_secret)
         .map_err(|e| AppError::Internal(format!("token signing failed: {e}")))?;
     Ok(envelope::ok(json!({
@@ -710,9 +732,7 @@ pub async fn user_token(
     Extension(user): Extension<AuthUser>,
     Json(body): Json<UserTokenBody>,
 ) -> Result {
-    if !user.is_admin() {
-        return Err(AppError::Forbidden("Administrator role required".into()));
-    }
+    require_admin_access(&user)?;
     let target_id = body
         .target_user_id
         .filter(|t| !t.is_empty())
@@ -733,6 +753,7 @@ pub async fn user_token(
     claims.email = Some(target.email.clone());
     claims.name = Some(target.display_name.clone());
     claims.primary_team_id = primary;
+    claims.service_root_iat = Some(claims.iat);
     let token = tokens::sign(&claims, &state.config.jwt_secret)
         .map_err(|e| AppError::Internal(format!("token signing failed: {e}")))?;
     Ok(envelope::ok(json!({
@@ -762,9 +783,7 @@ pub async fn batch_tokens(
     Extension(user): Extension<AuthUser>,
     Json(body): Json<BatchTokensBody>,
 ) -> Result {
-    if !user.is_admin() {
-        return Err(AppError::Forbidden("Administrator role required".into()));
-    }
+    require_admin_access(&user)?;
     if state.config.is_production() {
         return Err(AppError::Forbidden(
             "Batch token issuance is not permitted in production".into(),
@@ -857,26 +876,60 @@ pub struct RefreshServiceTokenBody {
 
 pub async fn refresh_service_token(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
     Json(body): Json<RefreshServiceTokenBody>,
 ) -> Result {
+    require_admin_access(&user)?;
     let raw = body
         .token
         .filter(|t| !t.is_empty())
         .ok_or_else(|| AppError::BadRequest("token is required".into()))?;
     let claims = tokens::verify(&raw, &state.config.jwt_secret)
         .map_err(|_| AppError::BadRequest("Invalid or expired token".into()))?;
+    if store::is_jti_revoked(&state.db, &claims.jti)
+        .await
+        .map_err(|_| {
+            AppError::ServiceUnavailable(
+                "Unable to verify token revocation state".into(),
+                "REVOCATION_CHECK_FAILED",
+            )
+        })?
+    {
+        return Err(AppError::Unauthorized("Token has been revoked".into()));
+    }
 
-    let (new_claims, kind) = if claims.monitoring.unwrap_or(false) {
-        let mut c = Claims::new(&claims.sub, &claims.role, "monitoring", 604_800);
+    let root_iat = claims.service_root_iat.unwrap_or(claims.iat);
+    let now = chrono::Utc::now().timestamp();
+    let (new_claims, kind) = if claims.token_type == "monitoring" && claims.monitoring.unwrap_or(false) {
+        let ttl = bounded_service_ttl(
+            now,
+            root_iat,
+            MONITORING_TOKEN_REFRESH_TTL_SECS,
+            MONITORING_TOKEN_MAX_LIFETIME_SECS,
+        )
+        .ok_or_else(|| AppError::Unauthorized("Token maximum lifetime exceeded".into()))?;
+        let mut c = Claims::new(&claims.sub, &claims.role, "monitoring", ttl);
         c.monitoring = Some(true);
+        c.service_root_iat = Some(root_iat);
         (c, "monitoring")
-    } else {
-        let mut c = Claims::new(&claims.sub, &claims.role, "user", 3600);
+    } else if claims.token_type == "user" {
+        let ttl = bounded_service_ttl(
+            now,
+            root_iat,
+            USER_TOKEN_REFRESH_TTL_SECS,
+            USER_TOKEN_MAX_LIFETIME_SECS,
+        )
+        .ok_or_else(|| AppError::Unauthorized("Token maximum lifetime exceeded".into()))?;
+        let mut c = Claims::new(&claims.sub, &claims.role, "user", ttl);
         c.email = claims.email.clone();
         c.name = claims.name.clone();
         c.primary_team_id = claims.primary_team_id;
+        c.service_root_iat = Some(root_iat);
         (c, "user")
+    } else {
+        return Err(AppError::BadRequest("Only monitoring or user tokens can be refreshed".into()));
     };
+    store::revoke_jti(&state.db, &claims.jti, Some(&claims.sub), Some(claims.exp)).await?;
     let token = tokens::sign(&new_claims, &state.config.jwt_secret)
         .map_err(|e| AppError::Internal(format!("token signing failed: {e}")))?;
     Ok(envelope::ok_msg(
@@ -910,4 +963,25 @@ pub async fn auth_status(
             "canTriggerAlerts": admin,
         },
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bounded_service_ttl;
+
+    #[test]
+    fn bounded_service_ttl_caps_refresh_to_absolute_lifetime() {
+        assert_eq!(bounded_service_ttl(90, 0, 60, 100), Some(10));
+    }
+
+    #[test]
+    fn bounded_service_ttl_allows_full_refresh_inside_lifetime() {
+        assert_eq!(bounded_service_ttl(10, 0, 60, 100), Some(60));
+    }
+
+    #[test]
+    fn bounded_service_ttl_rejects_after_absolute_lifetime() {
+        assert_eq!(bounded_service_ttl(100, 0, 60, 100), None);
+        assert_eq!(bounded_service_ttl(101, 0, 60, 100), None);
+    }
 }
