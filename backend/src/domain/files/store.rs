@@ -2,6 +2,7 @@
 
 use serde_json::{json, Value};
 use sqlx::PgPool;
+use std::path::{Component, Path, PathBuf};
 
 use crate::db::now_iso;
 
@@ -116,23 +117,99 @@ pub fn storage_key(platform: &str, file_type: &str, extension: Option<&str>) -> 
 
 // ------------------------------------------------------------ local object store
 
-pub fn object_path(upload_dir: &str, key: &str) -> std::path::PathBuf {
-    std::path::Path::new(upload_dir).join(key)
+pub fn object_path(upload_dir: &str, key: &str) -> std::io::Result<PathBuf> {
+    let key_path = Path::new(key);
+    if key_path.is_absolute()
+        || key_path
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid storage key",
+        ));
+    }
+    Ok(Path::new(upload_dir).join(key_path))
+}
+
+async fn canonical_upload_dir(upload_dir: &str) -> std::io::Result<PathBuf> {
+    tokio::fs::create_dir_all(upload_dir).await?;
+    tokio::fs::canonicalize(upload_dir).await
+}
+
+async fn ensure_parent_under_upload_dir(upload_dir: &str, path: &Path) -> std::io::Result<()> {
+    let base = canonical_upload_dir(upload_dir).await?;
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "storage key has no parent")
+    })?;
+    tokio::fs::create_dir_all(parent).await?;
+    let parent = tokio::fs::canonicalize(parent).await?;
+    if parent.starts_with(base) {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "storage key escapes upload directory",
+        ))
+    }
+}
+
+async fn canonical_object_under_upload_dir(upload_dir: &str, path: &Path) -> std::io::Result<PathBuf> {
+    let base = canonical_upload_dir(upload_dir).await?;
+    let object = tokio::fs::canonicalize(path).await?;
+    if object.starts_with(base) {
+        Ok(object)
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "storage key escapes upload directory",
+        ))
+    }
 }
 
 pub async fn put_object(upload_dir: &str, key: &str, bytes: &[u8]) -> std::io::Result<()> {
-    let path = object_path(upload_dir, key);
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
+    let path = object_path(upload_dir, key)?;
+    ensure_parent_under_upload_dir(upload_dir, &path).await?;
     tokio::fs::write(path, bytes).await
 }
 
 pub async fn get_object(upload_dir: &str, key: &str) -> Option<Vec<u8>> {
-    tokio::fs::read(object_path(upload_dir, key)).await.ok()
+    let path = object_path(upload_dir, key).ok()?;
+    let path = canonical_object_under_upload_dir(upload_dir, &path).await.ok()?;
+    tokio::fs::read(path).await.ok()
 }
 
 /// Idempotent delete: an absent object is treated as already deleted (CRD 3060).
 pub async fn delete_object(upload_dir: &str, key: &str) {
-    let _ = tokio::fs::remove_file(object_path(upload_dir, key)).await;
+    let Ok(path) = object_path(upload_dir, key) else { return };
+    let Ok(path) = canonical_object_under_upload_dir(upload_dir, &path).await else { return };
+    let _ = tokio::fs::remove_file(path).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{get_object, object_path, put_object};
+
+    #[test]
+    fn object_path_rejects_absolute_and_parent_components() {
+        assert!(object_path("/tmp/uploads", "../secret.txt").is_err());
+        assert!(object_path("/tmp/uploads", "/etc/passwd").is_err());
+        assert!(object_path("/tmp/uploads", "uploads/../secret.txt").is_err());
+        assert!(object_path("/tmp/uploads", "uploads/a.txt").is_ok());
+    }
+
+    #[tokio::test]
+    async fn object_store_rejects_traversal_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let upload_dir = dir.path().join("uploads");
+        let outside = dir.path().join("outside.txt");
+        let key = "../outside.txt";
+
+        let err = put_object(upload_dir.to_str().unwrap(), key, b"secret")
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(!outside.exists());
+        assert!(get_object(upload_dir.to_str().unwrap(), key).await.is_none());
+    }
 }
