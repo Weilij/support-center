@@ -86,8 +86,10 @@ Remaining external/infrastructure boundaries:
       success/failure outcomes.
 - [x] LINE follow default welcome push: fallback welcome messages are delivered
       through the outbound LINE gateway and persist platform message outcomes.
-- [ ] Remaining alert polish: LIFF welcome endpoint live push polish where
-      `TODO(channels)` markers remain.
+- [x] LIFF welcome endpoint live push: verified LIFF users receive the fixed
+      welcome text through the outbound LINE gateway.
+- [ ] Remaining alert polish: env-driven security-alert sinks still log-only
+      where `TODO(channels)` markers remain.
 
 ## Current Routing Decision
 

@@ -11,6 +11,8 @@ use std::sync::OnceLock;
 use std::sync::Arc;
 
 use crate::db::now_iso;
+use crate::domain::conversations::channels::{OutboundGateway, OutboundItem};
+use crate::domain::webhooks::ingest::DEFAULT_WELCOME;
 use crate::envelope;
 use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
@@ -298,9 +300,18 @@ pub async fn welcome(
         tracing::warn!(error = %e, "LIFF welcome reconciliation skipped");
     }
 
-    // TODO(channels): real LINE push API call; the credential is validated
-    // above and the localized text is fixed (CRD 2907, 2994).
-    Ok(envelope::ok(json!({ "message": "歡迎訊息已送出" })))
+    let gateway = OutboundGateway::from_state(&state);
+    let platform_message_id = gateway
+        .send_batch("line", &user_id, &[OutboundItem::text(DEFAULT_WELCOME)])
+        .await
+        .map_err(|e| {
+            AppError::ServiceUnavailable(format!("歡迎訊息推播失敗: {e}"), "LINE_PUSH_FAILED")
+        })?;
+
+    Ok(envelope::ok(json!({
+        "message": "歡迎訊息已送出",
+        "platformMessageId": platform_message_id,
+    })))
 }
 
 /// Conversation reconciliation for an existing friend (CRD 2907, 2987).

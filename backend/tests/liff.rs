@@ -3,12 +3,15 @@
 mod common;
 
 use axum::extract::Form;
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, Router};
 use common::{spawn_app, spawn_app_custom};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 async fn line_verify_server() -> String {
     async fn verify(Form(form): Form<HashMap<String, String>>) -> Json<serde_json::Value> {
@@ -27,6 +30,25 @@ async fn line_verify_server() -> String {
             .unwrap();
     });
     format!("http://{addr}/verify")
+}
+
+async fn line_push_server() -> (String, Arc<Mutex<Vec<Value>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    async fn push(
+        State(seen): State<Arc<Mutex<Vec<Value>>>>,
+        Json(body): Json<Value>,
+    ) -> Json<Value> {
+        seen.lock().await.push(body);
+        Json(json!({"sentMessages": [{"id": "line-welcome-1"}]}))
+    }
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new().route("/push", post(push)).with_state(seen.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}/push"), seen)
 }
 
 #[tokio::test]
@@ -142,12 +164,14 @@ async fn assign_team_is_idempotent_per_user_team_pair() {
 #[tokio::test]
 async fn welcome_validates_and_reconciles_conversations() {
     // The LIFF welcome handler validates a configured LINE channel token before
-    // reconciling (returns Internal when absent). Opt in to a present token; no
-    // real network call is made (the push is a TODO stub).
+    // reconciling (returns Internal when absent), then sends the fixed welcome
+    // text through the LINE push gateway.
     let verify_url = line_verify_server().await;
+    let (push_url, pushed) = line_push_server().await;
     let app = spawn_app_custom(|c| {
         c.line_channel_access_token = Some("test-push-token".into());
         c.line_id_token_verify_url = verify_url;
+        c.line_push_url = push_url;
     }).await;
     let team_a = app.seed_team("A").await;
     let team_b = app.seed_team("B").await;
@@ -173,6 +197,13 @@ async fn welcome_validates_and_reconciles_conversations() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["data"]["message"].is_string());
+    {
+        let received = pushed.lock().await;
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0]["to"], "U-ghost");
+        assert_eq!(received[0]["messages"][0]["type"], "text");
+        assert!(received[0]["messages"][0]["text"].as_str().unwrap().contains("ขอบคุณ"));
+    }
 
     // Existing friend with an open conversation on another team: reassigned.
     let customer = app.seed_customer("line", "U-w", "Friend", None).await;

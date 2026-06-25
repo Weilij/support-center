@@ -146,10 +146,15 @@ pub fn shopee_send_body(to_id: &str, item: &OutboundItem) -> serde_json::Value {
     })
 }
 
-async fn line_push(token: &str, recipient: &str, items: &[OutboundItem]) -> Result<String, String> {
+async fn line_push(
+    url: &str,
+    token: &str,
+    recipient: &str,
+    items: &[OutboundItem],
+) -> Result<String, String> {
     let body = build_push_body(recipient, items);
     let resp = http_client()
-        .post("https://api.line.me/v2/bot/message/push")
+        .post(url)
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -313,6 +318,7 @@ async fn meta_profile(token: &str, user_id: &str) -> Profile {
 /// platforms report "not supported" (so dev/tests make no network calls).
 pub struct OutboundGateway {
     line: Option<String>,
+    line_push_url: String,
     facebook: Option<String>,
     instagram: Option<String>,
     shopee: Option<crate::domain::shopee::client::ShopeeClient>,
@@ -327,6 +333,7 @@ impl OutboundGateway {
                 .line_channel_access_token
                 .clone()
                 .filter(|t| !t.is_empty()),
+            line_push_url: config.line_push_url.clone(),
             facebook: config
                 .facebook_page_access_token
                 .clone()
@@ -362,7 +369,7 @@ impl OutboundGateway {
     ) -> Result<String, String> {
         match platform {
             "line" => match &self.line {
-                Some(tok) => line_push(tok, recipient, items).await,
+                Some(tok) => line_push(&self.line_push_url, tok, recipient, items).await,
                 None => Ok(format!("stub-line-{}", uuid::Uuid::new_v4())),
             },
             "facebook" => match &self.facebook {

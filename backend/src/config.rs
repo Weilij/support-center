@@ -36,6 +36,8 @@ pub struct Config {
     pub line_bot_id: Option<String>,
     /// LINE push credential (required by the LIFF welcome flow).
     pub line_channel_access_token: Option<String>,
+    /// LINE push endpoint; override only in tests/dev harnesses.
+    pub line_push_url: String,
     /// Separate HMAC secret for signing/verifying file download URLs (review #8).
     /// Falls back to `jwt_secret` when unset so existing deployments keep working.
     pub file_signing_secret: Option<String>,
@@ -102,6 +104,10 @@ impl Config {
             line_channel_access_token: std::env::var("LINE_CHANNEL_ACCESS_TOKEN")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            line_push_url: std::env::var("LINE_PUSH_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "https://api.line.me/v2/bot/message/push".into()),
             facebook_verify_token: std::env::var("FACEBOOK_VERIFY_TOKEN")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -199,6 +205,7 @@ pub fn test_config() -> Config {
         line_id_token_verify_url: "https://api.line.me/oauth2/v2.1/verify".into(),
         line_bot_id: None,
         line_channel_access_token: None,
+        line_push_url: "https://api.line.me/v2/bot/message/push".into(),
         file_signing_secret: None,
         shopee_partner_id: None,
         shopee_partner_key: None,
