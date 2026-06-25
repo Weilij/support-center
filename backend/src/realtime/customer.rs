@@ -707,11 +707,11 @@ pub async fn create_message(
         if platform == "line" && !recipient.is_empty() {
             let mut items: Vec<OutboundItem> = Vec::new();
             if !content.is_empty() {
-                items.push(OutboundItem { content: content.clone() });
+                items.push(OutboundItem::text(content.clone()));
             }
             for a in &attachments {
                 if let Some(url) = a["url"].as_str().filter(|u| !u.is_empty()) {
-                    items.push(OutboundItem { content: url.to_string() });
+                    items.push(OutboundItem::text(url.to_string()));
                 }
             }
             if !items.is_empty() {

@@ -100,18 +100,18 @@ async fn process_outbound(state: &Arc<AppState>, body: &Value) -> Result<(), Str
     // 1. Assemble the platform message set (CRD 5165).
     let mut items: Vec<OutboundItem> = Vec::new();
     if !content.is_empty() && !is_placeholder(content) {
-        items.push(OutboundItem { content: content.to_string() });
+        items.push(OutboundItem::text(content.to_string()));
     }
     for att in body.get("attachments").and_then(Value::as_array).into_iter().flatten() {
         let kind = att.get("type").and_then(Value::as_str).unwrap_or("file");
         let url = att.get("url").and_then(Value::as_str).unwrap_or_default();
         if kind == "image" {
-            items.push(OutboundItem { content: format!("[Image] {url}") });
+            items.push(OutboundItem::text(format!("[Image] {url}")));
         } else {
             let name = att.get("filename").and_then(Value::as_str).unwrap_or("file");
             let mime = att.get("mimeType").and_then(Value::as_str).unwrap_or("");
             let size = att.get("size").and_then(Value::as_u64).unwrap_or(0);
-            items.push(OutboundItem { content: format!("[File] {name} ({mime}, {size} bytes) {url}") });
+            items.push(OutboundItem::text(format!("[File] {name} ({mime}, {size} bytes) {url}")));
         }
     }
     // 2. Empty set is a delivery failure (CRD 5166).

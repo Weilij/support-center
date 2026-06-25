@@ -282,7 +282,7 @@ fn build_actions(rule: &CachedRule) -> Result<(Vec<OutboundItem>, String), Strin
             other => return Err(format!("unsupported action type '{other}'")),
         };
         summary.push(text.clone());
-        items.push(OutboundItem { content: text });
+        items.push(OutboundItem::text(text));
     }
     if items.is_empty() {
         return Err("rule has no valid actions".into());

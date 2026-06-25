@@ -817,7 +817,7 @@ pub async fn send_message(
     // Background delivery: returns before delivery is confirmed (CRD 769, 773).
     let mut items: Vec<OutboundItem> = Vec::new();
     if !content.is_empty() {
-        items.push(OutboundItem { content: content.clone() });
+        items.push(OutboundItem::text(content.clone()));
     }
     if !attachment_ids.is_empty() {
         let placeholders = vec!["?"; attachment_ids.len()].join(", ");
@@ -830,7 +830,7 @@ pub async fn send_message(
             q = q.bind(aid);
         }
         for url in q.bind(&message_id).fetch_all(&state.db).await? {
-            items.push(OutboundItem { content: url });
+            items.push(OutboundItem::text(url));
         }
     }
     let platform = conv.cust_platform.clone().unwrap_or_default();

@@ -471,11 +471,11 @@ pub async fn send_reply(
         let recipient = ctx.cust_platform_user_id.clone().unwrap_or_default();
         let mut items: Vec<OutboundItem> = Vec::new();
         if !content.is_empty() {
-            items.push(OutboundItem { content: content.clone() });
+            items.push(OutboundItem::text(content.clone()));
         }
         for a in &attachments {
             if let Some(url) = a["url"].as_str() {
-                items.push(OutboundItem { content: url.to_string() });
+                items.push(OutboundItem::text(url.to_string()));
             }
         }
         if !items.is_empty() {

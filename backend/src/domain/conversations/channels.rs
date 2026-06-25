@@ -10,9 +10,45 @@
 
 use sqlx::PgPool;
 
-/// One outbound unit: the text body or one attachment reference.
+/// One outbound unit: a text body, or a media attachment.
 pub struct OutboundItem {
     pub content: String,
+    pub media: Option<OutboundMedia>,
+}
+
+impl OutboundItem {
+    pub fn text(content: impl Into<String>) -> Self {
+        Self { content: content.into(), media: None }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum MediaKind { Image, Video, Audio, File }
+
+#[derive(Clone)]
+pub struct OutboundMedia {
+    pub kind: MediaKind,
+    pub url: String,
+    pub preview_url: Option<String>,
+    pub file_name: Option<String>,
+    pub duration_ms: Option<i64>,
+}
+
+/// Display-only audio length when the real duration is unknown (LINE plays the
+/// full clip regardless).
+const DEFAULT_AUDIO_DURATION_MS: i64 = 60_000;
+
+/// Classify an attachment mime into a LINE-deliverable kind.
+pub fn classify_mime(mime: &str) -> MediaKind {
+    if mime.starts_with("image/") {
+        MediaKind::Image
+    } else if mime.starts_with("video/") {
+        MediaKind::Video
+    } else if mime.starts_with("audio/") {
+        MediaKind::Audio
+    } else {
+        MediaKind::File
+    }
 }
 
 /// The downstream platform's per-call message cap (LINE push cap, CRD 769).
@@ -32,14 +68,39 @@ fn http_client() -> &'static reqwest::Client {
     })
 }
 
+/// One LINE message object for an outbound item (pure — unit-tested).
+fn line_message(it: &OutboundItem) -> serde_json::Value {
+    match &it.media {
+        None => json!({ "type": "text", "text": it.content }),
+        Some(m) => match m.kind {
+            MediaKind::Image => json!({
+                "type": "image",
+                "originalContentUrl": m.url,
+                "previewImageUrl": m.preview_url.clone().unwrap_or_else(|| m.url.clone()),
+            }),
+            MediaKind::Video => json!({
+                "type": "video",
+                "originalContentUrl": m.url,
+                "previewImageUrl": m.preview_url.clone().unwrap_or_else(|| m.url.clone()),
+            }),
+            MediaKind::Audio => json!({
+                "type": "audio",
+                "originalContentUrl": m.url,
+                "duration": m.duration_ms.unwrap_or(DEFAULT_AUDIO_DURATION_MS),
+            }),
+            MediaKind::File => json!({
+                "type": "text",
+                "text": format!("📎 {}\n{}", m.file_name.clone().unwrap_or_default(), m.url),
+            }),
+        },
+    }
+}
+
 /// The outbound message body for a LINE push (pure — unit-tested).
 pub fn build_push_body(recipient: &str, items: &[OutboundItem]) -> serde_json::Value {
     json!({
         "to": recipient,
-        "messages": items
-            .iter()
-            .map(|it| json!({ "type": "text", "text": it.content }))
-            .collect::<Vec<_>>(),
+        "messages": items.iter().map(line_message).collect::<Vec<_>>(),
     })
 }
 
@@ -78,9 +139,13 @@ async fn fb_send(token: &str, recipient: &str, items: &[OutboundItem]) -> Result
     let url = format!("https://graph.facebook.com/v21.0/me/messages?access_token={token}");
     let mut last_id = String::new();
     for it in items {
+        let content = match &it.media {
+            Some(m) => format!("📎 {}\n{}", m.file_name.clone().unwrap_or_default(), m.url),
+            None => it.content.clone(),
+        };
         let resp = http_client()
             .post(&url)
-            .json(&fb_send_body(recipient, &it.content))
+            .json(&fb_send_body(recipient, &content))
             .send()
             .await
             .map_err(|e| format!("Facebook request failed: {e}"))?;
@@ -349,11 +414,52 @@ mod gateway_tests {
 
     #[test]
     fn push_body_has_to_and_text_messages() {
-        let items = vec![OutboundItem { content: "hi".into() }, OutboundItem { content: "bye".into() }];
+        let items = vec![OutboundItem::text("hi"), OutboundItem::text("bye")];
         let b = build_push_body("U123", &items);
         assert_eq!(b["to"], "U123");
         assert_eq!(b["messages"][0]["text"], "hi");
         assert_eq!(b["messages"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn push_body_dispatches_by_media_kind() {
+        let items = vec![
+            OutboundItem::text("hello"),
+            OutboundItem { content: "pic.jpg".into(), media: Some(OutboundMedia {
+                kind: MediaKind::Image, url: "https://h/o.jpg".into(),
+                preview_url: Some("https://h/p.jpg".into()), file_name: None, duration_ms: None }) },
+            OutboundItem { content: "clip".into(), media: Some(OutboundMedia {
+                kind: MediaKind::Video, url: "https://h/v.mp4".into(),
+                preview_url: Some("https://h/ph.png".into()), file_name: None, duration_ms: None }) },
+            OutboundItem { content: "voice".into(), media: Some(OutboundMedia {
+                kind: MediaKind::Audio, url: "https://h/a.m4a".into(),
+                preview_url: None, file_name: None, duration_ms: None }) },
+            OutboundItem { content: "doc".into(), media: Some(OutboundMedia {
+                kind: MediaKind::File, url: "https://h/d.pdf".into(),
+                preview_url: None, file_name: Some("report.pdf".into()), duration_ms: None }) },
+        ];
+        let b = build_push_body("U1", &items);
+        let m = b["messages"].as_array().unwrap();
+        assert_eq!(m[0]["type"], "text");
+        assert_eq!(m[1]["type"], "image");
+        assert_eq!(m[1]["originalContentUrl"], "https://h/o.jpg");
+        assert_eq!(m[1]["previewImageUrl"], "https://h/p.jpg");
+        assert_eq!(m[2]["type"], "video");
+        assert_eq!(m[2]["previewImageUrl"], "https://h/ph.png");
+        assert_eq!(m[3]["type"], "audio");
+        assert_eq!(m[3]["duration"], 60000);
+        assert_eq!(m[4]["type"], "text");
+        assert!(m[4]["text"].as_str().unwrap().contains("report.pdf"));
+        assert!(m[4]["text"].as_str().unwrap().contains("📎"));
+    }
+
+    #[test]
+    fn classify_mime_maps_kinds() {
+        assert_eq!(classify_mime("image/png"), MediaKind::Image);
+        assert_eq!(classify_mime("video/mp4"), MediaKind::Video);
+        assert_eq!(classify_mime("audio/m4a"), MediaKind::Audio);
+        assert_eq!(classify_mime("application/pdf"), MediaKind::File);
+        assert_eq!(classify_mime(""), MediaKind::File);
     }
 
     #[test]

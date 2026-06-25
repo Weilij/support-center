@@ -189,7 +189,7 @@ pub async fn process_delayed(state: &AppState, delayed_id: &str) -> Value {
         // the item failed, matching the documented pending -> failed outcome.
         "line" | "facebook" => {
             let gateway = OutboundGateway::from_config(&state.config);
-            match gateway.send_batch(&platform, &recipient, &[OutboundItem { content }]).await {
+            match gateway.send_batch(&platform, &recipient, &[OutboundItem::text(content)]).await {
                 Ok(platform_message_id) => Ok(json!({
                     "success": true,
                     "delayedMessageId": row.id,
@@ -438,7 +438,7 @@ pub async fn recall_sent_message(state: &AppState, message_id: &str, user_id: &s
             let _ = gateway.send_batch(
                 "line",
                 recipient.as_deref().unwrap_or_default(),
-                &[OutboundItem { content: "This message has been recalled".into() }],
+                &[OutboundItem::text("This message has been recalled")],
             ).await;
         }
         Some("facebook") => {
