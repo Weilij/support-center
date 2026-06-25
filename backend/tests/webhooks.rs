@@ -388,6 +388,63 @@ async fn follow_with_routing_creates_team_conversation_and_welcome() {
 }
 
 #[tokio::test]
+async fn line_follow_redelivery_is_idempotent() {
+    let app = spawn_app().await;
+    let team = app.seed_team("Routing").await;
+    sqlx::query(
+        "INSERT INTO customer_team_assignments (id, platform_user_id, team_id, source, assigned_at)
+         VALUES ('a-follow-redelivery', 'U-follow-redelivery', $1, 'scan', $2)",
+    )
+    .bind(team)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+
+    let body = json!({
+        "destination": "d",
+        "events": [{
+            "type": "follow",
+            "webhookEventId": "line-follow-redelivery-1",
+            "timestamp": 1,
+            "source": {"userId": "U-follow-redelivery"}
+        }]
+    })
+    .to_string();
+    let sig = line_sig(&body);
+    let (status, _) = post_line(&app, &body, Some(&sig)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = post_line(&app, &body, Some(&sig)).await;
+    assert_eq!(status, StatusCode::OK, "redelivery still reports success");
+
+    let customers: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM customers WHERE platform = 'line' AND platform_user_id = 'U-follow-redelivery'",
+    )
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
+    assert_eq!(customers, 1);
+    let messages: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id
+         JOIN customers cu ON cu.id = c.customer_id
+         WHERE cu.platform = 'line' AND cu.platform_user_id = 'U-follow-redelivery'",
+    )
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
+    assert_eq!(messages, 1, "welcome message is not duplicated");
+    let replays: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM webhook_replay_events
+         WHERE platform = 'line' AND event_type = 'follow'",
+    )
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
+    assert_eq!(replays, 1);
+}
+
+#[tokio::test]
 async fn follow_without_user_id_is_silently_ignored() {
     let app = spawn_app().await;
     let body = json!({
@@ -577,6 +634,33 @@ async fn facebook_postback_is_ingested_as_text() {
     .unwrap();
     assert_eq!(content, "Get Started");
     assert_eq!(content_type, "text");
+}
+
+#[tokio::test]
+async fn facebook_postback_redelivery_is_idempotent() {
+    let app = spawn_app().await;
+    let item = json!({
+        "sender": {"id": "F-pb-redelivery"},
+        "recipient": {"id": "page-1"},
+        "timestamp": 1700000000000i64,
+        "postback": {"title": "Get Started", "payload": "START"}
+    });
+
+    let (status, resp) = post_fb_item(&app, item.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+    let (status, resp) = post_fb_item(&app, item).await;
+    assert_eq!(status, StatusCode::OK, "redelivery still succeeds: {resp}");
+
+    let messages: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id
+         JOIN customers cu ON cu.id = c.customer_id
+         WHERE cu.platform = 'facebook' AND cu.platform_user_id = 'F-pb-redelivery'",
+    )
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
+    assert_eq!(messages, 1, "postback message is not duplicated");
 }
 
 #[tokio::test]
