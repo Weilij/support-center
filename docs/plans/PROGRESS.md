@@ -70,7 +70,11 @@ Remaining external/infrastructure boundaries:
 - [ ] Shopee full message ingestion/delivery beyond the auth/signing/token
       foundation.
 - [ ] Installer real cloud-provider provisioning (`TODO(cloud)`).
-- [ ] Multi-instance realtime fan-out (`TODO(scale-out)`).
+- [x] Multi-instance customer-channel realtime fan-out: customer conversation
+      events relay across backend instances through Postgres event/ack tables.
+- [ ] Broader realtime scale-out hardening for non-customer-channel rooms and
+      presence, if deployment requirements need every realtime surface to span
+      multiple instances.
 - [ ] Optional external alert/notification sinks and live welcome-reply push
       polish where TODO markers remain.
 
@@ -199,3 +203,7 @@ conversation routing as "指派至團隊 / 轉接團隊 / 取消指派" only.
   enrichment, and Shopee auth/signing/token foundation. Remaining work is
   Shopee full messaging, cloud provisioning, multi-instance realtime fan-out,
   and optional external notification/welcome-reply polish.
+- 2026-06-26: Customer-channel realtime scale-out implemented and verified:
+  customer conversation events now relay across backend instances via
+  Postgres-backed fan-out events and per-instance acks. Remaining scale-out work
+  is limited to broader room/presence surfaces if required by deployment.

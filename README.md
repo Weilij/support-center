@@ -105,7 +105,10 @@ kept at clearly marked boundaries:
   callback wiring. Full Shopee customer-message ingestion/delivery remains
   future integration work.
 - `TODO(cloud)` — installer's real cloud-provider provisioning.
-- `TODO(scale-out)` — multi-instance realtime fan-out.
+- Realtime customer-channel events now fan out across backend instances through
+  Postgres-backed relay/ack tables. Broader room/presence scale-out remains a
+  future hardening area if the deployment needs every realtime surface to span
+  multiple instances.
 
 Everything else — including every documented status code, envelope shape,
 authorization rule, and side effect — is implemented per the CRD, with the
