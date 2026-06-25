@@ -62,6 +62,13 @@ pub fn is_manager_or_admin(user: &AuthUser) -> bool {
     user.is_admin() || user.teams.iter().any(|t| team_role_level(&t.role) >= 2)
 }
 
+fn token_issued_before_valid_after(iat: i64, valid_after: &Option<String>) -> bool {
+    valid_after
+        .as_deref()
+        .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+        .is_some_and(|valid_after| iat.saturating_mul(1000) < valid_after.timestamp_millis())
+}
+
 pub async fn authenticate(
     state: &Arc<AppState>,
     headers: &HeaderMap,
@@ -110,6 +117,9 @@ pub async fn authenticate(
         .await?
         .filter(|a| a.is_active != 0)
         .ok_or_else(|| AppError::Unauthorized("Account is inactive or not found".into()))?;
+    if token_issued_before_valid_after(claims.iat, &agent.tokens_valid_after) {
+        return Err(AppError::Unauthorized("Token is no longer valid".into()));
+    }
 
     // Memberships re-derived from authoritative storage with a brief cache (CRD line 270).
     let teams = match state.team_cache.get(&agent.id, TEAM_CACHE_TTL) {

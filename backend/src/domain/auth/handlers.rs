@@ -27,6 +27,13 @@ fn user_agent(headers: &HeaderMap) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+fn token_issued_before_valid_after(iat: i64, valid_after: &Option<String>) -> bool {
+    valid_after
+        .as_deref()
+        .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+        .is_some_and(|valid_after| iat.saturating_mul(1000) < valid_after.timestamp_millis())
+}
+
 /// Compact agent view used by login/me (CRD line 140: createdAt as epoch milliseconds).
 fn agent_view(agent: &AgentRow) -> Value {
     json!({
@@ -415,6 +422,9 @@ pub async fn refresh(
         .await?
         .filter(|a| a.is_active != 0)
         .ok_or_else(|| AppError::Unauthorized("Account not found or inactive".into()))?;
+    if token_issued_before_valid_after(claims.iat, &agent.tokens_valid_after) {
+        return Err(AppError::Unauthorized("Refresh token is no longer valid".into()));
+    }
 
     // Team data re-derived from authoritative storage (CRD 169).
     let teams = store::memberships(&state.db, &agent.id).await?;
@@ -570,14 +580,17 @@ pub async fn change_password(
 
     let hash = store::hash_password(&new)
         .map_err(|e| AppError::Internal(format!("password hashing failed: {e}")))?;
+    let now = crate::db::now_iso();
     sqlx::query(
-        "UPDATE agents SET password_hash = $1, password_policy = 'changeable', updated_at = $2 WHERE id = $3",
+        "UPDATE agents SET password_hash = $1, password_policy = 'changeable',
+         tokens_valid_after = $2, updated_at = $2 WHERE id = $3",
     )
     .bind(&hash)
-    .bind(crate::db::now_iso())
+    .bind(&now)
     .bind(&user.id)
     .execute(&state.db)
     .await?;
+    store::revoke_user_credentials(&state.db, &user.id, &now).await?;
 
     store::log_activity(
         &state.db, &user.id, &user.display_name, &user.role,
@@ -630,15 +643,18 @@ pub async fn reset_member_password(
     let hash = store::hash_password(&new)
         .map_err(|e| AppError::Internal(format!("password hashing failed: {e}")))?;
     let policy = body.policy.unwrap_or_else(|| target.password_policy.clone());
+    let now = crate::db::now_iso();
     sqlx::query(
-        "UPDATE agents SET password_hash = $1, password_policy = $2, updated_at = $3 WHERE id = $4",
+        "UPDATE agents SET password_hash = $1, password_policy = $2,
+         tokens_valid_after = $3, updated_at = $3 WHERE id = $4",
     )
     .bind(&hash)
     .bind(&policy)
-    .bind(crate::db::now_iso())
+    .bind(&now)
     .bind(&member_id)
     .execute(&state.db)
     .await?;
+    store::revoke_user_credentials(&state.db, &member_id, &now).await?;
 
     Ok(envelope::ok_msg(
         json!({"passwordPolicy": policy}),

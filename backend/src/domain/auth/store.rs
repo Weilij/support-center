@@ -20,6 +20,7 @@ pub struct AgentRow {
     pub created_at: String,
     pub updated_at: Option<String>,
     pub position: Option<String>,
+    pub tokens_valid_after: Option<String>,
 }
 
 impl AgentRow {
@@ -181,6 +182,26 @@ pub async fn revoke_refresh_token(pool: &PgPool, jti: &str) -> sqlx::Result<()> 
     sqlx::query("UPDATE refresh_tokens SET revoked_at = $1 WHERE jti = $2")
         .bind(now_iso())
         .bind(jti)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn revoke_user_credentials(
+    pool: &PgPool,
+    agent_id: &str,
+    revoked_at: &str,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE refresh_tokens SET revoked_at = $1
+         WHERE agent_id = $2 AND revoked_at IS NULL",
+    )
+    .bind(revoked_at)
+    .bind(agent_id)
+    .execute(pool)
+    .await?;
+    sqlx::query("DELETE FROM auth_sessions WHERE agent_id = $1")
+        .bind(agent_id)
         .execute(pool)
         .await?;
     Ok(())

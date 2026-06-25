@@ -381,7 +381,7 @@ async fn update_me_enforces_allowlist_and_skips_noops() {
 async fn change_password_requires_current_password_proof() {
     let app = spawn_app().await;
     app.seed_agent("cp@test.dev", "oldpw1234", "agent").await;
-    let (token, _, _) = app.login("cp@test.dev", "oldpw1234").await;
+    let (token, refresh, session) = app.login("cp@test.dev", "oldpw1234").await;
 
     let (status, _, _) = app
         .request("POST", "/api/auth/change-password", Some(&token),
@@ -407,6 +407,18 @@ async fn change_password_requires_current_password_proof() {
             Some(json!({"currentPassword": "oldpw1234", "newPassword": "newpw1234"})))
         .await;
     assert_eq!(status, StatusCode::OK);
+    let (status, _, _) = app.request("GET", "/api/auth/me", Some(&token), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "old access token invalidated");
+    let (status, _, _) = app
+        .request("POST", "/api/auth/refresh", None, Some(json!({"refreshToken": refresh})))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "old refresh token revoked");
+    let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM auth_sessions WHERE id = $1")
+        .bind(&session)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+    assert_eq!(sessions, 0, "existing auth session deleted");
     // New password works on a fresh sign-in.
     app.login("cp@test.dev", "newpw1234").await;
 }
@@ -427,6 +439,8 @@ async fn reset_member_password_is_role_gated_and_blocks_self_reset() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 
     let (atoken, _, _) = app.login("admin@test.dev", "pw123456").await;
+    let (target_token, target_refresh, target_session) =
+        app.login("target@test.dev", "pw123456").await;
 
     let (status, _, _) = app
         .request("POST", &format!("/api/teams/members/{target}/reset"), Some(&atoken),
@@ -457,6 +471,18 @@ async fn reset_member_password_is_role_gated_and_blocks_self_reset() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["passwordPolicy"], "must_change");
     let _ = plain;
+    let (status, _, _) = app.request("GET", "/api/auth/me", Some(&target_token), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "target old access token invalidated");
+    let (status, _, _) = app
+        .request("POST", "/api/auth/refresh", None, Some(json!({"refreshToken": target_refresh})))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "target old refresh token revoked");
+    let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM auth_sessions WHERE id = $1")
+        .bind(&target_session)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+    assert_eq!(sessions, 0, "target auth sessions deleted");
 
     // must_change diverts the target's next sign-in (CRD 215).
     let (status, body, _) = app
