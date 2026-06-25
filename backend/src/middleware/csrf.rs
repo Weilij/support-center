@@ -19,6 +19,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
 
+use super::auth::constant_time_eq;
 use super::cookies::cookie_value;
 use crate::state::AppState;
 
@@ -73,7 +74,7 @@ fn csrf_check(
         .get("x-csrf-token")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if presented != expected {
+    if !constant_time_eq(&expected, presented) {
         return Some(reject("CSRF token mismatch", "CSRF_TOKEN_MISMATCH"));
     }
 

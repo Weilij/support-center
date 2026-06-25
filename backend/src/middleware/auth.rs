@@ -7,6 +7,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use std::sync::Arc;
 use std::time::Duration;
+use subtle::ConstantTimeEq;
 
 use crate::domain::auth::{store, tokens};
 use crate::error::AppError;
@@ -15,6 +16,12 @@ use crate::state::{AppState, TeamMembership};
 
 pub const TEAM_CACHE_TTL: Duration = Duration::from_secs(60);
 const LAST_ACTIVE_INTERVAL: Duration = Duration::from_secs(60);
+
+pub(crate) fn constant_time_eq(expected: &str, presented: &str) -> bool {
+    let expected = expected.as_bytes();
+    let presented = presented.as_bytes();
+    expected.len() == presented.len() && expected.ct_eq(presented).into()
+}
 
 /// Authenticated caller context inserted as a request extension by `require_auth`.
 #[derive(Debug, Clone)]
@@ -227,8 +234,21 @@ pub async fn require_system_key(req: Request<Body>, next: Next) -> Response {
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
     match (expected, presented) {
-        (Some(e), Some(p)) if e == p => next.run(req).await,
+        (Some(e), Some(p)) if constant_time_eq(&e, &p) => next.run(req).await,
         _ => AppError::Unauthorized("Valid system key required".into()).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::constant_time_eq;
+
+    #[test]
+    fn constant_time_eq_requires_identical_equal_length_values() {
+        assert!(constant_time_eq("secret-token", "secret-token"));
+        assert!(!constant_time_eq("secret-token", "secret-tokem"));
+        assert!(!constant_time_eq("secret-token", "secret-token-longer"));
+        assert!(!constant_time_eq("secret-token", ""));
     }
 }
 
