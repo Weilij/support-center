@@ -23,6 +23,13 @@ fn fb_sig(body: &str) -> String {
     format!("sha256={hex}")
 }
 
+fn shopee_sig(body: &str) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(b"test-shopee-key").unwrap();
+    mac.update(body.as_bytes());
+    let hex: String = mac.finalize().into_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    format!("sha256={hex}")
+}
+
 /// Send the exact raw body (no JSON re-serialization, so signatures stay valid)
 /// with arbitrary headers.
 async fn send_raw(
@@ -71,6 +78,23 @@ fn line_text_event(user: &str, mid: &str, text: &str) -> String {
             "source": { "type": "user", "userId": user },
             "message": { "id": mid, "type": "text", "text": text }
         }]
+    })
+    .to_string()
+}
+
+fn shopee_text_event(shop_id: i64, buyer_id: i64, mid: &str, text: &str) -> String {
+    json!({
+        "push_type": "webchat_message",
+        "shop_id": shop_id,
+        "data": {
+            "message_id": mid,
+            "from_id": buyer_id,
+            "to_id": shop_id,
+            "message_type": "text",
+            "content": { "text": text },
+            "conversation_id": format!("conv-{shop_id}-{buyer_id}"),
+            "timestamp": 1700000000i64
+        }
     })
     .to_string()
 }
@@ -1079,4 +1103,105 @@ async fn facebook_declared_oversize_content_length_is_rejected() {
         status == StatusCode::PAYLOAD_TOO_LARGE || status == StatusCode::BAD_REQUEST,
         "got {status}: {resp}"
     );
+}
+
+async fn post_shopee(app: &TestApp, body: &str, sig: Option<&str>) -> (StatusCode, Value) {
+    let mut headers: Vec<(&str, &str)> = Vec::new();
+    if let Some(s) = sig {
+        headers.push(("x-shopee-signature", s));
+    }
+    let (status, text) = send_raw(app, "POST", "/api/webhooks/shopee", body, &headers).await;
+    (status, serde_json::from_str(&text).unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn shopee_rejects_missing_or_bad_signature() {
+    let app = spawn_app_custom(|c| {
+        c.shopee_partner_id = Some(1);
+        c.shopee_partner_key = Some("test-shopee-key".into());
+    })
+    .await;
+    let body = shopee_text_event(42, 9001, "sp-mid-gate", "hello");
+
+    let (status, resp) = post_shopee(&app, &body, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(resp["error"], "Missing signature header");
+
+    let (status, resp) = post_shopee(&app, &body, Some("sha256=bad")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(resp["error"], "Invalid signature");
+
+    let customers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM customers")
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+    assert_eq!(customers, 0);
+}
+
+#[tokio::test]
+async fn shopee_text_message_creates_customer_conversation_and_message() {
+    let app = spawn_app_custom(|c| {
+        c.shopee_partner_id = Some(1);
+        c.shopee_partner_key = Some("test-shopee-key".into());
+    })
+    .await;
+    let body = shopee_text_event(42, 9001, "sp-mid-1", "hello from buyer");
+    let (status, resp) = post_shopee(&app, &body, Some(&shopee_sig(&body))).await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+    assert_eq!(resp["success"], true);
+
+    let (cust_id, name): (i64, String) = sqlx::query_as(
+        "SELECT id, display_name FROM customers
+         WHERE platform = 'shopee' AND platform_user_id = '42:9001'",
+    )
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
+    assert_eq!(name, "Shopee User");
+
+    let conv_id: String =
+        sqlx::query_scalar("SELECT id FROM conversations WHERE customer_id = $1")
+            .bind(cust_id)
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    let (content, content_type, delivery, metadata): (String, String, String, String) =
+        sqlx::query_as(
+            "SELECT content, content_type, delivery_status, metadata
+             FROM messages WHERE conversation_id = $1 AND platform_message_id = 'sp-mid-1'",
+        )
+        .bind(&conv_id)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+    assert_eq!(content, "hello from buyer");
+    assert_eq!(content_type, "text");
+    assert_eq!(delivery, "delivered");
+    let metadata: Value = serde_json::from_str(&metadata).unwrap();
+    assert_eq!(metadata["platform"], "shopee");
+    assert_eq!(metadata["shopId"], 42);
+    assert_eq!(metadata["buyerId"], 9001);
+}
+
+#[tokio::test]
+async fn shopee_redelivery_is_idempotent() {
+    let app = spawn_app_custom(|c| {
+        c.shopee_partner_id = Some(1);
+        c.shopee_partner_key = Some("test-shopee-key".into());
+    })
+    .await;
+    let body = shopee_text_event(42, 9002, "sp-mid-dup", "only once");
+    let sig = shopee_sig(&body);
+
+    let (s1, _) = post_shopee(&app, &body, Some(&sig)).await;
+    let (s2, _) = post_shopee(&app, &body, Some(&sig)).await;
+    assert_eq!(s1, StatusCode::OK);
+    assert_eq!(s2, StatusCode::OK);
+
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE platform_message_id = 'sp-mid-dup'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    assert_eq!(count, 1);
 }

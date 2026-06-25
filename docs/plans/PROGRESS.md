@@ -62,14 +62,15 @@ external-stub boundary:
       seen, reactions, and story events.
 - [x] Customer profile enrichment: LINE/Facebook/Instagram profile name and
       avatar lookup backfills placeholder customers when tokens are available.
-- [x] Shopee foundation: signed Open Platform v2 URLs, OAuth token exchange,
-      encrypted per-shop token storage, refresh-before-expiry, and callback
-      wiring are implemented.
+- [x] Shopee foundation + first messaging slice: signed Open Platform v2 URLs,
+      OAuth token exchange, encrypted per-shop token storage,
+      refresh-before-expiry, callback wiring, signature-gated Webchat push
+      ingestion, and SellerChat text outbound using shop-scoped tokens.
 
 Remaining external/infrastructure boundaries:
 
-- [ ] Shopee full message ingestion/delivery beyond the auth/signing/token
-      foundation.
+- [ ] Shopee richer media/chat surface coverage beyond text and link-style
+      fallback delivery.
 - [ ] Installer real cloud-provider provisioning (`TODO(cloud)`).
 - [x] Multi-instance customer-channel realtime fan-out: customer conversation
       events relay across backend instances through Postgres event/ack tables.
@@ -212,3 +213,8 @@ conversation routing as "指派至團隊 / 轉接團隊 / 取消指派" only.
   deferred subscribe flushing, reconnect re-subscription, and reconnect events;
   Inbox and ConversationDetail reload message history after reconnect to resync
   any events missed while offline.
+- 2026-06-26: Shopee messaging slice implemented: `/api/webhooks/shopee` accepts
+  signature-gated Webchat push events, normalizes text/media payloads into the
+  shared customer/conversation/message ingestion pipeline, dedupes redelivery by
+  platform message id, and routes outbound text through SellerChat
+  `/api/v2/sellerchat/send_message` with `shop_id:buyer_id` recipients.

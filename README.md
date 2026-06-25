@@ -100,10 +100,11 @@ kept at clearly marked boundaries:
 - LINE inbound media download is implemented through the channel token and an
   authenticated media proxy. Other platform media handling currently falls back
   to stored/proxied URLs or text link delivery where applicable.
-- Shopee currently has the Open Platform foundation: signed requests, OAuth
-  token exchange, encrypted per-shop token storage, refresh-before-expiry, and
-  callback wiring. Full Shopee customer-message ingestion/delivery remains
-  future integration work.
+- Shopee currently has the Open Platform foundation plus first messaging
+  support: signed requests, OAuth token exchange, encrypted per-shop token
+  storage, refresh-before-expiry, callback wiring, signature-gated Webchat push
+  ingestion, and SellerChat text outbound using shop-scoped tokens. Richer
+  Shopee media/chat surfaces remain future integration work.
 - `TODO(cloud)` — installer's real cloud-provider provisioning.
 - Realtime customer-channel events now fan out across backend instances through
   Postgres-backed relay/ack tables. Broader room/presence scale-out remains a

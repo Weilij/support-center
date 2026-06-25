@@ -3,7 +3,7 @@
 //! the auto-reply idempotency ledger, and defer the non-critical follow-up
 //! work (real-time broadcast, latest-message refresh, activity log).
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -69,6 +69,7 @@ pub fn default_display_name(platform: &str) -> &'static str {
         "line" => "LINE User",
         "facebook" => "Facebook User",
         "instagram" => "Instagram User",
+        "shopee" => "Shopee User",
         _ => "Customer",
     }
 }

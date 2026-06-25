@@ -28,4 +28,9 @@ pub fn routes(_state: Arc<AppState>) -> Router<Arc<AppState>> {
         // Facebook/Instagram-style platform: subscription handshake (GET) and
         // event delivery (POST) on the same path (CRD 2780).
         .route("/api/webhooks/facebook", any(handlers::facebook_webhook))
+        // Shopee Webchat push events. Public, signature-gated by partner key.
+        .route(
+            "/api/webhooks/shopee",
+            axum::routing::post(handlers::shopee_webhook),
+        )
 }

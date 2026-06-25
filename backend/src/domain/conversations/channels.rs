@@ -18,12 +18,20 @@ pub struct OutboundItem {
 
 impl OutboundItem {
     pub fn text(content: impl Into<String>) -> Self {
-        Self { content: content.into(), media: None }
+        Self {
+            content: content.into(),
+            media: None,
+        }
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub enum MediaKind { Image, Video, Audio, File }
+pub enum MediaKind {
+    Image,
+    Video,
+    Audio,
+    File,
+}
 
 #[derive(Clone)]
 pub struct OutboundMedia {
@@ -113,6 +121,31 @@ pub fn fb_send_body(recipient: &str, content: &str) -> serde_json::Value {
     })
 }
 
+pub fn parse_shopee_recipient(recipient: &str) -> Result<(i64, String), String> {
+    let Some((shop, buyer)) = recipient.split_once(':') else {
+        return Err("Shopee recipient must be encoded as shop_id:buyer_id".into());
+    };
+    let shop_id = shop
+        .parse::<i64>()
+        .map_err(|_| "Shopee recipient has invalid shop_id".to_string())?;
+    if shop_id <= 0 || buyer.trim().is_empty() {
+        return Err("Shopee recipient must include a positive shop_id and buyer_id".into());
+    }
+    Ok((shop_id, buyer.trim().to_string()))
+}
+
+pub fn shopee_send_body(to_id: &str, item: &OutboundItem) -> serde_json::Value {
+    let content = match &item.media {
+        Some(m) => format!("📎 {}\n{}", m.file_name.clone().unwrap_or_default(), m.url),
+        None => item.content.clone(),
+    };
+    json!({
+        "to_id": to_id,
+        "message_type": "text",
+        "content": { "text": content },
+    })
+}
+
 async fn line_push(token: &str, recipient: &str, items: &[OutboundItem]) -> Result<String, String> {
     let body = build_push_body(recipient, items);
     let resp = http_client()
@@ -163,6 +196,48 @@ async fn fb_send(token: &str, recipient: &str, items: &[OutboundItem]) -> Result
     Ok(last_id)
 }
 
+async fn shopee_send(
+    client: &crate::domain::shopee::client::ShopeeClient,
+    db: &PgPool,
+    enc_key: Option<&str>,
+    recipient: &str,
+    items: &[OutboundItem],
+) -> Result<String, String> {
+    let (shop_id, buyer_id) = parse_shopee_recipient(recipient)?;
+    let token =
+        crate::domain::shopee::store::valid_access_token(db, client, enc_key, shop_id).await?;
+    let path = "/api/v2/sellerchat/send_message";
+    let query = client.signed_query(
+        path,
+        chrono::Utc::now().timestamp(),
+        Some(&token),
+        Some(shop_id),
+    );
+    let url = client.url(path, &query);
+    let mut last_id = String::new();
+    for it in items {
+        let resp = http_client()
+            .post(&url)
+            .json(&shopee_send_body(&buyer_id, it))
+            .send()
+            .await
+            .map_err(|e| format!("Shopee send failed: {e}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let txt = resp.text().await.unwrap_or_default();
+            return Err(format!("Shopee send failed ({status}): {txt}"));
+        }
+        let v: serde_json::Value = resp.json().await.unwrap_or_else(|_| json!({}));
+        last_id = v["message_id"]
+            .as_str()
+            .or_else(|| v["response"]["message_id"].as_str())
+            .or_else(|| v["request_id"].as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("shopee-{}", uuid::Uuid::new_v4()));
+    }
+    Ok(last_id)
+}
+
 /// End-user profile from a platform lookup (best-effort; both fields optional).
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Profile {
@@ -203,9 +278,12 @@ async fn line_profile(token: &str, user_id: &str) -> Profile {
         .send()
         .await
     {
-        Ok(resp) if resp.status().is_success() => {
-            parse_line_profile(&resp.json::<serde_json::Value>().await.unwrap_or_else(|_| json!({})))
-        }
+        Ok(resp) if resp.status().is_success() => parse_line_profile(
+            &resp
+                .json::<serde_json::Value>()
+                .await
+                .unwrap_or_else(|_| json!({})),
+        ),
         _ => Profile::default(),
     }
 }
@@ -220,9 +298,12 @@ async fn meta_profile(token: &str, user_id: &str) -> Profile {
         .send()
         .await
     {
-        Ok(resp) if resp.status().is_success() => {
-            parse_meta_profile(&resp.json::<serde_json::Value>().await.unwrap_or_else(|_| json!({})))
-        }
+        Ok(resp) if resp.status().is_success() => parse_meta_profile(
+            &resp
+                .json::<serde_json::Value>()
+                .await
+                .unwrap_or_else(|_| json!({})),
+        ),
         _ => Profile::default(),
     }
 }
@@ -234,19 +315,42 @@ pub struct OutboundGateway {
     line: Option<String>,
     facebook: Option<String>,
     instagram: Option<String>,
+    shopee: Option<crate::domain::shopee::client::ShopeeClient>,
+    shopee_db: Option<PgPool>,
+    encryption_key: Option<String>,
 }
 
 impl OutboundGateway {
     pub fn from_config(config: &crate::config::Config) -> Self {
         Self {
-            line: config.line_channel_access_token.clone().filter(|t| !t.is_empty()),
-            facebook: config.facebook_page_access_token.clone().filter(|t| !t.is_empty()),
+            line: config
+                .line_channel_access_token
+                .clone()
+                .filter(|t| !t.is_empty()),
+            facebook: config
+                .facebook_page_access_token
+                .clone()
+                .filter(|t| !t.is_empty()),
             instagram: config
                 .instagram_access_token
                 .clone()
                 .filter(|t| !t.is_empty())
-                .or_else(|| config.facebook_page_access_token.clone().filter(|t| !t.is_empty())),
+                .or_else(|| {
+                    config
+                        .facebook_page_access_token
+                        .clone()
+                        .filter(|t| !t.is_empty())
+                }),
+            shopee: crate::domain::shopee::client::ShopeeClient::from_config(config),
+            shopee_db: None,
+            encryption_key: config.encryption_key.clone(),
         }
+    }
+
+    pub fn from_state(state: &crate::state::AppState) -> Self {
+        let mut gateway = Self::from_config(&state.config);
+        gateway.shopee_db = Some(state.db.clone());
+        gateway
     }
 
     /// Push one batch (≤ BATCH_CAP items); returns the platform-side message id.
@@ -269,8 +373,16 @@ impl OutboundGateway {
                 Some(tok) => fb_send(tok, recipient, items).await,
                 None => Err("Outbound delivery is not supported for platform 'instagram'".into()),
             },
-            "shopee" => Err("Outbound delivery is not supported for platform 'shopee'".into()),
-            other => Err(format!("Outbound delivery is not supported for platform '{other}'")),
+            "shopee" => match (&self.shopee, &self.shopee_db) {
+                (Some(client), Some(db)) => {
+                    shopee_send(client, db, self.encryption_key.as_deref(), recipient, items).await
+                }
+                (Some(_), None) => Err("Shopee delivery requires shop token storage".into()),
+                _ => Err("Outbound delivery is not supported for platform 'shopee'".into()),
+            },
+            other => Err(format!(
+                "Outbound delivery is not supported for platform '{other}'"
+            )),
         }
     }
 
@@ -437,18 +549,46 @@ mod gateway_tests {
     fn push_body_dispatches_by_media_kind() {
         let items = vec![
             OutboundItem::text("hello"),
-            OutboundItem { content: "pic.jpg".into(), media: Some(OutboundMedia {
-                kind: MediaKind::Image, url: "https://h/o.jpg".into(),
-                preview_url: Some("https://h/p.jpg".into()), file_name: None, duration_ms: None }) },
-            OutboundItem { content: "clip".into(), media: Some(OutboundMedia {
-                kind: MediaKind::Video, url: "https://h/v.mp4".into(),
-                preview_url: Some("https://h/ph.png".into()), file_name: None, duration_ms: None }) },
-            OutboundItem { content: "voice".into(), media: Some(OutboundMedia {
-                kind: MediaKind::Audio, url: "https://h/a.m4a".into(),
-                preview_url: None, file_name: None, duration_ms: None }) },
-            OutboundItem { content: "doc".into(), media: Some(OutboundMedia {
-                kind: MediaKind::File, url: "https://h/d.pdf".into(),
-                preview_url: None, file_name: Some("report.pdf".into()), duration_ms: None }) },
+            OutboundItem {
+                content: "pic.jpg".into(),
+                media: Some(OutboundMedia {
+                    kind: MediaKind::Image,
+                    url: "https://h/o.jpg".into(),
+                    preview_url: Some("https://h/p.jpg".into()),
+                    file_name: None,
+                    duration_ms: None,
+                }),
+            },
+            OutboundItem {
+                content: "clip".into(),
+                media: Some(OutboundMedia {
+                    kind: MediaKind::Video,
+                    url: "https://h/v.mp4".into(),
+                    preview_url: Some("https://h/ph.png".into()),
+                    file_name: None,
+                    duration_ms: None,
+                }),
+            },
+            OutboundItem {
+                content: "voice".into(),
+                media: Some(OutboundMedia {
+                    kind: MediaKind::Audio,
+                    url: "https://h/a.m4a".into(),
+                    preview_url: None,
+                    file_name: None,
+                    duration_ms: None,
+                }),
+            },
+            OutboundItem {
+                content: "doc".into(),
+                media: Some(OutboundMedia {
+                    kind: MediaKind::File,
+                    url: "https://h/d.pdf".into(),
+                    preview_url: None,
+                    file_name: Some("report.pdf".into()),
+                    duration_ms: None,
+                }),
+            },
         ];
         let b = build_push_body("U1", &items);
         let m = b["messages"].as_array().unwrap();
@@ -483,6 +623,25 @@ mod gateway_tests {
     }
 
     #[test]
+    fn shopee_recipient_parser_requires_shop_and_buyer() {
+        assert_eq!(
+            parse_shopee_recipient("42:9001").unwrap(),
+            (42, "9001".to_string())
+        );
+        assert!(parse_shopee_recipient("9001").is_err());
+        assert!(parse_shopee_recipient("x:9001").is_err());
+        assert!(parse_shopee_recipient("42:").is_err());
+    }
+
+    #[test]
+    fn shopee_body_has_buyer_and_text_content() {
+        let b = shopee_send_body("9001", &OutboundItem::text("hello"));
+        assert_eq!(b["to_id"], "9001");
+        assert_eq!(b["message_type"], "text");
+        assert_eq!(b["content"]["text"], "hello");
+    }
+
+    #[test]
     fn from_config_reflects_configured_tokens() {
         let mut c = crate::config::test_config();
         c.line_channel_access_token = None;
@@ -491,8 +650,11 @@ mod gateway_tests {
         assert!(g.line.is_none() && g.facebook.is_none());
         c.line_channel_access_token = Some("L".into());
         c.facebook_page_access_token = Some("F".into());
+        c.shopee_partner_id = Some(1);
+        c.shopee_partner_key = Some("S".into());
         let g = OutboundGateway::from_config(&c);
         assert!(g.line.is_some() && g.facebook.is_some());
+        assert!(g.shopee.is_some());
     }
 
     #[test]
@@ -529,10 +691,19 @@ mod gateway_tests {
     #[test]
     fn parse_meta_profile_prefers_name_then_username() {
         let with_name = serde_json::json!({ "name": "Jane", "username": "jane_ig", "profile_pic": "https://p/a.jpg" });
-        assert_eq!(parse_meta_profile(&with_name).display_name.as_deref(), Some("Jane"));
+        assert_eq!(
+            parse_meta_profile(&with_name).display_name.as_deref(),
+            Some("Jane")
+        );
         let only_user = serde_json::json!({ "username": "jane_ig" });
-        assert_eq!(parse_meta_profile(&only_user).display_name.as_deref(), Some("jane_ig"));
-        assert_eq!(parse_meta_profile(&with_name).avatar_url.as_deref(), Some("https://p/a.jpg"));
+        assert_eq!(
+            parse_meta_profile(&only_user).display_name.as_deref(),
+            Some("jane_ig")
+        );
+        assert_eq!(
+            parse_meta_profile(&with_name).avatar_url.as_deref(),
+            Some("https://p/a.jpg")
+        );
     }
 
     #[tokio::test]

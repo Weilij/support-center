@@ -33,13 +33,21 @@ fn line_preview_url(message_id: &str) -> String {
 
 /// Normalize one LINE message object per the documented rules (CRD 2748-2757).
 pub fn normalize_line(message: &Value) -> Normalized {
-    let raw_kind = message.get("type").and_then(Value::as_str).unwrap_or("unknown").to_string();
+    let raw_kind = message
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
     let media_id = s(message, "id").unwrap_or_default();
     let file_name = s(message, "fileName");
 
     // Type self-correction (CRD 2757): a non-file kind carrying a file name is
     // reclassified as a file.
-    let kind = if raw_kind != "file" && file_name.is_some() { "file".to_string() } else { raw_kind.clone() };
+    let kind = if raw_kind != "file" && file_name.is_some() {
+        "file".to_string()
+    } else {
+        raw_kind.clone()
+    };
 
     match kind.as_str() {
         "text" => Normalized {
@@ -149,7 +157,10 @@ pub fn normalize_facebook(message: &Value) -> Normalized {
     if let Some(rt) = message.get("reply_to") {
         metadata.insert("replyTo".into(), rt.clone());
     }
-    let attachments = message.get("attachments").and_then(Value::as_array).cloned();
+    let attachments = message
+        .get("attachments")
+        .and_then(Value::as_array)
+        .cloned();
     if let Some(atts) = &attachments {
         if !atts.is_empty() {
             // All raw attachments are retained in metadata (CRD 2800).
@@ -159,7 +170,12 @@ pub fn normalize_facebook(message: &Value) -> Normalized {
 
     let text = message.get("text").and_then(Value::as_str).unwrap_or("");
     if !text.is_empty() {
-        return Normalized { content: text.into(), kind: "text".into(), media: None, metadata };
+        return Normalized {
+            content: text.into(),
+            kind: "text".into(),
+            media: None,
+            metadata,
+        };
     }
 
     // The first attachment determines the kind (CRD 2800).
@@ -240,9 +256,15 @@ pub fn normalize_instagram(message: &Value) -> Normalized {
     let is_story_mention = message
         .get("attachments")
         .and_then(Value::as_array)
-        .map(|a| a.iter().any(|att| att.get("type").and_then(Value::as_str) == Some("story_mention")))
+        .map(|a| {
+            a.iter()
+                .any(|att| att.get("type").and_then(Value::as_str) == Some("story_mention"))
+        })
         .unwrap_or(false);
-    let story_reply = message.get("reply_to").and_then(|r| r.get("story")).cloned();
+    let story_reply = message
+        .get("reply_to")
+        .and_then(|r| r.get("story"))
+        .cloned();
 
     let mut n = normalize_facebook(message);
     if is_story_mention {
@@ -259,15 +281,95 @@ pub fn normalize_instagram(message: &Value) -> Normalized {
     n
 }
 
+/// Normalize one Shopee SellerChat/Webchat push message. Shopee chat push
+/// payloads vary by event revision, so this accepts common text/media shapes
+/// while preserving raw fields in metadata.
+pub fn normalize_shopee(message: &Value) -> Normalized {
+    let mut metadata = Map::new();
+    metadata.insert("rawShopeeMessage".into(), message.clone());
+    if let Some(conversation_id) = message
+        .get("conversation_id")
+        .or_else(|| message.get("conversationId"))
+        .and_then(Value::as_str)
+    {
+        metadata.insert("shopeeConversationId".into(), json!(conversation_id));
+    }
+
+    let message_type = message
+        .get("message_type")
+        .or_else(|| message.get("messageType"))
+        .or_else(|| message.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("text");
+    let content = message.get("content").unwrap_or(&Value::Null);
+
+    if message_type == "text" {
+        let text = content
+            .get("text")
+            .and_then(Value::as_str)
+            .or_else(|| message.get("text").and_then(Value::as_str))
+            .unwrap_or_default();
+        return Normalized {
+            content: text.to_string(),
+            kind: "text".into(),
+            media: None,
+            metadata,
+        };
+    }
+
+    if matches!(message_type, "image" | "video" | "audio" | "file") {
+        let url = content
+            .get("url")
+            .or_else(|| content.get("file_url"))
+            .or_else(|| message.get("url"))
+            .and_then(Value::as_str);
+        let file_name = content
+            .get("file_name")
+            .or_else(|| content.get("fileName"))
+            .or_else(|| message.get("file_name"))
+            .and_then(Value::as_str);
+        let label = match message_type {
+            "image" => "[Image]".to_string(),
+            "video" => "[Video]".to_string(),
+            "audio" => "[Voice message]".to_string(),
+            _ => format!("[File] {}", file_name.unwrap_or("Unknown file")),
+        };
+        let mut media = json!({ "type": message_type, "contentUrl": url });
+        if let Some(name) = file_name {
+            media["fileName"] = json!(name);
+        }
+        return Normalized {
+            content: label,
+            kind: message_type.into(),
+            media: Some(media),
+            metadata,
+        };
+    }
+
+    Normalized {
+        content: format!("[{message_type}]"),
+        kind: "text".into(),
+        media: None,
+        metadata,
+    }
+}
+
 /// A postback (button / quick-reply click) as a normalized text message.
 pub fn normalize_facebook_postback(postback: &Value) -> Normalized {
     let title = postback.get("title").and_then(Value::as_str).unwrap_or("");
-    let payload = postback.get("payload").and_then(Value::as_str).unwrap_or("");
+    let payload = postback
+        .get("payload")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let content = if !title.is_empty() { title } else { payload };
     let mut metadata = Map::new();
     metadata.insert("postback".into(), postback.clone());
     Normalized {
-        content: if content.is_empty() { "[Postback]".into() } else { content.into() },
+        content: if content.is_empty() {
+            "[Postback]".into()
+        } else {
+            content.into()
+        },
         kind: "text".into(),
         media: None,
         metadata,
@@ -288,7 +390,10 @@ mod tests {
         let n = normalize_line(&json!({ "type": "image", "id": "m2" }));
         assert_eq!((n.kind.as_str(), n.content.as_str()), ("image", "[Image]"));
         let media = n.media.unwrap();
-        assert!(media["contentUrl"].as_str().unwrap().contains("/m2/content"));
+        assert!(media["contentUrl"]
+            .as_str()
+            .unwrap()
+            .contains("/m2/content"));
         assert!(media["previewUrl"].as_str().unwrap().ends_with("/preview"));
 
         let n = normalize_line(&json!({ "type": "audio", "id": "m3", "duration": 1200 }));
@@ -305,13 +410,19 @@ mod tests {
         let n = normalize_line(&json!({
             "type": "sticker", "id": "m6", "packageId": "p1", "stickerId": "s1"
         }));
-        assert_eq!((n.kind.as_str(), n.content.as_str()), ("sticker", "[Sticker]"));
+        assert_eq!(
+            (n.kind.as_str(), n.content.as_str()),
+            ("sticker", "[Sticker]")
+        );
     }
 
     #[test]
     fn line_unknown_kind_and_file_self_correction() {
         let n = normalize_line(&json!({ "type": "imagemap", "id": "m7" }));
-        assert_eq!((n.kind.as_str(), n.content.as_str()), ("text", "[imagemap]"));
+        assert_eq!(
+            (n.kind.as_str(), n.content.as_str()),
+            ("text", "[imagemap]")
+        );
         assert_eq!(n.metadata["originalType"], "imagemap");
 
         // Non-file kind carrying a file name is reclassified as a file.
@@ -337,7 +448,10 @@ mod tests {
             "mid": "f3",
             "attachments": [{ "type": "fallback", "title": "A shared link" }]
         }));
-        assert_eq!((n.kind.as_str(), n.content.as_str()), ("text", "A shared link"));
+        assert_eq!(
+            (n.kind.as_str(), n.content.as_str()),
+            ("text", "A shared link")
+        );
 
         let n = normalize_facebook(&json!({ "mid": "f4" }));
         assert_eq!(n.content, "[Unknown message]");
@@ -366,6 +480,24 @@ mod tests {
         let n = normalize_instagram(&json!({ "mid": "m1", "text": "hi" }));
         assert_eq!(n.content, "hi");
         assert_eq!(n.kind, "text");
+    }
+
+    #[test]
+    fn shopee_text_and_media_are_normalized() {
+        let n = normalize_shopee(&json!({
+            "message_type": "text",
+            "content": { "text": "hello" },
+            "conversation_id": "c1"
+        }));
+        assert_eq!((n.kind.as_str(), n.content.as_str()), ("text", "hello"));
+        assert_eq!(n.metadata["shopeeConversationId"], "c1");
+
+        let n = normalize_shopee(&json!({
+            "message_type": "image",
+            "content": { "url": "https://cdn/i.jpg" }
+        }));
+        assert_eq!((n.kind.as_str(), n.content.as_str()), ("image", "[Image]"));
+        assert_eq!(n.media.unwrap()["contentUrl"], "https://cdn/i.jpg");
     }
 
     #[test]

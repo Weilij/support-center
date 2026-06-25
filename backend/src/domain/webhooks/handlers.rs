@@ -5,15 +5,15 @@
 //! These routes are PUBLIC: no session/JWT — trust is established by
 //! platform-signature verification over the exact raw request body.
 
-use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use base64::Engine;
+use axum::Json;
 use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
 use hmac::{Hmac, Mac};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::collections::HashMap;
@@ -74,6 +74,12 @@ fn valid_facebook_signature(secret: &str, body: &[u8], signature: &str) -> bool 
         .is_some_and(|presented| verify_hmac_sha256(secret, body, &presented))
 }
 
+fn valid_shopee_signature(secret: &str, body: &[u8], signature: &str) -> bool {
+    let presented_hex = signature.strip_prefix("sha256=").unwrap_or(signature);
+    decode_hex_signature(presented_hex)
+        .is_some_and(|presented| verify_hmac_sha256(secret, body, &presented))
+}
+
 fn sha256_hex(input: &[u8]) -> String {
     Sha256::digest(input)
         .iter()
@@ -95,7 +101,10 @@ fn meta_postback_event_key(platform: &str, sender: &str, item: &Value, postback:
         .get("timestamp")
         .and_then(Value::as_i64)
         .unwrap_or_default();
-    let title = postback.get("title").and_then(Value::as_str).unwrap_or_default();
+    let title = postback
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let payload = postback
         .get("payload")
         .and_then(Value::as_str)
@@ -176,6 +185,18 @@ fn batch_ok() -> Response {
         })),
     )
         .into_response()
+}
+
+fn value_id(v: Option<&Value>) -> Option<String> {
+    match v {
+        Some(Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn shopee_platform_user_id(shop_id: &str, buyer_id: &str) -> String {
+    format!("{shop_id}:{buyer_id}")
 }
 
 // --------------------------------------------- LINE readiness probe (CRD 2774-2779)
@@ -592,6 +613,149 @@ pub async fn facebook_webhook(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("{failed} of {total} Facebook events failed"),
         );
+    }
+    batch_ok()
+}
+
+// ---------------------------- Shopee Webchat push delivery
+
+pub async fn shopee_webhook(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let ip = client_ip(&headers);
+
+    let declared = headers
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok());
+    if declared.is_some_and(|n| n > MAX_BODY_BYTES) || body.len() > MAX_BODY_BYTES {
+        security_event(
+            &state.db,
+            "payload_too_large",
+            "medium",
+            "shopee",
+            ip.as_deref(),
+            json!({ "size": declared.unwrap_or(body.len()) }),
+        )
+        .await;
+        return fail(StatusCode::PAYLOAD_TOO_LARGE, "Payload too large");
+    }
+
+    let Some(secret) = state.config.shopee_partner_key.as_deref() else {
+        return fail(
+            StatusCode::UNAUTHORIZED,
+            "Shopee partner key is not configured",
+        );
+    };
+    let Some(signature) = headers
+        .get("x-shopee-signature")
+        .or_else(|| headers.get("authorization"))
+        .and_then(|v| v.to_str().ok())
+    else {
+        security_event(
+            &state.db,
+            "missing_signature",
+            "high",
+            "shopee",
+            ip.as_deref(),
+            json!({}),
+        )
+        .await;
+        return fail(StatusCode::UNAUTHORIZED, "Missing signature header");
+    };
+    if !valid_shopee_signature(secret, &body, signature) {
+        security_event(
+            &state.db,
+            "invalid_signature",
+            "high",
+            "shopee",
+            ip.as_deref(),
+            json!({}),
+        )
+        .await;
+        return fail(StatusCode::UNAUTHORIZED, "Invalid signature");
+    }
+
+    let Ok(payload) = serde_json::from_slice::<Value>(&body) else {
+        return fail(StatusCode::BAD_REQUEST, "Invalid JSON payload");
+    };
+    if !payload.is_object() {
+        return fail(StatusCode::BAD_REQUEST, "Invalid webhook payload");
+    }
+
+    let shop_id = value_id(payload.get("shop_id").or_else(|| payload.get("shopId")));
+    let Some(shop_id) = shop_id else {
+        return fail(StatusCode::BAD_REQUEST, "shop_id is required");
+    };
+    let message = payload
+        .get("data")
+        .filter(|v| v.is_object())
+        .or_else(|| payload.get("message").filter(|v| v.is_object()))
+        .unwrap_or(&payload);
+
+    let buyer_id = value_id(
+        message
+            .get("buyer_id")
+            .or_else(|| message.get("buyerId"))
+            .or_else(|| message.get("from_id"))
+            .or_else(|| message.get("fromId"))
+            .or_else(|| message.get("sender_id"))
+            .or_else(|| message.get("senderId")),
+    );
+    let Some(buyer_id) = buyer_id else {
+        return batch_ok();
+    };
+    if buyer_id == shop_id {
+        return batch_ok();
+    }
+
+    let platform_user_id = shopee_platform_user_id(&shop_id, &buyer_id);
+    let mut normalized = parse::normalize_shopee(message);
+    normalized.metadata.insert(
+        "shopId".into(),
+        json!(shop_id.parse::<i64>().ok().unwrap_or_default()),
+    );
+    normalized.metadata.insert(
+        "buyerId".into(),
+        json!(buyer_id.parse::<i64>().ok().unwrap_or_default()),
+    );
+    normalized.metadata.insert(
+        "shopeePlatformUserId".into(),
+        json!(platform_user_id.clone()),
+    );
+
+    let mid = value_id(
+        message
+            .get("message_id")
+            .or_else(|| message.get("messageId"))
+            .or_else(|| message.get("msg_id"))
+            .or_else(|| message.get("msgId")),
+    );
+    let result = ingest::ingest_message(
+        &state,
+        InboundMessage {
+            platform: "shopee",
+            platform_user_id: &platform_user_id,
+            default_display_name: ingest::default_display_name("shopee"),
+            platform_message_id: mid.as_deref(),
+            normalized,
+        },
+    )
+    .await;
+
+    if let Err(e) = result {
+        security_event(
+            &state.db,
+            "webhook_processing_failure",
+            "high",
+            "shopee",
+            ip.as_deref(),
+            json!({ "lastError": e }),
+        )
+        .await;
+        return fail(StatusCode::INTERNAL_SERVER_ERROR, "Shopee event failed");
     }
     batch_ok()
 }

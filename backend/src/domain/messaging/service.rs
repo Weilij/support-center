@@ -187,8 +187,8 @@ pub async fn process_delayed(state: &AppState, delayed_id: &str) -> Value {
         // External platforms dispatch through the platform gateway (CRD 993).
         // The stub gateway only completes LINE pushes; a gateway error marks
         // the item failed, matching the documented pending -> failed outcome.
-        "line" | "facebook" => {
-            let gateway = OutboundGateway::from_config(&state.config);
+        "line" | "facebook" | "instagram" | "shopee" => {
+            let gateway = OutboundGateway::from_state(state);
             match gateway.send_batch(&platform, &recipient, &[OutboundItem::text(content)]).await {
                 Ok(platform_message_id) => Ok(json!({
                     "success": true,
@@ -429,7 +429,7 @@ pub async fn recall_sent_message(state: &AppState, message_id: &str, user_id: &s
     }
     write_recall_log(&state.db, message_id, user_id, "successful").await;
 
-    let gateway = OutboundGateway::from_config(&state.config);
+    let gateway = OutboundGateway::from_state(state);
     match platform.as_deref() {
         Some("line") => {
             // LINE offers no native unsend through its API: send a

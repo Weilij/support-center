@@ -55,6 +55,7 @@ fn auth_user(id: &str, role: &str, team_role: Option<(i64, &str)>) -> AuthUser {
         email: format!("{id}@rtm.io"),
         display_name: id.to_string(),
         role: role.to_string(),
+        position: None,
         primary_team_id: team_role.map(|(t, _)| t),
         teams: team_role
             .map(|(team_id, role)| {
