@@ -11,7 +11,10 @@ use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
-use crate::domain::auth::{store, tokens::Claims};
+use crate::domain::auth::{
+    store,
+    tokens::{Claims, AUDIENCE, ISSUER},
+};
 use crate::middleware::auth::TEAM_CACHE_TTL;
 use crate::state::AppState;
 
@@ -124,6 +127,8 @@ pub async fn authorize(
     //    case can echo expiry details (CRD 615-616).
     let mut validation = Validation::new(Algorithm::HS256);
     validation.validate_exp = false;
+    validation.set_issuer(&[ISSUER]);
+    validation.set_audience(&[AUDIENCE]);
     let claims = match decode::<Claims>(
         token,
         &DecodingKey::from_secret(state.config.jwt_secret.as_bytes()),
@@ -191,7 +196,11 @@ pub async fn authorize(
 
     // 7. System role: admin or agent only; a missing role defaults to agent
     //    (CRD 607, 619).
-    let role = if claims.role.trim().is_empty() { "agent".to_string() } else { claims.role.clone() };
+    let role = if claims.role.trim().is_empty() {
+        "agent".to_string()
+    } else {
+        claims.role.clone()
+    };
     if role != "admin" && role != "agent" {
         let mut extra = Map::new();
         extra.insert("allowedRoles".into(), json!(["admin", "agent"]));
@@ -247,12 +256,11 @@ pub async fn authorize(
             let allowed = match state.realtime.cached_access(&identity.user_id, cid) {
                 Some(v) => v,
                 None => {
-                    let team: Result<Option<Option<i64>>, sqlx::Error> = sqlx::query_scalar(
-                        "SELECT team_id FROM conversations WHERE id = $1",
-                    )
-                    .bind(cid)
-                    .fetch_optional(&state.db)
-                    .await;
+                    let team: Result<Option<Option<i64>>, sqlx::Error> =
+                        sqlx::query_scalar("SELECT team_id FROM conversations WHERE id = $1")
+                            .bind(cid)
+                            .fetch_optional(&state.db)
+                            .await;
                     let allowed = match team {
                         Ok(Some(None)) => true, // unassigned shared pool
                         Ok(Some(Some(team_id))) => identity.team_ids.contains(&team_id),
@@ -276,5 +284,8 @@ pub async fn authorize(
         }
     }
 
-    Ok(GateOutcome { exp: claims.exp, identity })
+    Ok(GateOutcome {
+        exp: claims.exp,
+        identity,
+    })
 }
