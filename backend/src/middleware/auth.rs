@@ -30,6 +30,7 @@ pub struct AuthUser {
     pub email: String,
     pub display_name: String,
     pub role: String,
+    pub position: Option<String>,
     pub primary_team_id: Option<i64>,
     pub teams: Vec<TeamMembership>,
     pub jti: Option<String>,
@@ -37,9 +38,46 @@ pub struct AuthUser {
     pub context_team_id: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Area {
+    Daily,
+    Ops,
+    Analytics,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Position {
+    Agent,
+    Supervisor,
+    SystemAdmin,
+}
+
+fn position_for(role: &str, position: Option<&str>) -> Position {
+    match position {
+        Some("system_admin") => Position::SystemAdmin,
+        Some("supervisor") => Position::Supervisor,
+        Some("agent") => Position::Agent,
+        _ if role == "admin" => Position::SystemAdmin,
+        _ => Position::Agent,
+    }
+}
+
+fn position_allows(role: &str, position: Option<&str>, area: Area) -> bool {
+    match position_for(role, position) {
+        Position::Agent => area == Area::Daily,
+        Position::Supervisor => matches!(area, Area::Daily | Area::Ops | Area::Analytics),
+        Position::SystemAdmin => true,
+    }
+}
+
 impl AuthUser {
     pub fn is_admin(&self) -> bool {
         self.role == "admin"
+    }
+
+    pub fn can_access_area(&self, area: Area) -> bool {
+        position_allows(&self.role, self.position.as_deref(), area)
     }
 
     pub fn team_role(&self, team_id: i64) -> Option<&str> {
@@ -177,6 +215,7 @@ pub async fn authenticate(
         email: agent.email,
         display_name: agent.display_name,
         role: agent.role,
+        position: agent.position,
         primary_team_id,
         teams,
         jti: Some(claims.jti),
@@ -199,6 +238,39 @@ pub async fn require_auth(
         }
         Err(e) => e.into_response(),
     }
+}
+
+async fn require_area_auth(
+    state: Arc<AppState>,
+    mut req: Request<Body>,
+    next: Next,
+    area: Area,
+) -> Response {
+    let headers = req.headers().clone();
+    match authenticate(&state, &headers).await {
+        Ok(user) if user.can_access_area(area) => {
+            req.extensions_mut().insert(user);
+            next.run(req).await
+        }
+        Ok(_) => AppError::Forbidden("Insufficient position for this area".into()).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+pub async fn require_ops_area(
+    State(state): State<Arc<AppState>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    require_area_auth(state, req, next, Area::Ops).await
+}
+
+pub async fn require_analytics_area(
+    State(state): State<Arc<AppState>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    require_area_auth(state, req, next, Area::Analytics).await
 }
 
 /// Optional authentication gate (CRD lines 523-529): attaches `AuthUser` when a valid
@@ -258,7 +330,7 @@ pub async fn require_admin(
 
 #[cfg(test)]
 mod tests {
-    use super::constant_time_eq;
+    use super::{constant_time_eq, position_allows, Area};
 
     #[test]
     fn constant_time_eq_requires_identical_equal_length_values() {
@@ -266,5 +338,33 @@ mod tests {
         assert!(!constant_time_eq("secret-token", "secret-tokem"));
         assert!(!constant_time_eq("secret-token", "secret-token-longer"));
         assert!(!constant_time_eq("secret-token", ""));
+    }
+
+    #[test]
+    fn agent_position_is_limited_to_daily_area() {
+        assert!(position_allows("agent", Some("agent"), Area::Daily));
+        assert!(!position_allows("agent", Some("agent"), Area::Ops));
+        assert!(!position_allows("agent", Some("agent"), Area::Analytics));
+        assert!(!position_allows("agent", Some("agent"), Area::System));
+    }
+
+    #[test]
+    fn supervisor_position_allows_ops_and_analytics_but_not_system() {
+        assert!(position_allows("agent", Some("supervisor"), Area::Daily));
+        assert!(position_allows("agent", Some("supervisor"), Area::Ops));
+        assert!(position_allows(
+            "agent",
+            Some("supervisor"),
+            Area::Analytics
+        ));
+        assert!(!position_allows("agent", Some("supervisor"), Area::System));
+    }
+
+    #[test]
+    fn invalid_position_falls_back_to_role_derived_position() {
+        assert!(position_allows("admin", Some("unknown"), Area::System));
+        assert!(position_allows("admin", None, Area::Analytics));
+        assert!(!position_allows("agent", Some("unknown"), Area::Ops));
+        assert!(!position_allows("agent", None, Area::Analytics));
     }
 }

@@ -1,6 +1,5 @@
 // Frontend access-control (spec 2026-06-14). Three positions map to feature
-// areas; the backend stores `position` but does not enforce it — all gating is
-// here.
+// areas; the backend mirrors this for protected route groups.
 
 export type Position = 'system_admin' | 'supervisor' | 'agent'
 export type Area = 'daily' | 'ops' | 'analytics' | 'system'

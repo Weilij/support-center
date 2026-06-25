@@ -14,6 +14,7 @@ use sqlx::Transaction;
 use std::sync::Arc;
 
 use crate::error::AppError;
+use crate::middleware::auth::Area;
 use crate::state::AppState;
 
 use super::store;
@@ -53,6 +54,7 @@ struct Caller {
     id: String,
     name: String,
     role: String,
+    analytics_allowed: bool,
 }
 
 /// Reads the caller from the session, or — outside production — from the test-only
@@ -72,13 +74,29 @@ async fn resolve_caller(state: &Arc<AppState>, headers: &HeaderMap) -> Option<Ca
                 .map(str::to_string)
                 .or_else(|| agent.as_ref().map(|a| a.role.clone()))
                 .unwrap_or_else(|| "agent".into());
-            return Some(Caller { id, name, role });
+            let position = v
+                .get("position")
+                .and_then(Value::as_str)
+                .or_else(|| agent.as_ref().and_then(|a| a.position.as_deref()));
+            let analytics_allowed =
+                role == "admin" || matches!(position, Some("supervisor" | "system_admin"));
+            return Some(Caller {
+                id,
+                name,
+                role,
+                analytics_allowed,
+            });
         }
     }
     crate::middleware::auth::authenticate(state, headers)
         .await
         .ok()
-        .map(|u| Caller { id: u.id, name: u.display_name, role: u.role })
+        .map(|u| Caller {
+            analytics_allowed: u.can_access_area(Area::Analytics),
+            id: u.id,
+            name: u.display_name,
+            role: u.role,
+        })
 }
 
 // --------------------------------------------------------------------- restore strategies
@@ -682,6 +700,11 @@ pub async fn restore_activity(
     let caller = resolve_caller(&state, &headers)
         .await
         .ok_or_else(|| AppError::Unauthorized("Unauthenticated".into()))?;
+    if !caller.analytics_allowed {
+        return Err(AppError::Forbidden(
+            "Insufficient position for this area".into(),
+        ));
+    }
     let policy = details.get("restorePolicy").cloned().unwrap_or(Value::Null);
     let requires_admin = policy.get("requiresAdmin").and_then(Value::as_bool).unwrap_or(false);
     let is_admin = caller.role == "admin";

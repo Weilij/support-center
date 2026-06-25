@@ -13,7 +13,7 @@ use axum::routing::{delete, get, post, put};
 use axum::Router;
 use std::sync::Arc;
 
-use crate::middleware::auth::require_auth;
+use crate::middleware::auth::require_ops_area;
 use crate::state::AppState;
 
 pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
@@ -97,7 +97,7 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/api/teams/{id}/qr-codes/{qrCodeId}/deactivate",
             put(handlers::deactivate_qr),
         )
-        .layer(from_fn_with_state(state.clone(), require_auth));
+        .layer(from_fn_with_state(state.clone(), require_ops_area));
 
     public.merge(authed)
 }

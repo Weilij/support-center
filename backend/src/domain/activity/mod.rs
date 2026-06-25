@@ -13,7 +13,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use std::sync::Arc;
 
-use crate::middleware::auth::require_auth;
+use crate::middleware::auth::require_analytics_area;
 use crate::state::AppState;
 
 pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
@@ -30,7 +30,7 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/activities/stats/custom", get(handlers::custom_stats))
         .route("/api/activities/user/{userId}/stats", get(handlers::user_stats))
         .route("/api/activities/{id}", get(handlers::get_activity))
-        .layer(from_fn_with_state(state.clone(), require_auth));
+        .layer(from_fn_with_state(state.clone(), require_analytics_area));
 
     // The restore operation authenticates inside the handler: the CRD's observable
     // ordering loads and validates the entry (404 / NOT_REVERSIBLE / ALREADY_RESTORED)
