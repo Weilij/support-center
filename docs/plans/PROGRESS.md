@@ -39,6 +39,41 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   - [ ] §8.5 traceability matrix check (6689-6723)
 - [x] Phase 8: web installer — provisioning service (§9.1) + setup wizard (§9.2); real cloud calls remain TODO(cloud)
 
+## Current Integration Status
+
+Track B platform work has moved beyond the original 2026-06-12
+external-stub boundary:
+
+- [x] LINE outbound: `OutboundGateway` sends real Push API requests when
+      `LINE_CHANNEL_ACCESS_TOKEN` is configured; dev/test without a token keeps
+      the documented no-network `stub-line-*` success.
+- [x] LINE media: inbound downloadable message content is fetched through the
+      LINE content API and served through the authenticated media proxy; the
+      frontend renders image, sticker, video, audio, file, and location bubbles.
+- [x] Outbound attachments: composer upload/drag/paste sends image, video,
+      audio, and file attachments; LINE receives native media where supported
+      and file links otherwise.
+- [x] Facebook Messenger: Send API dispatch is wired through
+      `FACEBOOK_PAGE_ACCESS_TOKEN`; webhook handling covers messages, echo,
+      postback, delivery, and read receipts.
+- [x] Instagram Messaging: dispatch uses `INSTAGRAM_ACCESS_TOKEN` with Facebook
+      page-token fallback; webhook handling covers messages, echo, postback,
+      seen, reactions, and story events.
+- [x] Customer profile enrichment: LINE/Facebook/Instagram profile name and
+      avatar lookup backfills placeholder customers when tokens are available.
+- [x] Shopee foundation: signed Open Platform v2 URLs, OAuth token exchange,
+      encrypted per-shop token storage, refresh-before-expiry, and callback
+      wiring are implemented.
+
+Remaining external/infrastructure boundaries:
+
+- [ ] Shopee full message ingestion/delivery beyond the auth/signing/token
+      foundation.
+- [ ] Installer real cloud-provider provisioning (`TODO(cloud)`).
+- [ ] Multi-instance realtime fan-out (`TODO(scale-out)`).
+- [ ] Optional external alert/notification sinks and live welcome-reply push
+      polish where TODO markers remain.
+
 ## Session log
 
 - 2026-06-11: Read CRD §0/§7/§1.1; wrote design doc + Phase 1 plan; started Phase 1.
@@ -106,19 +141,28 @@ Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss
   Then Phase 8 installer (CRD 6724-6979).
 - 2026-06-12 (cont. 15): installer binary committed. All 9 CRD phases now
   have running implementations. Remaining polish: §9.2 wizard UI, §8.5
-  traceability sweep, TODO(cloud)/TODO(channels) live integrations.
+  traceability sweep, TODO(cloud)/TODO(channels) live integrations. The
+  channel TODO portion was later superseded by the 2026-06-21 through
+  2026-06-25 Track B work summarized above.
 - 2026-06-12 (FINAL): setup wizard (b1f9252). §8.5 traceability sweep PASSED:
   all 17 frontend API call paths map to registered backend routes (348 total).
-  ALL CRD SECTIONS (§1-§9) IMPLEMENTED. Open items are external-integration
-  stubs only: TODO(channels) live LINE/Facebook APIs, TODO(cloud) provider
-  calls, TODO(scale-out) multi-instance realtime — each needs real
-  credentials/infrastructure to implement.
+  ALL CRD SECTIONS (§1-§9) IMPLEMENTED. At that checkpoint, open items were
+  external-integration stubs: TODO(channels) live LINE/Facebook APIs,
+  TODO(cloud) provider calls, TODO(scale-out) multi-instance realtime. The
+  channel status has since advanced to real LINE/Facebook/Instagram gateways
+  when credentials are configured.
 - 2026-06-12 (verification): hooks-order fix (3edaccc), CI (f24ae31), frontend
   vitest 7 tests (3e438ba), installer tests + .env.example (34419cc).
   FINAL FULL PASS: backend+installer 545 tests green, clippy 0 warnings,
-  frontend 7 tests + build green. Project complete; only external-credential
-  stubs (TODO channels/cloud/scale-out) remain by design.
+  frontend 7 tests + build green. Project complete for the original CRD; later
+  Track B platform integration work reduced the channel stub boundary.
 - 2026-06-12 (deploy): docker compose stack RUNTIME-VERIFIED (05829de) —
   fixed volume ownership, healthcheck without wget, nginx upstream ordering,
   lockfile platform flags. Backend healthy via nginx proxy, SPA serves.
   Project fully delivered: code + 552 tests + smoke + containers + docs.
+- 2026-06-25: Documentation refresh — README and this progress log updated to
+  reflect the current platform state: real credentialed LINE/Facebook/Instagram
+  gateways, LINE media proxy and attachment send, profile avatar/name
+  enrichment, and Shopee auth/signing/token foundation. Remaining work is
+  Shopee full messaging, cloud provisioning, multi-instance realtime fan-out,
+  and optional external notification/welcome-reply polish.

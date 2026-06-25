@@ -1,8 +1,9 @@
 # Multi-Channel Customer Support System (MCSS)
 
 A clean-room re-implementation of a multi-channel customer support platform
-(LINE Official Account + Facebook Messenger), built entirely from the
-behavioral specification in [`Rust_CRD.md`](Rust_CRD.md).
+(LINE Official Account, Facebook Messenger, Instagram Messaging, and Shopee
+foundation), built entirely from the behavioral specification in
+[`Rust_CRD.md`](Rust_CRD.md).
 
 ## Architecture
 
@@ -15,10 +16,12 @@ behavioral specification in [`Rust_CRD.md`](Rust_CRD.md).
 **Backend** — 23 domain modules covering the full spec surface: auth with
 refresh rotation + reuse detection, conversations/messaging with async
 delivery, teams/agents/customers/tags, channel integrations with encrypted
-credentials, LINE/Facebook webhook ingestion, auto-reply engine, delayed
-messages, file management with signed URLs, WebSocket realtime (rooms,
-broadcasts, presence, collaboration), background job queue with retries +
-dead-letter, notifications/reminders/alerting, monitoring + circuit breaker,
+credentials, LINE/Facebook/Instagram webhook ingestion, real outbound gateway
+dispatch for LINE, Facebook, and Instagram when platform tokens are configured,
+LINE media fetch/proxy, auto-reply engine, delayed messages, file management
+with signed URLs, WebSocket realtime (rooms, broadcasts, presence,
+collaboration), background job queue with retries + dead-letter,
+notifications/reminders/alerting, monitoring + circuit breaker,
 analytics/dashboards, reports + scheduling, system administration.
 **545 tests (integration + installer); clippy-clean.**
 
@@ -43,10 +46,13 @@ cd frontend && npm install && npm run dev
 cd backend && cargo run --bin installer
 ```
 
-Key environment variables (see `backend/src/config.rs`): `DATABASE_URL`, `JWT_SECRET`,
-`ENCRYPTION_KEY` (32-byte hex, enables credential encryption at rest),
-`LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `FACEBOOK_APP_SECRET`,
-`FACEBOOK_VERIFY_TOKEN`, `LIFF_ID`, `FRONTEND_URL`, `BACKEND_URL`.
+Key environment variables (see `backend/src/config.rs`): `DATABASE_URL`,
+`JWT_SECRET`, `ENCRYPTION_KEY` (32-byte hex, enables credential encryption at
+rest), `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `LINE_BOT_ID`,
+`FACEBOOK_APP_SECRET` or `FB_APP_SECRET`, `FACEBOOK_VERIFY_TOKEN`,
+`FACEBOOK_PAGE_ACCESS_TOKEN`, `INSTAGRAM_ACCESS_TOKEN`, `LIFF_ID`,
+`FRONTEND_URL`, `BACKEND_URL`, `PUBLIC_STORAGE_URL`, `FILE_SIGNING_SECRET`,
+`SHOPEE_PARTNER_ID`, `SHOPEE_PARTNER_KEY`, `SHOPEE_HOST`.
 
 Bootstrap demo data (admin account, team, sample conversations):
 
@@ -84,12 +90,22 @@ cd frontend && npm run build      # type-check + bundle
 
 ## Deliberate boundaries
 
-External integrations are stubbed at clearly marked points, each requiring
-real credentials/infrastructure to complete:
+External integrations that still require real credentials/infrastructure are
+kept at clearly marked boundaries:
 
-- `TODO(channels)` — live LINE/Facebook API delivery and media download
-- `TODO(cloud)` — installer's real cloud-provider provisioning
-- `TODO(scale-out)` — multi-instance realtime fan-out
+- Platform tokens are optional in dev/test. With tokens configured, outbound
+  dispatch uses the real LINE Push API and Meta Send API for Facebook and
+  Instagram. Without tokens, LINE keeps the documented no-network stub success
+  and other platforms report unsupported delivery.
+- LINE inbound media download is implemented through the channel token and an
+  authenticated media proxy. Other platform media handling currently falls back
+  to stored/proxied URLs or text link delivery where applicable.
+- Shopee currently has the Open Platform foundation: signed requests, OAuth
+  token exchange, encrypted per-shop token storage, refresh-before-expiry, and
+  callback wiring. Full Shopee customer-message ingestion/delivery remains
+  future integration work.
+- `TODO(cloud)` — installer's real cloud-provider provisioning.
+- `TODO(scale-out)` — multi-instance realtime fan-out.
 
 Everything else — including every documented status code, envelope shape,
 authorization rule, and side effect — is implemented per the CRD, with the
