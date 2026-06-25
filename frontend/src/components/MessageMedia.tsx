@@ -109,7 +109,7 @@ export function MessageMedia({ convId, msgId, messageType, media, content, srcUr
     case 'audio':
       return <audio src={mediaUrl} controls onError={() => setFailed(true)} />
     case 'file': {
-      const name = media?.fileName != null ? String(media.fileName) : 'file'
+      const name = media?.fileName != null ? String(media.fileName) : (content ?? 'file')
       const size = fmtSize(media?.fileSize)
       return (
         <a href={mediaUrl} download={name} className="cs-media-file" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>

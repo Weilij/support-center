@@ -62,4 +62,13 @@ describe('MessageMedia', () => {
     expect(isMediaKind('image')).toBe(true)
     expect(isMediaKind('text')).toBe(false)
   })
+
+  it('file branch falls back to content for the filename (agent attachment)', () => {
+    const { container } = render(
+      <MessageMedia {...base} messageType="file" srcUrl="https://files/report.pdf" content="report.pdf" />,
+    )
+    const a = container.querySelector('a')
+    expect(a?.getAttribute('href')).toBe('https://files/report.pdf')
+    expect(a?.textContent).toContain('report.pdf')
+  })
 })
