@@ -386,6 +386,7 @@ function Thread({
 
   // ── Composer attachments (button / drop / paste) ────────────────────────────
   const fileInput = useRef<HTMLInputElement | null>(null)
+  const objectUrls = useRef<string[]>([])
   const [attachPending, setAttachPending] = useState<Array<{ id: string; name: string; mime: string; previewUrl?: string }>>([])
 
   const addFiles = useCallback(async (files: FileList | File[]) => {
@@ -393,14 +394,22 @@ function Thread({
     for (const file of Array.from(files)) {
       const { attachment, error } = await uploadConversationFile(convId, file)
       if (error || !attachment) { setToast(`上傳失敗：${error ?? file.name}`); continue }
+      const previewUrl = file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined
+      if (previewUrl) objectUrls.current.push(previewUrl)
       setAttachPending((p) => [...p, {
         id: attachment.id,
         name: attachment.filename ?? file.name,
         mime: attachment.contentType ?? file.type,
-        previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
+        previewUrl,
       }])
     }
   }, [convId])
+
+  // Revoke all tracked composer object URLs on unmount.
+  useEffect(() => () => {
+    objectUrls.current.forEach((u) => URL.revokeObjectURL(u))
+    objectUrls.current = []
+  }, [])
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
@@ -416,6 +425,11 @@ function Thread({
 
   // Load conversation meta + messages on convId change
   useEffect(() => {
+    // Drop + revoke any un-sent composer chips from the previous conversation.
+    setAttachPending((prev) => {
+      prev.forEach((p) => { if (p.previewUrl) URL.revokeObjectURL(p.previewUrl) })
+      return []
+    })
     if (!convId) { setMessages([]); return }
     // Fetch meta (platform, platformUserId, teamId, customerId)
     void get<{
