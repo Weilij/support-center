@@ -185,6 +185,25 @@ async fn create_session_validation_errors() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
+#[tokio::test]
+async fn create_session_denies_agent_without_conversation_team_access() {
+    let app = spawn_app().await;
+    let team_a = app.seed_team("A").await;
+    let team_b = app.seed_team("B").await;
+    let agent = agent_token(&app, "agent@test.dev", Some(team_a)).await;
+    let conv = seed_conv(&app, Some(team_b)).await;
+
+    let (status, _, _) = app
+        .request(
+            "POST",
+            "/api/sessions",
+            Some(&agent),
+            Some(json!({"conversationId": conv, "senderType": "customer"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
 // ------------------------------------------------------------------------- list
 
 #[tokio::test]
@@ -506,6 +525,22 @@ async fn session_messages_paginated() {
     let (status, _, _) =
         app.request("GET", "/api/sessions/bogus/messages", Some(&token), None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn session_messages_denies_agent_without_team_access() {
+    let app = spawn_app().await;
+    let team_a = app.seed_team("A").await;
+    let team_b = app.seed_team("B").await;
+    let agent = agent_token(&app, "agent@test.dev", Some(team_a)).await;
+    let conv = seed_conv(&app, Some(team_b)).await;
+    let sid = app.seed_session(&conv, true, None, None, None, 1).await;
+    app.seed_message_full(&conv, "customer", "secret", None, Some(&sid), Some(1)).await;
+
+    let (status, _, _) = app
+        .request("GET", &format!("/api/sessions/{sid}/messages"), Some(&agent), None)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 // ----------------------------------------------------------------- session health
@@ -840,6 +875,25 @@ async fn get_or_create_requires_all_three_fields() {
             app.request("POST", "/api/sessions/get-or-create", Some(&token), Some(body)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
+}
+
+#[tokio::test]
+async fn get_or_create_denies_agent_without_conversation_team_access() {
+    let app = spawn_app().await;
+    let team_a = app.seed_team("A").await;
+    let team_b = app.seed_team("B").await;
+    let agent = agent_token(&app, "agent@test.dev", Some(team_a)).await;
+    let conv = seed_conv(&app, Some(team_b)).await;
+
+    let (status, _, _) = app
+        .request(
+            "POST",
+            "/api/sessions/get-or-create",
+            Some(&agent),
+            Some(json!({"conversation_id": conv, "messageContent": "hello", "senderType": "customer"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 // ---------------------------------------------------------------- detect boundary

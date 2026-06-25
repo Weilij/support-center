@@ -114,6 +114,22 @@ async fn has_team_access(
     })
 }
 
+async fn has_conversation_access(
+    state: &AppState,
+    user: &AuthUser,
+    conversation_id: &str,
+) -> Result<bool> {
+    let team_id: Option<i64> = sqlx::query_scalar("SELECT team_id FROM conversations WHERE id = $1")
+        .bind(conversation_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
+    if user.is_admin() {
+        return Ok(true);
+    }
+    Ok(team_id.is_some_and(|id| user.teams.iter().any(|t| t.team_id == id)))
+}
+
 fn session_not_found() -> AppError {
     AppError::NotFound("Session not found".into())
 }
@@ -190,7 +206,7 @@ pub async fn unmatched() -> Response {
 
 pub async fn create_session(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     body: JsonBody<Value>,
 ) -> Result {
     let body = parse_json(body)?;
@@ -199,6 +215,9 @@ pub async fn create_session(
         .and_then(Value::as_str)
         .ok_or_else(|| bad("conversationId is required"))?;
     let conversation_id = require_uuid(conversation_id, "conversationId")?;
+    if !has_conversation_access(&state, &user, &conversation_id).await? {
+        return Err(AppError::Forbidden("You do not have access to this conversation".into()));
+    }
     let sender_type = body
         .get("senderType")
         .and_then(Value::as_str)
@@ -637,11 +656,15 @@ pub struct PageQuery {
 
 pub async fn session_messages(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(raw_id): Path<String>,
     Query(q): Query<PageQuery>,
 ) -> Result {
     let id = require_uuid(&raw_id, "session ID")?;
+    let session = store::find(&state.db, &id).await?.ok_or_else(session_not_found)?;
+    if !has_team_access(&state, &user, &session).await? {
+        return Err(AppError::Forbidden("You do not have access to this session".into()));
+    }
     let page = q.page.as_deref().and_then(|v| v.parse::<i64>().ok()).unwrap_or(1).max(1);
     let page_size =
         q.page_size.as_deref().and_then(|v| v.parse::<i64>().ok()).unwrap_or(20).clamp(1, 100);
@@ -1129,7 +1152,7 @@ pub async fn batch(
 
 pub async fn get_or_create(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     body: JsonBody<Value>,
 ) -> Result {
     let body = parse_json(body)?;
@@ -1142,6 +1165,9 @@ pub async fn get_or_create(
         return Err(bad("conversation_id, messageContent and senderType are required"));
     };
     let conversation_id = require_uuid(conversation_id, "conversation_id")?;
+    if !has_conversation_access(&state, &user, &conversation_id).await? {
+        return Err(AppError::Forbidden("You do not have access to this conversation".into()));
+    }
     require_enum(sender_type, SENDER_TYPES, "senderType")?;
 
     let current = store::latest_active(&state.db, &conversation_id).await?;
