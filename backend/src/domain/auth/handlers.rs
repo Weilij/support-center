@@ -12,24 +12,13 @@ use crate::envelope;
 use crate::error::AppError;
 use crate::middleware::auth::{is_manager_or_admin, AuthUser};
 use crate::middleware::cookies;
+use crate::middleware::rate_limit::TrustedClientIp;
 use crate::state::AppState;
 
 use super::store::{self, AgentRow};
 use super::tokens::{self, Claims, TeamClaim};
 
 type Result<T = Response> = std::result::Result<T, AppError>;
-
-fn client_ip(headers: &HeaderMap) -> Option<String> {
-    for h in ["cf-connecting-ip", "x-forwarded-for", "x-real-ip"] {
-        if let Some(v) = headers.get(h).and_then(|v| v.to_str().ok()) {
-            let first = v.split(',').next().unwrap_or(v).trim();
-            if !first.is_empty() {
-                return Some(first.to_string());
-            }
-        }
-    }
-    None
-}
 
 fn user_agent(headers: &HeaderMap) -> Option<String> {
     headers
@@ -90,9 +79,11 @@ pub struct LoginBody {
 
 pub async fn login(
     State(state): State<Arc<AppState>>,
+    Extension(client_ip): Extension<TrustedClientIp>,
     headers: HeaderMap,
     Json(body): Json<LoginBody>,
 ) -> Result {
+    let ip = client_ip.0;
     let email = body.email.as_deref().unwrap_or("").trim().to_string();
     let password = body.password.as_deref().unwrap_or("").trim().to_string();
     if email.is_empty() || password.is_empty() {
@@ -151,7 +142,7 @@ pub async fn login(
         "auth",
         None,
         Some(json!({"method": "password"})),
-        client_ip(&headers).as_deref(),
+        ip.as_deref(),
         user_agent(&headers).as_deref(),
     )
     .await;
@@ -189,9 +180,11 @@ pub struct RegisterBody {
 pub async fn register(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<AuthUser>,
+    Extension(client_ip): Extension<TrustedClientIp>,
     headers: HeaderMap,
     Json(body): Json<RegisterBody>,
 ) -> Result {
+    let ip = client_ip.0;
     if !caller.is_admin() {
         return Err(AppError::Forbidden("Administrator role required".into()));
     }
@@ -279,7 +272,7 @@ pub async fn register(
             "email": email, "displayName": display_name, "role": role,
             "teamId": body.team_id, "reversible": true,
         })),
-        client_ip(&headers).as_deref(),
+        ip.as_deref(),
         user_agent(&headers).as_deref(),
     )
     .await;
@@ -306,9 +299,11 @@ pub struct LogoutBody {
 
 pub async fn logout(
     State(state): State<Arc<AppState>>,
+    Extension(client_ip): Extension<TrustedClientIp>,
     headers: HeaderMap,
     body: Option<Json<LogoutBody>>,
 ) -> Result {
+    let ip = client_ip.0;
     let session_id = headers
         .get("x-session-id")
         .and_then(|v| v.to_str().ok())
@@ -354,7 +349,7 @@ pub async fn logout(
     store::log_activity(
         &state.db, &agent.id, &agent.display_name, &agent.role,
         "logout", "auth", None, None,
-        client_ip(&headers).as_deref(), user_agent(&headers).as_deref(),
+        ip.as_deref(), user_agent(&headers).as_deref(),
     )
     .await;
 
@@ -378,9 +373,11 @@ pub struct RefreshBody {
 
 pub async fn refresh(
     State(state): State<Arc<AppState>>,
+    Extension(client_ip): Extension<TrustedClientIp>,
     headers: HeaderMap,
     Json(body): Json<RefreshBody>,
 ) -> Result {
+    let ip = client_ip.0;
     let raw = body
         .refresh_token
         .filter(|t| !t.is_empty())
@@ -405,7 +402,7 @@ pub async fn refresh(
         let _ = store::revoke_jti(&state.db, &claims.jti, Some(&claims.sub), Some(claims.exp)).await;
         tracing::warn!(
             user = %claims.sub,
-            ip = ?client_ip(&headers),
+            ip = ?ip,
             user_agent = ?user_agent(&headers),
             "refresh token reuse detected"
         );
@@ -485,9 +482,11 @@ pub struct UpdateMeBody {
 pub async fn update_me(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<AuthUser>,
+    Extension(client_ip): Extension<TrustedClientIp>,
     headers: HeaderMap,
     Json(body): Json<UpdateMeBody>,
 ) -> Result {
+    let ip = client_ip.0;
     // Strict allowlist: only displayName is self-service editable (CRD 192).
     let Some(raw) = body.display_name else {
         return Err(AppError::BadRequest("No updatable field provided".into()));
@@ -521,7 +520,7 @@ pub async fn update_me(
             "old": {"displayName": agent.display_name},
             "new": {"displayName": name},
         })),
-        client_ip(&headers).as_deref(), user_agent(&headers).as_deref(),
+        ip.as_deref(), user_agent(&headers).as_deref(),
     )
     .await;
 
@@ -542,9 +541,11 @@ pub struct ChangePasswordBody {
 pub async fn change_password(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<AuthUser>,
+    Extension(client_ip): Extension<TrustedClientIp>,
     headers: HeaderMap,
     Json(body): Json<ChangePasswordBody>,
 ) -> Result {
+    let ip = client_ip.0;
     let current = body.current_password.unwrap_or_default();
     let new = body.new_password.unwrap_or_default();
     if current.is_empty() || new.is_empty() {
@@ -561,7 +562,7 @@ pub async fn change_password(
             &state.db, &user.id, &user.display_name, &user.role,
             "change_password_failed", "agent", Some(&user.id),
             Some(json!({"reason": "wrong current password", "security": true})),
-            client_ip(&headers).as_deref(), user_agent(&headers).as_deref(),
+            ip.as_deref(), user_agent(&headers).as_deref(),
         )
         .await;
         return Err(AppError::Unauthorized("Current password is incorrect".into()));
@@ -581,7 +582,7 @@ pub async fn change_password(
     store::log_activity(
         &state.db, &user.id, &user.display_name, &user.role,
         "change_password", "agent", Some(&user.id), None,
-        client_ip(&headers).as_deref(), user_agent(&headers).as_deref(),
+        ip.as_deref(), user_agent(&headers).as_deref(),
     )
     .await;
 

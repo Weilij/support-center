@@ -8,6 +8,8 @@ pub struct Config {
     pub backend_url: Option<String>,
     pub public_storage_url: Option<String>,
     pub extra_origins: Vec<String>,
+    /// Reverse proxy IPs whose forwarded client-IP headers may be trusted.
+    pub trusted_proxies: Vec<std::net::IpAddr>,
     pub port: u16,
     /// Local directory for message-attachment uploads (created at runtime).
     pub upload_dir: String,
@@ -66,6 +68,9 @@ impl Config {
                         .collect()
                 })
                 .unwrap_or_default(),
+            trusted_proxies: std::env::var("TRUSTED_PROXIES")
+                .map(|s| parse_trusted_proxies(&s))
+                .unwrap_or_else(|_| default_trusted_proxies()),
             port: std::env::var("PORT")
                 .ok()
                 .and_then(|p| p.parse().ok())
@@ -166,6 +171,7 @@ pub fn test_config() -> Config {
         backend_url: None,
         public_storage_url: None,
         extra_origins: vec![],
+        trusted_proxies: default_trusted_proxies(),
         port: 0,
         upload_dir: "data/uploads".into(),
         line_channel_secret: None,
@@ -181,6 +187,19 @@ pub fn test_config() -> Config {
         shopee_partner_key: None,
         shopee_host: None,
     }
+}
+
+fn default_trusted_proxies() -> Vec<std::net::IpAddr> {
+    ["127.0.0.1", "::1"]
+        .into_iter()
+        .filter_map(|ip| ip.parse().ok())
+        .collect()
+}
+
+fn parse_trusted_proxies(raw: &str) -> Vec<std::net::IpAddr> {
+    raw.split(',')
+        .filter_map(|ip| ip.trim().parse().ok())
+        .collect()
 }
 
 #[cfg(test)]

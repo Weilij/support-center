@@ -77,6 +77,7 @@ pub async fn spawn_app_custom(customize: impl FnOnce(&mut Config)) -> TestApp {
         backend_url: None,
         public_storage_url: None,
         extra_origins: vec![],
+        trusted_proxies: vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()],
         port: 0,
         upload_dir: dir.path().join("uploads").display().to_string(),
         // Webhook signature secrets default to known test values so suites can

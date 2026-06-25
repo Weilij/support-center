@@ -10,7 +10,7 @@ use axum::Router;
 use std::sync::Arc;
 
 use crate::middleware::auth::require_auth;
-use crate::middleware::rate_limit::{limit, RatePolicy};
+use crate::middleware::rate_limit::{limit, trusted_client_ip_layer, RatePolicy};
 use crate::state::AppState;
 
 pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
@@ -18,7 +18,7 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let login_routes = Router::new()
         .route("/api/auth/login", post(handlers::login))
         .route("/api/auth/refresh", post(handlers::refresh))
-        .layer(from_fn(limit(state.rate_limiter.clone(), RatePolicy::LOGIN)));
+        .layer(from_fn(limit(state.clone(), RatePolicy::LOGIN)));
 
     let public_routes = Router::new()
         .route("/phase2-auth/verify-token", post(handlers::verify_token))
@@ -37,5 +37,8 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/phase2-auth/status", get(handlers::auth_status))
         .layer(from_fn_with_state(state.clone(), require_auth));
 
-    login_routes.merge(public_routes).merge(authed_routes)
+    login_routes
+        .merge(public_routes)
+        .merge(authed_routes)
+        .layer(from_fn_with_state(state, trusted_client_ip_layer))
 }

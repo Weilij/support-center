@@ -1,13 +1,17 @@
 //! Sliding-window per-IP rate limiting per CRD §7.1 (lines 5620-5626).
 
 use axum::body::Body;
+use axum::extract::connect_info::ConnectInfo;
+use axum::extract::State;
 use axum::http::{HeaderValue, Request};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::state::AppState;
 
 #[derive(Clone, Copy, Debug)]
 pub struct RatePolicy {
@@ -122,18 +126,47 @@ impl RateLimiter {
     }
 }
 
-/// Caller identity per CRD 5621: CF-Connecting-IP, then X-Forwarded-For, then X-Real-IP,
-/// falling back to a shared "unknown" bucket.
-pub fn caller_ip(req: &Request<Body>) -> String {
-    for h in ["cf-connecting-ip", "x-forwarded-for", "x-real-ip"] {
-        if let Some(v) = req.headers().get(h).and_then(|v| v.to_str().ok()) {
-            let first = v.split(',').next().unwrap_or(v).trim();
-            if !first.is_empty() {
-                return first.to_string();
+pub fn resolve_client_ip(
+    headers: &axum::http::HeaderMap,
+    peer: Option<SocketAddr>,
+    trusted_proxies: &[IpAddr],
+) -> Option<String> {
+    let peer_ip = peer.map(|addr| addr.ip())?;
+    if trusted_proxies.contains(&peer_ip) {
+        for h in ["cf-connecting-ip", "x-forwarded-for", "x-real-ip"] {
+            if let Some(v) = headers.get(h).and_then(|v| v.to_str().ok()) {
+                let first = v.split(',').next().unwrap_or(v).trim();
+                if let Ok(ip) = first.parse::<IpAddr>() {
+                    return Some(ip.to_string());
+                }
             }
         }
     }
-    "unknown".to_string()
+    Some(peer_ip.to_string())
+}
+
+#[derive(Clone, Debug)]
+pub struct TrustedClientIp(pub Option<String>);
+
+pub async fn trusted_client_ip_layer(
+    State(state): State<std::sync::Arc<AppState>>,
+    mut req: Request<Body>,
+    next: Next,
+) -> Response {
+    let peer = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0);
+    let ip = resolve_client_ip(req.headers(), peer, &state.config.trusted_proxies);
+    req.extensions_mut().insert(TrustedClientIp(ip));
+    next.run(req).await
+}
+
+/// Caller identity: trust forwarded headers only when the socket peer is a
+/// configured reverse proxy. Otherwise use the real peer socket address.
+pub fn caller_ip(req: &Request<Body>, trusted_proxies: &[IpAddr]) -> String {
+    let peer = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0);
+    match resolve_client_ip(req.headers(), peer, trusted_proxies) {
+        Some(ip) => ip,
+        None => "unknown".to_string(),
+    }
 }
 
 fn decorate(resp: &mut Response, d: &RateDecision) {
@@ -151,16 +184,17 @@ fn decorate(resp: &mut Response, d: &RateDecision) {
 
 /// Build an axum middleware fn for the given policy, sharing one limiter.
 pub fn limit(
-    limiter: std::sync::Arc<RateLimiter>,
+    state: std::sync::Arc<AppState>,
     policy: RatePolicy,
 ) -> impl Fn(Request<Body>, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>
        + Clone
        + Send
        + 'static {
     move |req: Request<Body>, next: Next| {
-        let limiter = limiter.clone();
+        let limiter = state.rate_limiter.clone();
+        let trusted_proxies = state.config.trusted_proxies.clone();
         Box::pin(async move {
-            let ip = caller_ip(&req);
+            let ip = caller_ip(&req, &trusted_proxies);
             let path = req.uri().path().to_string();
             let decision = limiter.check(&policy, &ip);
             if !decision.allowed {
@@ -196,5 +230,45 @@ pub fn limit(
             decorate(&mut resp, &decision);
             resp
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(peer: Option<&str>, headers: &[(&str, &str)]) -> Request<Body> {
+        let mut builder = Request::builder().uri("/");
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        let mut req = builder.body(Body::empty()).unwrap();
+        if let Some(peer) = peer {
+            req.extensions_mut().insert(ConnectInfo(
+                format!("{peer}:12345").parse::<SocketAddr>().unwrap(),
+            ));
+        }
+        req
+    }
+
+    #[test]
+    fn ignores_forwarded_headers_from_untrusted_peer() {
+        let req = request(Some("203.0.113.10"), &[("x-forwarded-for", "198.51.100.1")]);
+        let trusted = ["127.0.0.1".parse().unwrap()];
+        assert_eq!(caller_ip(&req, &trusted), "203.0.113.10");
+    }
+
+    #[test]
+    fn trusts_forwarded_headers_from_trusted_peer() {
+        let req = request(Some("127.0.0.1"), &[("x-forwarded-for", "198.51.100.1, 10.0.0.2")]);
+        let trusted = ["127.0.0.1".parse().unwrap()];
+        assert_eq!(caller_ip(&req, &trusted), "198.51.100.1");
+    }
+
+    #[test]
+    fn does_not_trust_headers_without_peer_context() {
+        let req = request(None, &[("cf-connecting-ip", "198.51.100.1")]);
+        let trusted = ["127.0.0.1".parse().unwrap()];
+        assert_eq!(caller_ip(&req, &trusted), "unknown");
     }
 }

@@ -34,7 +34,7 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let gateway = Router::new()
         .route("/api/websocket/connect", get(socket::connect))
         .route("/api/websocket/disconnect", post(endpoints::disconnect))
-        .layer(from_fn(rate_limit::limit(state.rate_limiter.clone(), RatePolicy::WEBSOCKET)));
+        .layer(from_fn(rate_limit::limit(state.clone(), RatePolicy::WEBSOCKET)));
 
     let ops = Router::new()
         .route("/api/websocket/migration-status", get(endpoints::migration_status))

@@ -36,7 +36,7 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/api/reports/{id}", get(handlers::detail).delete(handlers::delete_report))
         .route("/api/reports/{id}/download", get(handlers::download))
-        .layer(from_fn(limit(state.rate_limiter.clone(), REPORTS_POLICY)))
+        .layer(from_fn(limit(state.clone(), REPORTS_POLICY)))
         .layer(from_fn_with_state(state, require_auth));
 
     public.merge(authed)

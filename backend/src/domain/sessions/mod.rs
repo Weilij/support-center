@@ -68,7 +68,7 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/{sessionId}/close", post(handlers::close_session))
         .route("/{sessionId}/reopen", post(handlers::reopen_session))
-        .layer(from_fn(rate_limit::limit(state.rate_limiter.clone(), SESSION_RATE)));
+        .layer(from_fn(rate_limit::limit(state.clone(), SESSION_RATE)));
 
     let plain = Router::new()
         .route("/", get(handlers::list_sessions))
