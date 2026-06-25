@@ -1,6 +1,6 @@
 // SPA routing with the combined navigation guard (CRD §8.4, lines 6473-6494):
 // title updates, same-path short-circuit, snapshot fast path, pending-session
-// wait, guest-only and auth-required redirects, fail-open on guard errors.
+// wait, guest-only and auth-required redirects, fail-closed auth guard errors.
 
 import { useEffect, useState } from 'react'
 import {
@@ -48,7 +48,7 @@ interface RouteMeta {
   title?: string
 }
 
-function Guard({ meta, children }: { meta: RouteMeta; children: React.ReactNode }) {
+export function Guard({ meta, children }: { meta: RouteMeta; children: React.ReactNode }) {
   const location = useLocation()
   const [decision, setDecision] = useState<'pending' | 'allow' | 'toLogin' | 'toDashboard'>(
     'pending',
@@ -60,8 +60,8 @@ function Guard({ meta, children }: { meta: RouteMeta; children: React.ReactNode 
 
     let cancelled = false
     const run = async () => {
+      let requiresAuth = meta.requiresAuth ?? true
       try {
-        const requiresAuth = meta.requiresAuth ?? true
         // 3. Snapshot fast paths (CRD 6480).
         const snap = session.snapshot()
         if (snap !== null) {
@@ -89,9 +89,9 @@ function Guard({ meta, children }: { meta: RouteMeta; children: React.ReactNode 
         }
         setDecision('allow')
       } catch {
-        // 8. Fail-open at the UX layer (CRD 6485).
+        // Auth-required routes must fail closed when guard evaluation throws.
         session.recordSnapshot(false)
-        if (!cancelled) setDecision('allow')
+        if (!cancelled) setDecision(requiresAuth ? 'toLogin' : 'allow')
       }
     }
     void run()
