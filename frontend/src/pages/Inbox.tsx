@@ -36,7 +36,7 @@ import { Drawer } from '../components/Modal'
 import { FileUpload } from '../components/FileUpload'
 import { Toast } from '../components/ui'
 import { SlashMenu } from '../components/SlashMenu'
-import { MessageMedia, isMediaKind } from '../components/MessageMedia'
+import { MessageMedia, isMediaKind, kindFromMime } from '../components/MessageMedia'
 import { TemplateManager } from '../components/TemplateManager'
 import { useTemplates } from '../hooks/useTemplates'
 import {
@@ -701,7 +701,21 @@ function Thread({
                 <Avatar name={customerName || '?'} src={customerAvatarUrl} size="sm" />
               )}
               <div>
-                {convId && isMediaKind(msg.messageType) ? (
+                {msg.attachments && msg.attachments.length > 0 ? (
+                  <div className={`cs-bubble${isMe ? ' cs-bubble--me' : ''}`}>
+                    {msg.content && <div style={{ marginBottom: 6 }}>{msg.content}</div>}
+                    {msg.attachments.map((att) => (
+                      <MessageMedia
+                        key={att.id}
+                        convId={convId ?? ''}
+                        msgId={msg.id}
+                        messageType={kindFromMime(att.mimeType)}
+                        srcUrl={att.url}
+                        content={att.filename}
+                      />
+                    ))}
+                  </div>
+                ) : convId && isMediaKind(msg.messageType) ? (
                   // Stickers float without a chat-bubble frame; other media sit inside one.
                   msg.messageType === 'sticker' ? (
                     <MessageMedia convId={convId} msgId={msg.id} messageType={msg.messageType!} media={msg.media} content={msg.content} />

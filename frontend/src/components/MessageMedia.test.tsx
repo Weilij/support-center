@@ -1,6 +1,6 @@
 import { render, fireEvent } from '@testing-library/react'
 import { describe, it, expect } from 'vitest'
-import { MessageMedia } from './MessageMedia'
+import { MessageMedia, isMediaKind, kindFromMime } from './MessageMedia'
 
 const base = { convId: 'c1', msgId: 'm1', content: '[x]' }
 
@@ -41,5 +41,25 @@ describe('MessageMedia', () => {
     fireEvent.error(img)
     expect(container.querySelector('img')).toBeNull()
     expect(container.textContent).toContain('[Image]')
+  })
+
+  it('uses srcUrl directly for an agent image (no proxy URL)', () => {
+    const { container } = render(
+      <MessageMedia {...base} messageType="image" srcUrl="https://files/x.png" />,
+    )
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('https://files/x.png')
+  })
+
+  it('kindFromMime maps mimes', () => {
+    expect(kindFromMime('image/png')).toBe('image')
+    expect(kindFromMime('video/mp4')).toBe('video')
+    expect(kindFromMime('audio/m4a')).toBe('audio')
+    expect(kindFromMime('application/pdf')).toBe('file')
+    expect(kindFromMime(undefined)).toBe('file')
+  })
+
+  it('isMediaKind recognizes media kinds', () => {
+    expect(isMediaKind('image')).toBe(true)
+    expect(isMediaKind('text')).toBe(false)
   })
 })

@@ -9,11 +9,20 @@ export interface MessageMediaProps {
   messageType: string
   media?: Record<string, unknown>
   content?: string
+  srcUrl?: string
 }
 
 const MEDIA_KINDS = ['image', 'sticker', 'video', 'audio', 'file', 'location']
 export function isMediaKind(t?: string): boolean {
   return !!t && MEDIA_KINDS.includes(t)
+}
+
+export function kindFromMime(mime?: string): string {
+  if (!mime) return 'file'
+  if (mime.startsWith('image/')) return 'image'
+  if (mime.startsWith('video/')) return 'video'
+  if (mime.startsWith('audio/')) return 'audio'
+  return 'file'
 }
 
 function stickerUrl(stickerId: string): string {
@@ -28,7 +37,7 @@ function fmtSize(n: unknown): string {
   return `${(b / 1024 / 1024).toFixed(1)} MB`
 }
 
-export function MessageMedia({ convId, msgId, messageType, media, content }: MessageMediaProps) {
+export function MessageMedia({ convId, msgId, messageType, media, content, srcUrl }: MessageMediaProps) {
   const [failed, setFailed] = useState(false)
   const [zoom, setZoom] = useState(false)
   useEffect(() => {
@@ -41,8 +50,8 @@ export function MessageMedia({ convId, msgId, messageType, media, content }: Mes
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [zoom])
-  const mediaUrl = `/api/conversations/${convId}/messages/${msgId}/media`
-  const previewUrl = `${mediaUrl}/preview`
+  const mediaUrl = srcUrl ?? `/api/conversations/${convId}/messages/${msgId}/media`
+  const previewUrl = srcUrl ?? `${mediaUrl}/preview`
   const text = <span>{content}</span>
 
   if (failed) return text
