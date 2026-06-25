@@ -103,6 +103,7 @@ fn stream_bytes(
     content_type: &str,
     disposition: Option<&str>,
     cache: &'static str,
+    cors_origin: Option<&str>,
 ) -> Response {
     let mut resp = (StatusCode::OK, bytes).into_response();
     let h = resp.headers_mut();
@@ -115,8 +116,34 @@ fn stream_bytes(
         }
     }
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
-    h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    if let Some(origin) = cors_origin {
+        if let Ok(v) = HeaderValue::from_str(origin) {
+            h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
+        }
+    }
     resp
+}
+
+fn frontend_origin(state: &AppState) -> Option<String> {
+    state
+        .config
+        .frontend_url
+        .as_deref()
+        .map(|s| s.trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn public_disposition_for(content_type: &str) -> Option<&'static str> {
+    let lower = content_type.to_ascii_lowercase();
+    if lower.starts_with("image/") || lower.starts_with("video/") {
+        None
+    } else {
+        Some("attachment")
+    }
 }
 
 /// GET /api/files/public/{*path} — signature-gated public proxy (CRD 3113-3121).
@@ -136,14 +163,21 @@ pub async fn public_proxy(
         return Err(AppError::NotFound("File not found".into()));
     };
     let content_type = content_type_for_key(&state, &path).await;
-    Ok(stream_bytes(bytes, &content_type, None, "public, max-age=86400"))
+    let cors = frontend_origin(&state);
+    Ok(stream_bytes(
+        bytes,
+        &content_type,
+        public_disposition_for(&content_type),
+        "public, max-age=86400",
+        cors.as_deref(),
+    ))
 }
 
 /// GET /api/assets/video-placeholder.png — a static thumbnail used as the
 /// `previewImageUrl` for outbound LINE video messages (public, no auth).
 pub async fn video_placeholder() -> Response {
     const PNG: &[u8] = include_bytes!("../../../assets/video-placeholder.png");
-    stream_bytes(PNG.to_vec(), "image/png", None, "public, max-age=604800")
+    stream_bytes(PNG.to_vec(), "image/png", None, "public, max-age=604800", None)
 }
 
 async fn content_type_for_key(state: &AppState, key: &str) -> String {
@@ -197,6 +231,7 @@ pub async fn public_download(
         &content_type,
         Some(&format!("attachment; filename=\"{filename}\"")),
         "public, max-age=86400",
+        frontend_origin(&state).as_deref(),
     ))
 }
 
@@ -212,7 +247,14 @@ pub async fn line_proxy(
     let key = format!("line/media/{line_message_id}");
     if let Some(bytes) = store::get_object(&state.config.upload_dir, &key).await {
         let content_type = content_type_for_key(&state, &key).await;
-        return Ok(stream_bytes(bytes, &content_type, None, "public, max-age=86400"));
+        let cors = frontend_origin(&state);
+        return Ok(stream_bytes(
+            bytes,
+            &content_type,
+            public_disposition_for(&content_type),
+            "public, max-age=86400",
+            cors.as_deref(),
+        ));
     }
     if state.config.line_channel_access_token.is_none() {
         return Err(AppError::Internal("LINE channel token is not configured".into()));
@@ -246,7 +288,14 @@ pub async fn r2_public(
     };
     let content_type = content_type_for_key(&state, &key).await;
     let etag = format!("\"{}\"", bytes.len());
-    let mut resp = stream_bytes(bytes, &content_type, None, "public, max-age=31536000");
+    let cors = frontend_origin(&state);
+    let mut resp = stream_bytes(
+        bytes,
+        &content_type,
+        public_disposition_for(&content_type),
+        "public, max-age=31536000",
+        cors.as_deref(),
+    );
     if let Ok(v) = HeaderValue::from_str(&etag) {
         resp.headers_mut().insert(header::ETAG, v);
     }
@@ -715,6 +764,7 @@ pub async fn get_file(
         &content_type,
         Some(&format!("attachment; filename=\"{filename}\"")),
         "private, max-age=3600",
+        None,
     ))
 }
 
@@ -1159,4 +1209,49 @@ pub async fn chunked_cancel(
     Path(session_id): Path<String>,
 ) -> Result {
     Ok(envelope::ok_msg(json!({"uploadId": session_id}), "Upload cancelled"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{public_disposition_for, stream_bytes};
+    use axum::http::header;
+
+    #[test]
+    fn stream_bytes_adds_nosniff_and_scoped_cors() {
+        let resp = stream_bytes(
+            b"hello".to_vec(),
+            "text/plain",
+            Some("attachment"),
+            "public, max-age=60",
+            Some("https://app.example"),
+        );
+        let headers = resp.headers();
+        assert_eq!(headers.get(header::X_CONTENT_TYPE_OPTIONS).unwrap(), "nosniff");
+        assert_eq!(
+            headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+            "https://app.example"
+        );
+        assert_ne!(headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(), "*");
+        assert_eq!(headers.get(header::CONTENT_DISPOSITION).unwrap(), "attachment");
+    }
+
+    #[test]
+    fn stream_bytes_omits_cors_when_no_frontend_origin_is_configured() {
+        let resp = stream_bytes(
+            b"hello".to_vec(),
+            "text/plain",
+            None,
+            "private, max-age=60",
+            None,
+        );
+        assert!(resp.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+    }
+
+    #[test]
+    fn public_proxy_disposition_only_allows_images_and_videos_inline() {
+        assert_eq!(public_disposition_for("image/png"), None);
+        assert_eq!(public_disposition_for("video/mp4"), None);
+        assert_eq!(public_disposition_for("text/html"), Some("attachment"));
+        assert_eq!(public_disposition_for("application/pdf"), Some("attachment"));
+    }
 }
