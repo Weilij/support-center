@@ -53,7 +53,10 @@ impl Config {
             environment: std::env::var("ENVIRONMENT")
                 .unwrap_or_else(|_| "development".into()),
             frontend_url: std::env::var("FRONTEND_URL").ok().filter(|s| !s.is_empty()),
-            backend_url: std::env::var("BACKEND_URL").ok().filter(|s| !s.is_empty()),
+            backend_url: std::env::var("BACKEND_URL")
+                .ok()
+                .map(|s| s.trim_end_matches('/').to_string())
+                .filter(|s| !s.is_empty()),
             public_storage_url: std::env::var("PUBLIC_STORAGE_URL").ok().filter(|s| !s.is_empty()),
             extra_origins: std::env::var("EXTRA_ORIGINS")
                 .map(|s| {
