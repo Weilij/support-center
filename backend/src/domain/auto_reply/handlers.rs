@@ -504,7 +504,7 @@ pub async fn list_logs(
         ),
     };
     if let Some(p) = &q.platform {
-        if crate::platform::Platform::from_str(p).is_none() {
+        if crate::platform::Platform::parse(p).is_none() {
             return Err(AppError::BadRequest(format!(
                 "Invalid platform '{p}': must be one of line, facebook, instagram, shopee"
             )));

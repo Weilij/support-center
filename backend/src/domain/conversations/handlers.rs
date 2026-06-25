@@ -882,16 +882,16 @@ pub async fn send_message(
     }
     let platform = conv.cust_platform.clone().unwrap_or_default();
     let recipient = conv.cust_platform_user_id.clone().unwrap_or_default();
-    tokio::spawn(channels::deliver_pending(
-        state.db.clone(),
-        state.realtime.clone(),
-        id.clone(),
-        message_id.clone(),
-        platform.clone(),
+    tokio::spawn(channels::deliver_pending(channels::PendingDelivery {
+        db: state.db.clone(),
+        hub: state.realtime.clone(),
+        conversation_id: id.clone(),
+        message_id: message_id.clone(),
+        platform: platform.clone(),
         recipient,
         items,
-        channels::OutboundGateway::from_config(&state.config),
-    ));
+        gateway: channels::OutboundGateway::from_config(&state.config),
+    }));
 
     let created_ms = epoch_ms(&now);
     Ok(envelope::ok_msg(

@@ -35,6 +35,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
+          cache-on-failure: true
       - name: Test
         run: cargo test
       - name: Clippy

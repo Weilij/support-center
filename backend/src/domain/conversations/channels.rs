@@ -299,19 +299,31 @@ impl OutboundGateway {
     }
 }
 
+pub struct PendingDelivery {
+    pub db: PgPool,
+    pub hub: std::sync::Arc<crate::realtime::RealtimeHub>,
+    pub conversation_id: String,
+    pub message_id: String,
+    pub platform: String,
+    pub recipient: String,
+    pub items: Vec<OutboundItem>,
+    pub gateway: OutboundGateway,
+}
+
 /// Background delivery task (fire-and-forget from the send handler, CRD 769-773):
 /// batches the items to the platform cap, then persists the final sent flag,
 /// delivery status (sent / partial / failed), and platform message id.
-pub async fn deliver_pending(
-    db: PgPool,
-    hub: std::sync::Arc<crate::realtime::RealtimeHub>,
-    conversation_id: String,
-    message_id: String,
-    platform: String,
-    recipient: String,
-    items: Vec<OutboundItem>,
-    gateway: OutboundGateway,
-) {
+pub async fn deliver_pending(input: PendingDelivery) {
+    let PendingDelivery {
+        db,
+        hub,
+        conversation_id,
+        message_id,
+        platform,
+        recipient,
+        items,
+        gateway,
+    } = input;
     let mut succeeded = 0usize;
     let mut failed = 0usize;
     let mut platform_message_id: Option<String> = None;

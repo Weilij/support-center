@@ -66,9 +66,7 @@ fn csrf_check(
     }
 
     // No csrf cookie → Bearer / webhook / API client; skip enforcement.
-    let Some(expected) = cookie_value(headers, "mcss_csrf") else {
-        return None;
-    };
+    let expected = cookie_value(headers, "mcss_csrf")?;
 
     // Cookie-based session: require matching X-CSRF-Token header.
     let presented = headers

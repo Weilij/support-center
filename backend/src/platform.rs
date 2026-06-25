@@ -1,5 +1,5 @@
 //! Canonical messaging platforms (single source of truth). The DB and API use
-//! the string form; parse at the boundary with `Platform::from_str`.
+//! the string form; parse at the boundary with `Platform::parse`.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
@@ -26,7 +26,7 @@ impl Platform {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Platform> {
+    pub fn parse(s: &str) -> Option<Platform> {
         match s {
             "line" => Some(Platform::Line),
             "facebook" => Some(Platform::Facebook),
@@ -44,7 +44,7 @@ mod tests {
     #[test]
     fn round_trips_all_four() {
         for p in Platform::ALL {
-            assert_eq!(Platform::from_str(p.as_str()), Some(p));
+            assert_eq!(Platform::parse(p.as_str()), Some(p));
         }
         assert_eq!(Platform::ALL.len(), 4);
     }
@@ -59,8 +59,8 @@ mod tests {
 
     #[test]
     fn unknown_and_whatsapp_are_none() {
-        assert_eq!(Platform::from_str("whatsapp"), None);
-        assert_eq!(Platform::from_str(""), None);
-        assert_eq!(Platform::from_str("LINE"), None); // case-sensitive, canonical only
+        assert_eq!(Platform::parse("whatsapp"), None);
+        assert_eq!(Platform::parse(""), None);
+        assert_eq!(Platform::parse("LINE"), None); // case-sensitive, canonical only
     }
 }

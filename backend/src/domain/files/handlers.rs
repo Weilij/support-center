@@ -274,10 +274,8 @@ pub async fn direct_upload(
         Some(format!("Content type '{content_type}' is not allowed"))
     } else if body.len() > validate::size_cap(content_type, platform) {
         Some("File exceeds the maximum allowed size".to_string())
-    } else if let Err(e) = validate::check_signature(content_type, &body) {
-        Some(e)
     } else {
-        None
+        validate::check_signature(content_type, &body).err()
     };
     if let Some(message) = reject {
         mark_upload_failed(&state, &file_id).await?;

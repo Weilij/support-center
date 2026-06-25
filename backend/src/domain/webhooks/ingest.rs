@@ -814,32 +814,6 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
     Ok(())
 }
 
-#[cfg(test)]
-mod placeholder_tests {
-    use super::{default_display_name, is_placeholder_name};
-
-    #[test]
-    fn defaults_per_platform() {
-        assert_eq!(default_display_name("line"), "LINE User");
-        assert_eq!(default_display_name("facebook"), "Facebook User");
-        assert_eq!(default_display_name("instagram"), "Instagram User");
-        assert_eq!(default_display_name("shopee"), "Customer");
-    }
-
-    #[test]
-    fn placeholder_detection() {
-        assert!(is_placeholder_name("line", None));
-        assert!(is_placeholder_name("line", Some("")));
-        assert!(is_placeholder_name("line", Some("   ")));
-        assert!(is_placeholder_name("line", Some("LINE User")));
-        assert!(is_placeholder_name("facebook", Some("Facebook User")));
-        assert!(!is_placeholder_name("line", Some("陳小明")));
-        // A real name that happens to match another platform's placeholder is
-        // still real for this platform.
-        assert!(!is_placeholder_name("line", Some("Facebook User")));
-    }
-}
-
 /// Unfollow / opt-out lifecycle handling (CRD 2828-2833).
 pub async fn handle_line_unfollow(state: &Arc<AppState>, event: &Value) -> Result<(), String> {
     let Some(user_id) = event["source"]["userId"].as_str().filter(|s| !s.is_empty()) else {
@@ -873,4 +847,30 @@ pub async fn handle_line_unfollow(state: &Arc<AppState>, event: &Value) -> Resul
     )
     .await;
     Ok(())
+}
+
+#[cfg(test)]
+mod placeholder_tests {
+    use super::{default_display_name, is_placeholder_name};
+
+    #[test]
+    fn defaults_per_platform() {
+        assert_eq!(default_display_name("line"), "LINE User");
+        assert_eq!(default_display_name("facebook"), "Facebook User");
+        assert_eq!(default_display_name("instagram"), "Instagram User");
+        assert_eq!(default_display_name("shopee"), "Customer");
+    }
+
+    #[test]
+    fn placeholder_detection() {
+        assert!(is_placeholder_name("line", None));
+        assert!(is_placeholder_name("line", Some("")));
+        assert!(is_placeholder_name("line", Some("   ")));
+        assert!(is_placeholder_name("line", Some("LINE User")));
+        assert!(is_placeholder_name("facebook", Some("Facebook User")));
+        assert!(!is_placeholder_name("line", Some("陳小明")));
+        // A real name that happens to match another platform's placeholder is
+        // still real for this platform.
+        assert!(!is_placeholder_name("line", Some("Facebook User")));
+    }
 }
