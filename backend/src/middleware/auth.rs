@@ -239,19 +239,6 @@ pub async fn require_system_key(req: Request<Body>, next: Next) -> Response {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::constant_time_eq;
-
-    #[test]
-    fn constant_time_eq_requires_identical_equal_length_values() {
-        assert!(constant_time_eq("secret-token", "secret-token"));
-        assert!(!constant_time_eq("secret-token", "secret-tokem"));
-        assert!(!constant_time_eq("secret-token", "secret-token-longer"));
-        assert!(!constant_time_eq("secret-token", ""));
-    }
-}
-
 /// Middleware: require a valid access credential AND the `admin` system role.
 pub async fn require_admin(
     State(state): State<Arc<AppState>>,
@@ -266,5 +253,18 @@ pub async fn require_admin(
         }
         Ok(_) => AppError::Forbidden("Administrator role required".into()).into_response(),
         Err(e) => e.into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::constant_time_eq;
+
+    #[test]
+    fn constant_time_eq_requires_identical_equal_length_values() {
+        assert!(constant_time_eq("secret-token", "secret-token"));
+        assert!(!constant_time_eq("secret-token", "secret-tokem"));
+        assert!(!constant_time_eq("secret-token", "secret-token-longer"));
+        assert!(!constant_time_eq("secret-token", ""));
     }
 }

@@ -14,7 +14,7 @@ use axum::response::Response;
 use axum::Json;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -226,19 +226,22 @@ impl BroadcastQueue {
 /// and a slower loop for normal/low events (CRD 3692). Both drain with mutual
 /// exclusion so only one processor handles a queue at a time.
 pub fn spawn_loops(state: Arc<AppState>) {
+    fn spawn_loop(state: Weak<AppState>, interval: Duration, high: bool) {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let Some(state) = state.upgrade() else {
+                    break;
+                };
+                process_queue(&state, high).await;
+            }
+        });
+    }
+
+    let state = Arc::downgrade(&state);
     let fast = state.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(FAST_LOOP).await;
-            process_queue(&fast, true).await;
-        }
-    });
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(SLOW_LOOP).await;
-            process_queue(&state, false).await;
-        }
-    });
+    spawn_loop(fast, FAST_LOOP, true);
+    spawn_loop(state, SLOW_LOOP, false);
 }
 
 /// Drain one queue and deliver every event to its audiences. Returns the

@@ -77,11 +77,11 @@ interface ConvMeta {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-type TabKey = 'all' | 'unread' | 'mine' | 'follow'
+type TabKey = 'all' | 'unread' | 'team' | 'follow'
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'all',    label: '全部' },
   { key: 'unread', label: '未讀' },
-  { key: 'mine',   label: '我的' },
+  { key: 'team',   label: '團隊' },
   { key: 'follow', label: '待跟進' },
 ]
 
@@ -112,6 +112,11 @@ function dayLabel(iso?: string): string {
     return `今天 · ${d.getMonth() + 1} 月 ${d.getDate()} 日`
   }
   return d.toLocaleDateString('zh-TW', { month: 'long', day: 'numeric' })
+}
+
+function hasTeamAssignment(c: Conversation) {
+  const assignedTeam = c['assignedTeam']
+  return c.teamId != null || (assignedTeam !== null && assignedTeam !== undefined)
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -190,15 +195,12 @@ function ConvList({
   const listRef = useRef<HTMLDivElement>(null)
   const prevPos = useRef<ReturnType<typeof recordPositions> | null>(null)
 
-  const myId = session.identity()?.id
-
   const filtered = items.filter((c) => {
     // Tab filter
     if (tab === 'unread' && !((c.unreadCount ?? 0) > 0)) return false
-    if (tab === 'mine' && c['assigneeId'] !== myId && c['agentId'] !== myId) {
-      // best-effort: show all if field not present
-      if ('assigneeId' in c || 'agentId' in c) return false
-    }
+    // Conversation routing is team-only. There is no per-agent personal
+    // assignment state, so this tab filters by team assignment only.
+    if (tab === 'team' && !hasTeamAssignment(c)) return false
     // follow: no specific backend field, keep all
     // Search filter
     if (search) {
@@ -868,7 +870,7 @@ function Thread({
                 className="cs-chip cs-chip--blue"
                 style={{ cursor: 'pointer', border: 'none' }}
               >
-                指派給我
+                指派至團隊
               </button>
               <button
                 type="submit"

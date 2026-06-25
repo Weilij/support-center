@@ -5,7 +5,7 @@ use sqlx::PgPool;
 
 use crate::error::AppError;
 
-#[derive(sqlx::FromRow, Clone)]
+#[derive(sqlx::FromRow, Clone, Debug)]
 pub struct SessionRow {
     pub id: String,
     pub conversation_id: String,

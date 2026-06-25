@@ -10,7 +10,8 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 async fn admin_token(app: &TestApp) -> String {
-    app.seed_agent("admin@test.dev", "Secret123!", "admin").await;
+    app.seed_agent("admin@test.dev", "Secret123!", "admin")
+        .await;
     app.login("admin@test.dev", "Secret123!").await.0
 }
 
@@ -42,9 +43,17 @@ async fn list_orders_by_updated_desc_with_preview_and_unread() {
     let newer = app.seed_conversation(cust, None, "active").await;
     set_updated_at(&app, &older, "2026-01-01T00:00:00.000Z").await;
     set_updated_at(&app, &newer, "2026-02-01T00:00:00.000Z").await;
-    app.seed_message(&newer, "customer", "hello there", Some("2026-02-01T00:00:00.000Z")).await;
+    app.seed_message(
+        &newer,
+        "customer",
+        "hello there",
+        Some("2026-02-01T00:00:00.000Z"),
+    )
+    .await;
 
-    let (status, body, _) = app.request("GET", "/api/conversations", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/conversations", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     let items = body["data"].as_array().unwrap();
     assert_eq!(items.len(), 2);
@@ -72,10 +81,16 @@ async fn list_scopes_agents_to_their_teams_plus_unassigned_pool() {
     let mine = app.seed_conversation(cust, Some(team_a), "assigned").await;
     let _other = app.seed_conversation(cust, Some(team_b), "assigned").await;
 
-    let (status, body, _) = app.request("GET", "/api/conversations", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/conversations", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
-    let ids: Vec<&str> =
-        body["data"].as_array().unwrap().iter().map(|v| v["id"].as_str().unwrap()).collect();
+    let ids: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["id"].as_str().unwrap())
+        .collect();
     assert_eq!(ids.len(), 2);
     assert!(ids.contains(&unassigned.as_str()));
     assert!(ids.contains(&mine.as_str()));
@@ -108,11 +123,20 @@ async fn list_filters_by_tags_direct_and_via_customer_ignoring_non_numeric() {
     .unwrap();
 
     let (status, body, _) = app
-        .request("GET", &format!("/api/conversations?tagIds=abc,{tag}"), Some(&token), None)
+        .request(
+            "GET",
+            &format!("/api/conversations?tagIds=abc,{tag}"),
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
-    let ids: Vec<&str> =
-        body["data"].as_array().unwrap().iter().map(|v| v["id"].as_str().unwrap()).collect();
+    let ids: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["id"].as_str().unwrap())
+        .collect();
     assert_eq!(ids.len(), 2);
     assert!(ids.contains(&direct.as_str()));
     assert!(ids.contains(&indirect.as_str()));
@@ -122,7 +146,9 @@ async fn list_filters_by_tags_direct_and_via_customer_ignoring_non_numeric() {
 async fn list_filters_by_search_and_updated_window() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
-    let alice = app.seed_customer("line", "U1", "Alice Wonderland", None).await;
+    let alice = app
+        .seed_customer("line", "U1", "Alice Wonderland", None)
+        .await;
     let bob = app.seed_customer("line", "U2", "Bob", None).await;
     let c_alice = app.seed_conversation(alice, None, "active").await;
     let c_bob = app.seed_conversation(bob, None, "active").await;
@@ -130,15 +156,27 @@ async fn list_filters_by_search_and_updated_window() {
     set_updated_at(&app, &c_bob, "2026-03-15T00:00:00.000Z").await;
 
     // Case-insensitive customer-name substring search (CRD 668).
-    let (status, body, _) =
-        app.request("GET", "/api/conversations?search=wonder", Some(&token), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            "/api/conversations?search=wonder",
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"].as_array().unwrap().len(), 1);
     assert_eq!(body["data"][0]["id"], json!(c_alice));
 
     // customerName filter behaves the same way (CRD 669).
-    let (_, body, _) =
-        app.request("GET", "/api/conversations?customerName=BOB", Some(&token), None).await;
+    let (_, body, _) = app
+        .request(
+            "GET",
+            "/api/conversations?customerName=BOB",
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(body["data"][0]["id"], json!(c_bob));
 
     // Inclusive updated window (CRD 670-671).
@@ -150,8 +188,12 @@ async fn list_filters_by_search_and_updated_window() {
             None,
         )
         .await;
-    let ids: Vec<&str> =
-        body["data"].as_array().unwrap().iter().map(|v| v["id"].as_str().unwrap()).collect();
+    let ids: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["id"].as_str().unwrap())
+        .collect();
     assert_eq!(ids, vec![c_bob.as_str()]);
 }
 
@@ -166,8 +208,14 @@ async fn detail_returns_extended_shape() {
     let conv = app.seed_conversation(cust, Some(team), "assigned").await;
     app.seed_message(&conv, "customer", "hi", None).await;
 
-    let (status, body, _) =
-        app.request("GET", &format!("/api/conversations/{conv}"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/conversations/{conv}"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["id"], json!(conv));
     assert_eq!(body["data"]["assignedTeam"]["name"], json!("Support"));
@@ -186,8 +234,14 @@ async fn detail_denies_agent_outside_assigned_team() {
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, Some(team_b), "assigned").await;
 
-    let (status, body, _) =
-        app.request("GET", &format!("/api/conversations/{conv}"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/conversations/{conv}"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"], json!("Permission denied"));
 }
@@ -196,8 +250,9 @@ async fn detail_denies_agent_outside_assigned_team() {
 async fn detail_missing_conversation_is_404() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
-    let (status, body, _) =
-        app.request("GET", "/api/conversations/nope", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/conversations/nope", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["success"], json!(false));
     assert_eq!(body["error"], json!("Conversation not found"));
@@ -211,15 +266,28 @@ async fn mark_read_records_marker_and_reduces_unread() {
     let token = admin_token(&app).await;
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, None, "active").await;
-    app.seed_message(&conv, "customer", "hi", Some("2026-01-01T00:00:00.000Z")).await;
+    app.seed_message(&conv, "customer", "hi", Some("2026-01-01T00:00:00.000Z"))
+        .await;
 
-    let (status, body, _) =
-        app.request("PUT", &format!("/api/conversations/{conv}/read"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request(
+            "PUT",
+            &format!("/api/conversations/{conv}/read"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["data"]["lastReadAt"].is_string());
 
-    let (_, body, _) =
-        app.request("GET", &format!("/api/conversations/{conv}"), Some(&token), None).await;
+    let (_, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/conversations/{conv}"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(body["data"]["unreadCount"], json!(0));
 }
 
@@ -227,8 +295,9 @@ async fn mark_read_records_marker_and_reduces_unread() {
 async fn mark_read_succeeds_even_for_missing_conversation() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
-    let (status, body, _) =
-        app.request("PUT", "/api/conversations/ghost/read", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("PUT", "/api/conversations/ghost/read", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["success"], json!(true));
 }
@@ -241,8 +310,14 @@ async fn mark_read_denied_outside_team_scope() {
     let (token, _) = agent_token(&app, "agent@test.dev", team_a).await;
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, Some(team_b), "assigned").await;
-    let (status, _, _) =
-        app.request("PUT", &format!("/api/conversations/{conv}/read"), Some(&token), None).await;
+    let (status, _, _) = app
+        .request(
+            "PUT",
+            &format!("/api/conversations/{conv}/read"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
@@ -269,6 +344,8 @@ async fn assign_sets_team_status_history_and_reversible_audit() {
     assert_eq!(body["data"]["status"], json!("assigned"));
     assert_eq!(body["data"]["assignedTeam"]["id"], json!(team));
     assert_eq!(body["data"]["customer"]["name"], json!("Alice"));
+    assert!(body["data"].get("agentId").is_none());
+    assert!(body["data"].get("assigneeId").is_none());
 
     // Reason supplied -> one routing-history record (CRD 706).
     let transfers: i64 = sqlx::query_scalar(
@@ -310,12 +387,13 @@ async fn assign_without_reason_skips_history() {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    let transfers: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM conversation_transfers WHERE conversation_id = $1")
-            .bind(&conv)
-            .fetch_one(&app.state.db)
-            .await
-            .unwrap();
+    let transfers: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM conversation_transfers WHERE conversation_id = $1",
+    )
+    .bind(&conv)
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
     assert_eq!(transfers, 0);
 }
 
@@ -326,7 +404,12 @@ async fn assign_requires_team_id() {
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, None, "active").await;
     let (status, body, _) = app
-        .request("POST", &format!("/api/conversations/{conv}/assign"), Some(&token), Some(json!({})))
+        .request(
+            "POST",
+            &format!("/api/conversations/{conv}/assign"),
+            Some(&token),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], json!("Team ID is required for assignment"));
@@ -338,7 +421,12 @@ async fn assign_missing_conversation_is_404() {
     let token = admin_token(&app).await;
     let team = app.seed_team("Support").await;
     let (status, body, _) = app
-        .request("POST", "/api/conversations/ghost/assign", Some(&token), Some(json!({"teamId": team})))
+        .request(
+            "POST",
+            "/api/conversations/ghost/assign",
+            Some(&token),
+            Some(json!({"teamId": team})),
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"], json!("Conversation not found"));
@@ -389,7 +477,12 @@ async fn assign_can_be_restored_via_activity_restore() {
     .await
     .unwrap();
     let (status, body, _) = app
-        .request("POST", &format!("/api/activities/{activity_id}/restore"), Some(&token), Some(json!({})))
+        .request(
+            "POST",
+            &format!("/api/activities/{activity_id}/restore"),
+            Some(&token),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
@@ -422,7 +515,10 @@ async fn unassign_clears_team_and_resets_active() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["message"], json!("Conversation unassigned successfully"));
+    assert_eq!(
+        body["message"],
+        json!("Conversation unassigned successfully")
+    );
     assert!(body["data"]["assignedTeam"].is_null());
     assert_eq!(body["data"]["status"], json!("active"));
 
@@ -444,7 +540,12 @@ async fn unassign_tolerates_missing_body() {
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, Some(team), "assigned").await;
     let (status, _, _) = app
-        .request("POST", &format!("/api/conversations/{conv}/unassign"), Some(&token), None)
+        .request(
+            "POST",
+            &format!("/api/conversations/{conv}/unassign"),
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
 }
@@ -456,7 +557,12 @@ async fn unassign_rejects_unassigned_conversation() {
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, None, "active").await;
     let (status, body, _) = app
-        .request("POST", &format!("/api/conversations/{conv}/unassign"), Some(&token), None)
+        .request(
+            "POST",
+            &format!("/api/conversations/{conv}/unassign"),
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], json!("Conversation is not assigned"));
@@ -466,8 +572,14 @@ async fn unassign_rejects_unassigned_conversation() {
 async fn unassign_missing_conversation_is_404() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
-    let (status, _, _) =
-        app.request("POST", "/api/conversations/ghost/unassign", Some(&token), None).await;
+    let (status, _, _) = app
+        .request(
+            "POST",
+            "/api/conversations/ghost/unassign",
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -491,7 +603,10 @@ async fn transfer_always_writes_history_and_returns_no_data() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["message"], json!("Conversation transferred successfully"));
+    assert_eq!(
+        body["message"],
+        json!("Conversation transferred successfully")
+    );
     assert!(body.get("data").is_none());
 
     let (team_id, conv_status): (Option<i64>, String) =
@@ -523,10 +638,18 @@ async fn transfer_requires_target_team() {
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, None, "active").await;
     let (status, body, _) = app
-        .request("POST", &format!("/api/conversations/{conv}/transfer"), Some(&token), Some(json!({})))
+        .request(
+            "POST",
+            &format!("/api/conversations/{conv}/transfer"),
+            Some(&token),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"], json!("Target team ID is required for transfer"));
+    assert_eq!(
+        body["error"],
+        json!("Target team ID is required for transfer")
+    );
 }
 
 #[tokio::test]
@@ -535,7 +658,12 @@ async fn transfer_missing_conversation_is_404() {
     let token = admin_token(&app).await;
     let team = app.seed_team("A").await;
     let (status, _, _) = app
-        .request("POST", "/api/conversations/ghost/transfer", Some(&token), Some(json!({"toTeamId": team})))
+        .request(
+            "POST",
+            "/api/conversations/ghost/transfer",
+            Some(&token),
+            Some(json!({"toTeamId": team})),
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -546,8 +674,10 @@ async fn transfer_missing_conversation_is_404() {
 async fn conversation_tags_roundtrip() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
-    let admin: String =
-        sqlx::query_scalar("SELECT id FROM agents LIMIT 1").fetch_one(&app.state.db).await.unwrap();
+    let admin: String = sqlx::query_scalar("SELECT id FROM agents LIMIT 1")
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, None, "active").await;
     let tag = app.seed_tag("vip", &admin).await;
@@ -561,10 +691,19 @@ async fn conversation_tags_roundtrip() {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["message"], json!("Tags added to conversation successfully"));
+    assert_eq!(
+        body["message"],
+        json!("Tags added to conversation successfully")
+    );
 
-    let (_, body, _) =
-        app.request("GET", &format!("/api/conversations/{conv}/tags"), Some(&token), None).await;
+    let (_, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/conversations/{conv}/tags"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(body["data"].as_array().unwrap().len(), 1);
     assert_eq!(body["data"][0]["name"], json!("vip"));
 
@@ -577,7 +716,10 @@ async fn conversation_tags_roundtrip() {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["message"], json!("Tags removed from conversation successfully"));
+    assert_eq!(
+        body["message"],
+        json!("Tags removed from conversation successfully")
+    );
 }
 
 // ------------------------------------------------------------------- messages list
@@ -588,8 +730,12 @@ async fn list_messages_paginates_newest_first_with_attachments() {
     let token = admin_token(&app).await;
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, None, "active").await;
-    let m1 = app.seed_message(&conv, "customer", "first", Some("2026-01-01T00:00:00.000Z")).await;
-    let m2 = app.seed_message(&conv, "agent", "second", Some("2026-01-02T00:00:00.000Z")).await;
+    let m1 = app
+        .seed_message(&conv, "customer", "first", Some("2026-01-01T00:00:00.000Z"))
+        .await;
+    let m2 = app
+        .seed_message(&conv, "agent", "second", Some("2026-01-02T00:00:00.000Z"))
+        .await;
     sqlx::query(
         "INSERT INTO attachments (id, message_id, conversation_id, file_name, content_type, file_size, file_url, storage_key, created_at)
          VALUES ('att-1', $1, $2, 'doc.pdf', 'application/pdf', 42, '/uploads/doc.pdf', 'missing-key', $3)",
@@ -650,13 +796,24 @@ async fn list_messages_permission_and_not_found_errors() {
     let conv = app.seed_conversation(cust, Some(team_b), "assigned").await;
 
     let (status, body, _) = app
-        .request("GET", &format!("/api/conversations/{conv}/messages"), Some(&agent), None)
+        .request(
+            "GET",
+            &format!("/api/conversations/{conv}/messages"),
+            Some(&agent),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"], json!("Permission denied"));
 
-    let (status, body, _) =
-        app.request("GET", "/api/conversations/ghost/messages", Some(&admin), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            "/api/conversations/ghost/messages",
+            Some(&admin),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"], json!("Conversation not found"));
 }
@@ -683,8 +840,10 @@ async fn wait_for_delivery(app: &TestApp, message_id: &str) -> String {
 async fn send_message_returns_pending_then_delivers_on_line() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
-    let agent_id: String =
-        sqlx::query_scalar("SELECT id FROM agents LIMIT 1").fetch_one(&app.state.db).await.unwrap();
+    let agent_id: String = sqlx::query_scalar("SELECT id FROM agents LIMIT 1")
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, None, "active").await;
 
@@ -731,8 +890,10 @@ async fn send_message_returns_pending_then_delivers_on_line() {
 async fn send_message_to_unsupported_platform_ends_failed() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
-    let agent_id: String =
-        sqlx::query_scalar("SELECT id FROM agents LIMIT 1").fetch_one(&app.state.db).await.unwrap();
+    let agent_id: String = sqlx::query_scalar("SELECT id FROM agents LIMIT 1")
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
     let cust = app.seed_customer("facebook", "F1", "Bob", None).await;
     let conv = app.seed_conversation(cust, None, "active").await;
     let (status, body, _) = app
@@ -752,12 +913,20 @@ async fn send_message_to_unsupported_platform_ends_failed() {
 async fn send_message_links_uploaded_attachments() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
-    let agent_id: String =
-        sqlx::query_scalar("SELECT id FROM agents LIMIT 1").fetch_one(&app.state.db).await.unwrap();
+    let agent_id: String = sqlx::query_scalar("SELECT id FROM agents LIMIT 1")
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, None, "active").await;
-    let (status, body) =
-        upload(&app, &format!("/api/conversations/{conv}/attachments"), &token, "f.txt", b"hi").await;
+    let (status, body) = upload(
+        &app,
+        &format!("/api/conversations/{conv}/attachments"),
+        &token,
+        "f.txt",
+        b"hi",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let attachment_id = body["data"]["attachmentId"].as_str().unwrap().to_string();
 
@@ -784,8 +953,9 @@ async fn send_message_links_uploaded_attachments() {
 async fn video_placeholder_asset_is_public_png() {
     let app = spawn_app().await;
     // Public, no auth required.
-    let (status, _, headers) =
-        app.request("GET", "/api/assets/video-placeholder.png", None, None).await;
+    let (status, _, headers) = app
+        .request("GET", "/api/assets/video-placeholder.png", None, None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     let ct = headers
         .get("content-type")
@@ -799,8 +969,10 @@ async fn send_message_delivers_image_attachment_as_media() {
     // backend_url must be set so a signed public URL can be minted for the media.
     let app = spawn_app_custom(|c| c.backend_url = Some("https://example.test".into())).await;
     let token = admin_token(&app).await;
-    let agent_id: String =
-        sqlx::query_scalar("SELECT id FROM agents LIMIT 1").fetch_one(&app.state.db).await.unwrap();
+    let agent_id: String = sqlx::query_scalar("SELECT id FROM agents LIMIT 1")
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, None, "active").await;
 
@@ -839,8 +1011,10 @@ async fn send_message_delivers_image_attachment_as_media() {
 async fn send_message_validation_errors() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
-    let agent_id: String =
-        sqlx::query_scalar("SELECT id FROM agents LIMIT 1").fetch_one(&app.state.db).await.unwrap();
+    let agent_id: String = sqlx::query_scalar("SELECT id FROM agents LIMIT 1")
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, None, "active").await;
 
@@ -921,7 +1095,10 @@ async fn upload(
         .method("POST")
         .uri(path)
         .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", format!("multipart/form-data; boundary={boundary}"))
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
         .body(Body::from(body))
         .unwrap();
     let resp = app.router.clone().oneshot(request).await.unwrap();
@@ -938,8 +1115,14 @@ async fn upload_attachment_stores_file_and_record() {
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, None, "active").await;
 
-    let (status, body) =
-        upload(&app, &format!("/api/conversations/{conv}/attachments"), &token, "hello.txt", b"hello").await;
+    let (status, body) = upload(
+        &app,
+        &format!("/api/conversations/{conv}/attachments"),
+        &token,
+        "hello.txt",
+        b"hello",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["filename"], json!("hello.txt"));
     assert_eq!(body["data"]["size"], json!(5));
@@ -970,27 +1153,54 @@ async fn upload_attachment_error_conditions() {
     let foreign = app.seed_conversation(cust, Some(team_b), "assigned").await;
 
     // Missing conversation.
-    let (status, body) =
-        upload(&app, "/api/conversations/ghost/attachments", &admin, "f.txt", b"x").await;
+    let (status, body) = upload(
+        &app,
+        "/api/conversations/ghost/attachments",
+        &admin,
+        "f.txt",
+        b"x",
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"], json!("Conversation not found"));
 
     // Team-scope gate (CRD 778, 782).
-    let (status, body) =
-        upload(&app, &format!("/api/conversations/{foreign}/attachments"), &agent, "f.txt", b"x").await;
+    let (status, body) = upload(
+        &app,
+        &format!("/api/conversations/{foreign}/attachments"),
+        &agent,
+        "f.txt",
+        b"x",
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(body["error"], json!("You do not have access to this conversation"));
+    assert_eq!(
+        body["error"],
+        json!("You do not have access to this conversation")
+    );
 
     // Empty file.
-    let (status, body) =
-        upload(&app, &format!("/api/conversations/{conv}/attachments"), &admin, "f.txt", b"").await;
+    let (status, body) = upload(
+        &app,
+        &format!("/api/conversations/{conv}/attachments"),
+        &admin,
+        "f.txt",
+        b"",
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], json!("No file provided"));
 
     // Over the 10 MB cap.
     let big = vec![b'x'; 10 * 1024 * 1024 + 1];
-    let (status, body) =
-        upload(&app, &format!("/api/conversations/{conv}/attachments"), &admin, "big.bin", &big).await;
+    let (status, body) = upload(
+        &app,
+        &format!("/api/conversations/{conv}/attachments"),
+        &admin,
+        "big.bin",
+        &big,
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], json!("File too large (max 10MB)"));
 }
@@ -1047,8 +1257,10 @@ async fn bulk_assign_and_set_priority() {
 async fn bulk_tag_operations_are_idempotent() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
-    let admin: String =
-        sqlx::query_scalar("SELECT id FROM agents LIMIT 1").fetch_one(&app.state.db).await.unwrap();
+    let admin: String = sqlx::query_scalar("SELECT id FROM agents LIMIT 1")
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let c1 = app.seed_conversation(cust, None, "active").await;
     let tag = app.seed_tag("vip", &admin).await;
@@ -1151,7 +1363,10 @@ async fn bulk_validation_errors() {
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body["error"].as_str().unwrap().contains("no longer supported"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("no longer supported"));
 
     // Unknown operation lists the valid ones.
     let (status, body, _) = app
@@ -1186,11 +1401,12 @@ async fn seed_media_message(
     platform_message_id: &str,
 ) -> String {
     let id = uuid::Uuid::new_v4().to_string();
-    let customer_id: Option<i64> = sqlx::query_scalar("SELECT customer_id FROM conversations WHERE id = $1")
-        .bind(conversation_id)
-        .fetch_optional(&app.state.db)
-        .await
-        .unwrap();
+    let customer_id: Option<i64> =
+        sqlx::query_scalar("SELECT customer_id FROM conversations WHERE id = $1")
+            .bind(conversation_id)
+            .fetch_optional(&app.state.db)
+            .await
+            .unwrap();
     sqlx::query(
         "INSERT INTO messages (id, conversation_id, sender_type, customer_id, content,
                                content_type, platform_message_id, created_at)
@@ -1217,7 +1433,12 @@ async fn media_proxy_text_message_is_404() {
     let msg = app.seed_message(&conv, "customer", "just text", None).await;
 
     let (status, _, _) = app
-        .request("GET", &format!("/api/conversations/{conv}/messages/{msg}/media"), Some(&token), None)
+        .request(
+            "GET",
+            &format!("/api/conversations/{conv}/messages/{msg}/media"),
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -1233,7 +1454,12 @@ async fn media_proxy_image_without_token_is_404() {
     let msg = seed_media_message(&app, &conv, "image", "lineMsg123").await;
 
     let (status, _, _) = app
-        .request("GET", &format!("/api/conversations/{conv}/messages/{msg}/media"), Some(&token), None)
+        .request(
+            "GET",
+            &format!("/api/conversations/{conv}/messages/{msg}/media"),
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
@@ -1280,7 +1506,12 @@ async fn media_proxy_denies_agent_without_access() {
     let msg = seed_media_message(&app, &conv, "image", "lineMsg999").await;
 
     let (status, body, _) = app
-        .request("GET", &format!("/api/conversations/{conv}/messages/{msg}/media"), Some(&token), None)
+        .request(
+            "GET",
+            &format!("/api/conversations/{conv}/messages/{msg}/media"),
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"], json!("Permission denied"));

@@ -74,6 +74,39 @@ Remaining external/infrastructure boundaries:
 - [ ] Optional external alert/notification sinks and live welcome-reply push
       polish where TODO markers remain.
 
+## Current Routing Decision
+
+Conversation assignment is team-only. The product intentionally does not assign
+conversations to individual agents/operators, including the current signed-in
+user. The authoritative conversation assignee is `teamId` / `assignedTeam`;
+agent access is derived from team membership and the unassigned shared pool.
+
+Abandoned scope:
+
+- Individual-agent conversation assignment.
+- "Assign to me" behavior for conversations.
+- Round-robin, load-balanced, skill-based, or other automatic staff assignment.
+
+## Conversation Routing TODO
+
+- [x] Frontend: remove or rename the Inbox composer chip formerly labeled
+      `指派給我`; it opens the existing team assignment flow and no longer
+      implies assignment to the current user.
+- [x] Frontend: audit visible routing copy in Inbox, ConversationDetail,
+      notifications, and empty/error states so every assignment label refers to
+      a team, not an individual staff member.
+- [x] Frontend tests: add coverage for `AssignDialog` to verify assign and
+      transfer require/select a team and never submit an agent/user id.
+- [x] Frontend/API tests: add a regression test that any deprecated
+      individual-agent assignment helper or alias rejects locally without
+      calling the backend.
+- [x] Backend tests: add a schema/response assertion so assignment responses do
+      not grow `agentId` / `assigneeId` fields, while keeping the existing
+      assign/unassign/transfer/bulk-assign coverage.
+
+Future documentation rule: when user-facing help text is added, describe
+conversation routing as "指派至團隊 / 轉接團隊 / 取消指派" only.
+
 ## Session log
 
 - 2026-06-11: Read CRD §0/§7/§1.1; wrote design doc + Phase 1 plan; started Phase 1.

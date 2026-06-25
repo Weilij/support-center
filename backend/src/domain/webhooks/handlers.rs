@@ -56,7 +56,7 @@ fn valid_line_signature(secret: &str, body: &[u8], signature: &str) -> bool {
 
 fn decode_hex_signature(signature: &str) -> Option<Vec<u8>> {
     let bytes = signature.as_bytes();
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return None;
     }
     let mut out = Vec::with_capacity(bytes.len() / 2);

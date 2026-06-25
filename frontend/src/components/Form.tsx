@@ -2,6 +2,7 @@
 // consistent layout and inline error slot, so screens compose forms without
 // re-styling every input. Controlled components — callers own the state.
 
+import { useId } from 'react'
 import type { ReactNode } from 'react'
 
 const labelStyle: React.CSSProperties = {
@@ -28,7 +29,7 @@ export interface FieldProps {
 export function Field({ label, error, children }: FieldProps) {
   return (
     <div style={{ marginBottom: 'var(--sp-3)' }}>
-      {label && <label style={labelStyle}>{label}</label>}
+      {label}
       {children}
       {error && (
         <p role="alert" style={{ color: 'crimson', fontSize: 12, margin: '4px 0 0' }}>
@@ -45,9 +46,11 @@ export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> 
 }
 
 export function Input({ label, error, ...rest }: InputProps) {
+  const generatedId = useId()
+  const id = rest.id ?? generatedId
   return (
-    <Field label={label} error={error}>
-      <input {...rest} style={{ ...controlStyle, ...rest.style }} />
+    <Field label={label ? <label htmlFor={id} style={labelStyle}>{label}</label> : undefined} error={error}>
+      <input {...rest} id={id} style={{ ...controlStyle, ...rest.style }} />
     </Field>
   )
 }
@@ -58,9 +61,11 @@ export interface TextareaProps extends React.TextareaHTMLAttributes<HTMLTextArea
 }
 
 export function Textarea({ label, error, ...rest }: TextareaProps) {
+  const generatedId = useId()
+  const id = rest.id ?? generatedId
   return (
-    <Field label={label} error={error}>
-      <textarea {...rest} style={{ ...controlStyle, minHeight: 80, resize: 'vertical', ...rest.style }} />
+    <Field label={label ? <label htmlFor={id} style={labelStyle}>{label}</label> : undefined} error={error}>
+      <textarea {...rest} id={id} style={{ ...controlStyle, minHeight: 80, resize: 'vertical', ...rest.style }} />
     </Field>
   )
 }
@@ -78,9 +83,11 @@ export interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElemen
 }
 
 export function Select({ label, error, options, placeholder, ...rest }: SelectProps) {
+  const generatedId = useId()
+  const id = rest.id ?? generatedId
   return (
-    <Field label={label} error={error}>
-      <select {...rest} style={{ ...controlStyle, ...rest.style }}>
+    <Field label={label ? <label htmlFor={id} style={labelStyle}>{label}</label> : undefined} error={error}>
+      <select {...rest} id={id} style={{ ...controlStyle, ...rest.style }}>
         {placeholder && <option value="">{placeholder}</option>}
         {options.map((o) => (
           <option key={o.value} value={o.value}>

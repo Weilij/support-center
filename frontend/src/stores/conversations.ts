@@ -101,6 +101,13 @@ export function assignConversation(id: string, teamId: number, reason?: string):
   )
 }
 
+/// Deprecated compatibility guard: conversations are routed only to teams.
+/// Keep this local rejection so old UI/client code cannot silently reintroduce
+/// individual-agent assignment semantics.
+export async function assignConversationToAgent(_id: string, _agentId: string): Promise<boolean> {
+  return false
+}
+
 /// Transfer a conversation from its current team to another.
 export function transferConversation(
   id: string,

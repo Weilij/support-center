@@ -658,6 +658,7 @@ This area gives authenticated support staff the operational interface for workin
 ### Behavioral Boundary (Under-specified)
 The operations documented in this area constitute the entire conversation-routing contract. The following lies outside the current observable behavior and induces no state change within this boundary; a conforming implementation must reproduce the documented operations but is not required to provide it:
 - **Automatic conversation assignment.** A conversation is routed to a team only through the explicit, caller-initiated assign / unassign / transfer operations described below. Within the current system boundary there is no automatic, rule-based, skill-based, load-balanced, or round-robin assignment behavior: an unassigned conversation remains in the shared pool until a caller acts on it.
+- **Individual staff assignment.** Conversations are never assigned to an individual agent/operator. The assignee of record is only a team (`teamId` / `assignedTeam`). UI labels, API aliases, notifications, analytics, and future workflow work must not imply "assign to me" or "assign to a specific staff member" semantics for conversations.
 
 ### Operations
 
@@ -717,7 +718,7 @@ The operations documented in this area constitute the entire conversation-routin
 
 #### Transfer conversation between teams — POST /:id/transfer
 - Invocation: authenticated client request.
-- Inputs: path parameter `id`; JSON body `{ fromTeamId (optional integer source team), toTeamId (required integer target team), reason (optional string) }`. (Individual-agent transfer is not supported.)
+- Inputs: path parameter `id`; JSON body `{ fromTeamId (optional integer source team), toTeamId (required integer target team), reason (optional string) }`. (Individual-agent transfer is not supported; only team-to-team transfer is supported.)
 - Preconditions & Authorization: authentication. Admins bypass the per-conversation check. Non-admins must pass an "assign" permission check. Conversation must exist.
 - Behavior: in order — for non-admins, verifies the assign permission; requires `toTeamId`; reads prior state; resolves source and target team display names (source name omitted when no source given); sets the conversation's assigned team to the target and status to the active state with a fresh update time; always records a routing-history entry capturing source team (may be empty), target team, reason, and actor; commits atomically; then broadcasts a dual-team transfer notification (so both the losing and gaining teams are informed); returns success.
 - Success Output: `200` with `{ success: true, message: "Conversation transferred successfully", timestamp }`. (The full conversation object is not returned by this endpoint.)
@@ -6573,6 +6574,7 @@ This area governs how the browser single-page application decides which screens 
 - Assign a conversation to a team — POST /api/conversations/{id}/assign with a team identifier (required) and optional reason; individual-agent assignment is removed and a deprecated alias returns a local rejection.
 - Unassign a conversation — POST /api/conversations/{id}/unassign with optional reason.
 - Transfer a conversation between teams — POST /api/conversations/{id}/transfer with target team (required), optional source team, and reason; treats success-without-body as valid because the updated state arrives via the real-time channel.
+- Conversation routing UI must expose only team assignment/transfer/unassignment. It must not expose "assign to me" or individual-agent assignment controls; any legacy client helper or text implying that behavior is deprecated and should fail locally rather than calling the backend.
 - Set conversation tags (replace) — PUT /api/conversations/{id}/tags.
 - Get conversation tags — GET /api/conversations/{id}/tags.
 - Add / remove conversation tags — POST and DELETE (with body) /api/conversations/{id}/tags by tag-id list; reject empty inputs locally.

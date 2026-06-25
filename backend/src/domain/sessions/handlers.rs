@@ -56,6 +56,10 @@ fn require_enum(value: &str, allowed: &[&str], label: &str) -> Result<String> {
     }
 }
 
+fn continue_session_or_error(current: Option<SessionRow>) -> Result<SessionRow> {
+    current.ok_or_else(|| AppError::Internal("Active session missing for continue decision".into()))
+}
+
 fn require_iso_date(value: &str, label: &str) -> Result<String> {
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|_| value.to_string())
@@ -1204,7 +1208,7 @@ pub async fn get_or_create(
         return Ok(envelope::ok(store::session_view(&session)));
     }
 
-    let existing = current.expect("continue decision implies an active session");
+    let existing = continue_session_or_error(current)?;
     let now = crate::db::now_iso();
     sqlx::query(
         "UPDATE conversation_sessions SET last_activity_at = $1, updated_at = $2 WHERE id = $3",
@@ -1300,4 +1304,18 @@ pub async fn suggest_topics(
     let suggestions = topics::suggest_topics(content, limit);
     let count = suggestions.len();
     Ok(ok_count(json!(suggestions), count, None))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn continue_session_or_error_returns_internal_error_instead_of_panicking() {
+        let err = match continue_session_or_error(None) {
+            Ok(_) => panic!("missing active session should not be accepted"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, AppError::Internal(_)));
+    }
 }
