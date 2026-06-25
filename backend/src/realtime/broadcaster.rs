@@ -12,10 +12,10 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::Response;
 use axum::Json;
+use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Weak};
-use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::envelope;
@@ -92,7 +92,7 @@ impl BroadcastQueue {
         &self,
         items: impl IntoIterator<Item = (Value, Vec<Value>, Value)>,
     ) -> usize {
-        let mut s = self.state.lock().expect("queue lock");
+        let mut s = self.state.lock();
         for (event, targets, options) in items {
             let priority = options
                 .get("priority")
@@ -128,19 +128,26 @@ impl BroadcastQueue {
     /// Take the whole queue for processing under mutual exclusion; `None`
     /// when another processor is already draining that queue (CRD 3672).
     fn take_batch(&self, high: bool) -> Option<Vec<QueuedEvent>> {
-        let mut s = self.state.lock().expect("queue lock");
-        let flag = if high { &mut s.draining_high } else { &mut s.draining_normal };
+        let mut s = self.state.lock();
+        let flag = if high {
+            &mut s.draining_high
+        } else {
+            &mut s.draining_normal
+        };
         if *flag {
             return None;
         }
         *flag = true;
-        let batch: Vec<QueuedEvent> =
-            if high { s.high.drain(..).collect() } else { s.normal.drain(..).collect() };
+        let batch: Vec<QueuedEvent> = if high {
+            s.high.drain(..).collect()
+        } else {
+            s.normal.drain(..).collect()
+        };
         Some(batch)
     }
 
     fn finish_drain(&self, high: bool, requeue: Vec<QueuedEvent>) {
-        let mut s = self.state.lock().expect("queue lock");
+        let mut s = self.state.lock();
         for item in requeue {
             if high {
                 s.high.push_back(item);
@@ -156,7 +163,7 @@ impl BroadcastQueue {
     }
 
     fn record_processed(&self, delivered: u64, failed: u64, latency_ms: u64, samples: u64) {
-        let mut s = self.state.lock().expect("queue lock");
+        let mut s = self.state.lock();
         s.delivered += delivered;
         s.failed += failed;
         s.latency_ms_total += latency_ms;
@@ -165,12 +172,12 @@ impl BroadcastQueue {
     }
 
     pub fn depths(&self) -> (usize, usize) {
-        let s = self.state.lock().expect("queue lock");
+        let s = self.state.lock();
         (s.normal.len(), s.high.len())
     }
 
     fn register(&self, kind: &str, id: &str) -> i64 {
-        let mut s = self.state.lock().expect("queue lock");
+        let mut s = self.state.lock();
         let inserted = match kind {
             "user" => s.reachable_users.insert(id.to_string()),
             _ => s.reachable_conversations.insert(id.to_string()),
@@ -182,7 +189,7 @@ impl BroadcastQueue {
     }
 
     fn unregister(&self, kind: &str, id: &str) -> i64 {
-        let mut s = self.state.lock().expect("queue lock");
+        let mut s = self.state.lock();
         let removed = match kind {
             "user" => s.reachable_users.remove(id),
             _ => s.reachable_conversations.remove(id),
@@ -195,12 +202,12 @@ impl BroadcastQueue {
     }
 
     fn set_filters(&self, target_key: &str, filters: Value) {
-        let mut s = self.state.lock().expect("queue lock");
+        let mut s = self.state.lock();
         s.filters.insert(target_key.to_string(), filters);
     }
 
     fn registry_snapshot(&self) -> (Vec<String>, Vec<String>, i64) {
-        let s = self.state.lock().expect("queue lock");
+        let s = self.state.lock();
         (
             s.reachable_users.iter().cloned().collect(),
             s.reachable_conversations.iter().cloned().collect(),
@@ -209,8 +216,11 @@ impl BroadcastQueue {
     }
 
     fn stats_snapshot(&self) -> Value {
-        let s = self.state.lock().expect("queue lock");
-        let avg_latency = s.latency_ms_total.checked_div(s.latency_samples).unwrap_or(0);
+        let s = self.state.lock();
+        let avg_latency = s
+            .latency_ms_total
+            .checked_div(s.latency_samples)
+            .unwrap_or(0);
         json!({
             "totalEvents": s.total_events,
             "delivered": s.delivered,
@@ -282,6 +292,30 @@ pub async fn publish_remote_room_broadcast(
 ) {
     let targets = vec![json!({ "type": "conversation", "ids": [conversation_id] })];
     publish_remote_broadcast(state, event, &targets, &json!({ "priority": "high" })).await;
+}
+
+/// Relay first-online / last-offline presence transitions to peer instances.
+/// Local presence is already emitted synchronously by the hub.
+pub async fn publish_remote_presence_change(
+    state: &Arc<AppState>,
+    transition: &super::hub::PresenceTransition,
+) {
+    let event = json!({
+        "id": uuid::Uuid::new_v4().to_string(),
+        "type": "presence_changed",
+        "timestamp": crate::db::now_iso(),
+        "data": {
+            "userId": transition.identity.user_id.clone(),
+            "userName": transition.identity.display_name.clone(),
+            "status": transition.status,
+        },
+    });
+    let targets = vec![json!({
+        "type": "presence",
+        "ids": transition.identity.team_ids.clone(),
+        "userId": transition.identity.user_id.clone(),
+    })];
+    publish_remote_broadcast(state, &event, &targets, &json!({ "priority": "high" })).await;
 }
 
 #[derive(sqlx::FromRow)]
@@ -406,7 +440,9 @@ pub fn spawn_remote_fanout_loop(state: Arc<AppState>) {
 /// re-queued with an incremented retry counter up to the ceiling; low-priority
 /// events are never retried (CRD 3678).
 pub async fn process_queue(state: &Arc<AppState>, high: bool) -> usize {
-    let Some(batch) = state.realtime.queue.take_batch(high) else { return 0 };
+    let Some(batch) = state.realtime.queue.take_batch(high) else {
+        return 0;
+    };
     let mut processed = 0usize;
     let mut delivered = 0u64;
     let mut failed = 0u64;
@@ -434,7 +470,10 @@ pub async fn process_queue(state: &Arc<AppState>, high: bool) -> usize {
         latency += started.elapsed().as_millis() as u64;
         processed += 1;
     }
-    state.realtime.queue.record_processed(delivered, failed, latency, processed as u64);
+    state
+        .realtime
+        .queue
+        .record_processed(delivered, failed, latency, processed as u64);
     state.realtime.queue.finish_drain(high, requeue);
     processed
 }
@@ -462,7 +501,11 @@ async fn active_admins(state: &Arc<AppState>) -> Result<Vec<String>> {
 }
 
 fn event_type_and_payload(event: &Value) -> (String, Value) {
-    let event_type = event.get("type").and_then(Value::as_str).unwrap_or("event").to_string();
+    let event_type = event
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("event")
+        .to_string();
     let mut payload = event.get("data").cloned().unwrap_or_else(|| event.clone());
     if let Some(id) = event.get("id") {
         payload["eventId"] = id.clone();
@@ -482,7 +525,10 @@ async fn deliver_targets(
     let mut ok = 0u64;
     let mut bad = 0u64;
     for target in targets {
-        let kind = target.get("type").and_then(Value::as_str).unwrap_or("global");
+        let kind = target
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("global");
         let ids: Vec<Value> = match target.get("ids").and_then(Value::as_array) {
             Some(list) => list.clone(),
             None => target.get("id").cloned().into_iter().collect(),
@@ -491,7 +537,9 @@ async fn deliver_targets(
             "conversation" => {
                 for id in &ids {
                     if let Some(cid) = id.as_str() {
-                        state.realtime.to_conversation(cid, &event_type, payload.clone());
+                        state
+                            .realtime
+                            .to_conversation(cid, &event_type, payload.clone());
                         ok += 1;
                     } else {
                         bad += 1;
@@ -512,12 +560,40 @@ async fn deliver_targets(
                 for id in &ids {
                     if let Some(team_id) = id.as_i64() {
                         for member in team_members(state, team_id).await? {
-                            state.realtime.to_user(&member, &event_type, payload.clone());
+                            state
+                                .realtime
+                                .to_user(&member, &event_type, payload.clone());
                         }
                         ok += 1;
                     } else {
                         bad += 1;
                     }
+                }
+            }
+            "presence" => {
+                let exclude_user = target.get("userId").and_then(Value::as_str).unwrap_or("");
+                let mut recipients = HashSet::new();
+                for admin in active_admins(state).await? {
+                    if admin != exclude_user {
+                        recipients.insert(admin);
+                    }
+                }
+                for id in &ids {
+                    if let Some(team_id) = id.as_i64() {
+                        for member in team_members(state, team_id).await? {
+                            if member != exclude_user {
+                                recipients.insert(member);
+                            }
+                        }
+                        ok += 1;
+                    } else {
+                        bad += 1;
+                    }
+                }
+                for user_id in recipients {
+                    state
+                        .realtime
+                        .to_user(&user_id, &event_type, payload.clone());
                 }
             }
             // global / everyone (and unknown audience kinds degrade to global).
@@ -589,8 +665,10 @@ pub async fn queue_event(
         .cloned()
         .unwrap_or_else(|| vec![json!({ "type": "global" })]);
     let options = body.get("options").cloned().unwrap_or(json!({}));
-    let queue_size =
-        state.realtime.queue.enqueue(event.clone(), targets.clone(), options.clone());
+    let queue_size = state
+        .realtime
+        .queue
+        .enqueue(event.clone(), targets.clone(), options.clone());
     publish_remote_broadcast(&state, &event, &targets, &options).await;
     Ok(envelope::ok(json!({
         "eventId": event_id,
@@ -613,7 +691,10 @@ async fn targeted_broadcast(
     let started = std::time::Instant::now();
     let targets: Vec<Value> = vec![json!({ "type": kind, "ids": ids })];
     let (ok, bad) = deliver_targets(&state, &event, &targets).await?;
-    state.realtime.queue.record_processed(ok, bad, started.elapsed().as_millis() as u64, 1);
+    state
+        .realtime
+        .queue
+        .record_processed(ok, bad, started.elapsed().as_millis() as u64, 1);
     Ok(envelope::ok(json!({
         "eventId": event["id"],
         "targetCount": ids.len(),
@@ -661,7 +742,10 @@ pub async fn to_teams_and_admins(
     let body = body_value(body);
     let event = validate_event(body.get("event"))?;
     let team_ids = id_list(&body, "teamIds")?.clone();
-    let include_admins = body.get("includeAdmins").and_then(Value::as_bool).unwrap_or(true);
+    let include_admins = body
+        .get("includeAdmins")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
     let started = std::time::Instant::now();
     let targets: Vec<Value> = vec![json!({ "type": "team", "ids": team_ids })];
     let (mut ok, bad) = deliver_targets(&state, &event, &targets).await?;
@@ -675,7 +759,10 @@ pub async fn to_teams_and_admins(
             }
         }
     }
-    state.realtime.queue.record_processed(ok, bad, started.elapsed().as_millis() as u64, 1);
+    state
+        .realtime
+        .queue
+        .record_processed(ok, bad, started.elapsed().as_millis() as u64, 1);
     Ok(envelope::ok(json!({
         "eventId": event["id"],
         "teamCount": team_ids.len(),
@@ -695,7 +782,10 @@ pub async fn global(
     require_admin(&state, &headers).await?;
     let body = body_value(body);
     let event = validate_event(body.get("event"))?;
-    let target = body.get("target").and_then(Value::as_str).unwrap_or("everyone");
+    let target = body
+        .get("target")
+        .and_then(Value::as_str)
+        .unwrap_or("everyone");
     let targets: Vec<Value> = vec![json!({ "type": target })];
     let (ok, bad) = deliver_targets(&state, &event, &targets).await?;
     state.realtime.queue.record_processed(ok, bad, 0, 1);
@@ -785,9 +875,7 @@ fn endpoint_descriptor(body: &Value) -> Result<(String, String)> {
         .or_else(|| body.get("endpointType"))
         .and_then(Value::as_str)
         .filter(|k| *k == "conversation" || *k == "user")
-        .ok_or_else(|| {
-            AppError::BadRequest("type must be 'conversation' or 'user'".into())
-        })?;
+        .ok_or_else(|| AppError::BadRequest("type must be 'conversation' or 'user'".into()))?;
     let id = body
         .get("id")
         .and_then(Value::as_str)
@@ -825,7 +913,9 @@ pub async fn flush_queue(
     let high = body.get("priority").and_then(Value::as_str) == Some("high");
     process_queue(&state, high).await;
     let (normal, high_depth) = state.realtime.queue.depths();
-    Ok(envelope::ok(json!({ "remainingEvents": normal + high_depth })))
+    Ok(envelope::ok(
+        json!({ "remainingEvents": normal + high_depth }),
+    ))
 }
 
 /// POST /system-broadcast (CRD 3645-3648): system notification to everyone.
@@ -841,7 +931,10 @@ pub async fn system_broadcast(
         .and_then(Value::as_str)
         .filter(|m| !m.is_empty())
         .ok_or_else(|| AppError::BadRequest("message is required".into()))?;
-    let priority = body.get("priority").and_then(Value::as_str).unwrap_or("normal");
+    let priority = body
+        .get("priority")
+        .and_then(Value::as_str)
+        .unwrap_or("normal");
     let event_id = uuid::Uuid::new_v4().to_string();
     let event = json!({
         "id": event_id,

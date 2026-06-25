@@ -16,9 +16,9 @@
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
 use axum::{Extension, Json};
+use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::envelope;
@@ -154,36 +154,41 @@ pub struct ModuleState {
 
 impl ModuleState {
     pub fn config(&self) -> RealtimeConfig {
-        self.config.lock().map(|c| c.clone()).unwrap_or_default()
+        self.config.lock().clone()
     }
 
     pub fn merge_config(&self, patch: &Value) {
-        if let Ok(mut c) = self.config.lock() {
-            c.merge(patch);
-        }
+        self.config.lock().merge(patch);
     }
 
     /// Record one processed event into the runtime statistics.
     pub fn record_event(&self, event_type: &str, priority: &str, source: &str, ms: f64, ok: bool) {
-        if let Ok(mut s) = self.stats.lock() {
-            *s.by_type.entry(event_type.to_string()).or_default() += 1;
-            *s.by_priority.entry(priority.to_string()).or_default() += 1;
-            *s.by_source.entry(source.to_string()).or_default() += 1;
-            s.total += 1;
-            if ok {
-                s.succeeded += 1;
-            } else {
-                s.failed += 1;
-            }
-            s.total_processing_ms += ms;
+        let mut s = self.stats.lock();
+        *s.by_type.entry(event_type.to_string()).or_default() += 1;
+        *s.by_priority.entry(priority.to_string()).or_default() += 1;
+        *s.by_source.entry(source.to_string()).or_default() += 1;
+        s.total += 1;
+        if ok {
+            s.succeeded += 1;
+        } else {
+            s.failed += 1;
         }
+        s.total_processing_ms += ms;
     }
 
     /// Aggregated statistics view (CRD 4119-4121).
     pub fn stats_json(&self) -> Value {
-        let s = self.stats.lock().expect("stats lock");
-        let avg = if s.total == 0 { 0.0 } else { s.total_processing_ms / s.total as f64 };
-        let success_rate = if s.total == 0 { 1.0 } else { s.succeeded as f64 / s.total as f64 };
+        let s = self.stats.lock();
+        let avg = if s.total == 0 {
+            0.0
+        } else {
+            s.total_processing_ms / s.total as f64
+        };
+        let success_rate = if s.total == 0 {
+            1.0
+        } else {
+            s.succeeded as f64 / s.total as f64
+        };
         json!({
             "totalEvents": s.total,
             "byType": s.by_type,
@@ -198,9 +203,7 @@ impl ModuleState {
     }
 
     pub fn reset_stats(&self) {
-        if let Ok(mut s) = self.stats.lock() {
-            *s = EventStats::default();
-        }
+        *self.stats.lock() = EventStats::default();
     }
 
     /// Raise a performance alert (used by the monitoring layer and tests).
@@ -213,25 +216,23 @@ impl ModuleState {
         message: &str,
     ) -> String {
         let id = uuid::Uuid::new_v4().to_string();
-        if let Ok(mut alerts) = self.alerts.lock() {
-            alerts.push(Alert {
-                id: id.clone(),
-                level: level.to_string(),
-                metric: metric.to_string(),
-                threshold,
-                current_value,
-                message: message.to_string(),
-                timestamp: crate::db::now_iso(),
-                resolved: false,
-            });
-        }
+        self.alerts.lock().push(Alert {
+            id: id.clone(),
+            level: level.to_string(),
+            metric: metric.to_string(),
+            threshold,
+            current_value,
+            message: message.to_string(),
+            timestamp: crate::db::now_iso(),
+            resolved: false,
+        });
         id
     }
 
     /// Mark an alert resolved; false when missing or already resolved
     /// (CRD 4045-4046).
     pub fn resolve_alert(&self, alert_id: &str) -> bool {
-        let Ok(mut alerts) = self.alerts.lock() else { return false };
+        let mut alerts = self.alerts.lock();
         match alerts.iter_mut().find(|a| a.id == alert_id) {
             Some(a) if !a.resolved => {
                 a.resolved = true;
@@ -242,7 +243,7 @@ impl ModuleState {
     }
 
     fn alerts_view(&self, active_only: bool, limit: usize) -> (Vec<Value>, Value) {
-        let alerts = self.alerts.lock().expect("alerts lock");
+        let alerts = self.alerts.lock();
         let mut by_level: HashMap<String, u64> = HashMap::new();
         let day_ago = chrono::Utc::now() - chrono::Duration::hours(24);
         let mut last24h = 0u64;
@@ -271,16 +272,15 @@ impl ModuleState {
     }
 
     fn push_metrics_point(&self, point: Value) {
-        if let Ok(mut h) = self.metrics_history.lock() {
-            h.push_back(point);
-            while h.len() > METRICS_HISTORY_CAP {
-                h.pop_front();
-            }
+        let mut h = self.metrics_history.lock();
+        h.push_back(point);
+        while h.len() > METRICS_HISTORY_CAP {
+            h.pop_front();
         }
     }
 
     fn metrics_view(&self, limit: usize) -> (Value, Vec<Value>, usize) {
-        let h = self.metrics_history.lock().expect("metrics lock");
+        let h = self.metrics_history.lock();
         let total = h.len();
         let latest = h.back().cloned().unwrap_or(Value::Null);
         let history: Vec<Value> = h.iter().rev().take(limit).cloned().collect();
@@ -325,10 +325,7 @@ fn id_present(v: Option<&Value>) -> bool {
 
 /// POST /api/realtime/typing — acknowledgement-only (CRD 3984-3991): actual
 /// typing propagation travels over the persistent realtime channel.
-pub async fn typing(
-    Extension(_user): Extension<AuthUser>,
-    body: Option<Json<Value>>,
-) -> Result {
+pub async fn typing(Extension(_user): Extension<AuthUser>, body: Option<Json<Value>>) -> Result {
     let body = body_value(body);
     if !id_present(body.get("conversationId")) {
         return Err(AppError::BadRequest("Conversation ID is required".into()));
@@ -338,13 +335,12 @@ pub async fn typing(
 
 /// POST /api/realtime/broadcast — acknowledgement-only custom-event publish
 /// (CRD 3993-3998).
-pub async fn broadcast(
-    Extension(_user): Extension<AuthUser>,
-    body: Option<Json<Value>>,
-) -> Result {
+pub async fn broadcast(Extension(_user): Extension<AuthUser>, body: Option<Json<Value>>) -> Result {
     let body = body_value(body);
     if !id_present(body.get("conversationId")) || body.get("event").is_none() {
-        return Err(AppError::BadRequest("Conversation ID and event are required".into()));
+        return Err(AppError::BadRequest(
+            "Conversation ID and event are required".into(),
+        ));
     }
     Ok(envelope::message_only("Broadcast received"))
 }
@@ -462,7 +458,11 @@ pub async fn monitoring_dashboard(
     let events = state.realtime.module.stats_json();
     let latest = {
         let (latest, _, total) = state.realtime.module.metrics_view(1);
-        if total == 0 { Value::Null } else { latest }
+        if total == 0 {
+            Value::Null
+        } else {
+            latest
+        }
     };
     Ok(envelope::ok(json!({
         "service": {
@@ -513,7 +513,10 @@ pub async fn monitoring_metrics(
 ) -> Result {
     require_elevated(&user)?;
     let limit = q.limit.filter(|l| *l > 0).unwrap_or(50);
-    state.realtime.module.push_metrics_point(collect_metrics_point(&state));
+    state
+        .realtime
+        .module
+        .push_metrics_point(collect_metrics_point(&state));
     let (latest, history, total) = state.realtime.module.metrics_view(limit);
     Ok(envelope::ok(json!({
         "latest": latest,
@@ -539,7 +542,9 @@ pub async fn monitoring_alerts(
     let active_only = q.active.as_deref() == Some("true");
     let limit = q.limit.filter(|l| *l > 0).unwrap_or(100);
     let (alerts, summary) = state.realtime.module.alerts_view(active_only, limit);
-    Ok(envelope::ok(json!({ "alerts": alerts, "summary": summary })))
+    Ok(envelope::ok(
+        json!({ "alerts": alerts, "summary": summary }),
+    ))
 }
 
 /// POST /api/realtime/monitoring/alerts — resolve one alert (CRD 4044-4049).
@@ -550,14 +555,21 @@ pub async fn resolve_alert(
 ) -> Result {
     require_elevated(&user)?;
     let body = body_value(body);
-    let Some(alert_id) = body.get("alertId").and_then(Value::as_str).filter(|s| !s.is_empty())
+    let Some(alert_id) = body
+        .get("alertId")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
     else {
         return Err(AppError::BadRequest("Alert ID is required".into()));
     };
     if !state.realtime.module.resolve_alert(alert_id) {
-        return Err(AppError::NotFound("Alert not found or already resolved".into()));
+        return Err(AppError::NotFound(
+            "Alert not found or already resolved".into(),
+        ));
     }
-    Ok(envelope::ok(json!({ "alertId": alert_id, "resolved": true })))
+    Ok(envelope::ok(
+        json!({ "alertId": alert_id, "resolved": true }),
+    ))
 }
 
 /// GET /api/realtime/monitoring/health — dependency health detail
@@ -571,7 +583,10 @@ pub async fn monitoring_health(
     require_elevated(&user)?;
     // Database probe: degraded above ~1 second (CRD 4054).
     let started = Instant::now();
-    let db_ok = sqlx::query_scalar::<_, i64>("SELECT 1::bigint").fetch_one(&state.db).await.is_ok();
+    let db_ok = sqlx::query_scalar::<_, i64>("SELECT 1::bigint")
+        .fetch_one(&state.db)
+        .await
+        .is_ok();
     let db_ms = started.elapsed().as_millis() as u64;
     let db_status = if !db_ok {
         "down"
@@ -659,28 +674,35 @@ fn publish_result(event_id: String, started: Instant, extra: Option<(&str, Value
 
 /// Publish a new-message event (CRD 4068-4074): high priority to the target
 /// conversation's room.
-pub fn publish_message_event(
-    state: &AppState,
-    _user: &AuthUser,
-    payload: &Value,
-) -> Result<Value> {
+pub fn publish_message_event(state: &AppState, _user: &AuthUser, payload: &Value) -> Result<Value> {
     let started = Instant::now();
     let valid = finite_num(payload.get("messageId")).is_some()
         && finite_num(payload.get("conversationId")).is_some()
-        && payload.get("content").map(Value::is_string).unwrap_or(false)
+        && payload
+            .get("content")
+            .map(Value::is_string)
+            .unwrap_or(false)
         && nonempty_str(payload.get("messageType"))
             .is_some_and(|t| ["text", "image", "file", "sticker", "location"].contains(&t))
         && nonempty_str(payload.get("senderType"))
             .is_some_and(|t| ["customer", "agent", "system"].contains(&t));
     if !valid {
-        state.realtime.module.record_event("new_message", "high", "api", 0.0, false);
+        state
+            .realtime
+            .module
+            .record_event("new_message", "high", "api", 0.0, false);
         return Err(AppError::BadRequest("Invalid message event data".into()));
     }
     let conversation_id = num_id(&payload["conversationId"]);
     let event_id = uuid::Uuid::new_v4().to_string();
-    state.realtime.to_conversation(&conversation_id, "new_message", payload.clone());
+    state
+        .realtime
+        .to_conversation(&conversation_id, "new_message", payload.clone());
     let ms = started.elapsed().as_secs_f64() * 1000.0;
-    state.realtime.module.record_event("new_message", "high", "api", ms, true);
+    state
+        .realtime
+        .module
+        .record_event("new_message", "high", "api", ms, true);
     Ok(publish_result(event_id, started, None))
 }
 
@@ -691,7 +713,10 @@ pub fn publish_typing_event(state: &AppState, _user: &AuthUser, payload: &Value)
     let valid = finite_num(payload.get("conversationId")).is_some()
         && finite_num(payload.get("userId")).is_some()
         && nonempty_str(payload.get("username")).is_some()
-        && payload.get("isTyping").map(Value::is_boolean).unwrap_or(false);
+        && payload
+            .get("isTyping")
+            .map(Value::is_boolean)
+            .unwrap_or(false);
     if !valid {
         return Err(AppError::BadRequest("Invalid typing event data".into()));
     }
@@ -707,7 +732,10 @@ pub fn publish_typing_event(state: &AppState, _user: &AuthUser, payload: &Value)
         .realtime
         .to_conversation_except_user(&conversation_id, &user_id, event, payload.clone());
     let ms = started.elapsed().as_secs_f64() * 1000.0;
-    state.realtime.module.record_event(event, "low", "api", ms, true);
+    state
+        .realtime
+        .module
+        .record_event(event, "low", "api", ms, true);
     Ok(publish_result(event_id, started, None))
 }
 
@@ -724,9 +752,14 @@ pub fn publish_status_change(state: &AppState, _user: &AuthUser, payload: &Value
     }
     let conversation_id = num_id(&payload["conversationId"]);
     let event_id = uuid::Uuid::new_v4().to_string();
-    state.realtime.to_conversation(&conversation_id, "status_changed", payload.clone());
+    state
+        .realtime
+        .to_conversation(&conversation_id, "status_changed", payload.clone());
     let ms = started.elapsed().as_secs_f64() * 1000.0;
-    state.realtime.module.record_event("status_changed", "normal", "api", ms, true);
+    state
+        .realtime
+        .module
+        .record_event("status_changed", "normal", "api", ms, true);
     Ok(publish_result(event_id, started, None))
 }
 
@@ -759,7 +792,9 @@ pub fn publish_assignment_change(
     }
     let conversation_id = num_id(&payload["conversationId"]);
     let event_id = uuid::Uuid::new_v4().to_string();
-    state.realtime.to_conversation(&conversation_id, "assignment_changed", payload.clone());
+    state
+        .realtime
+        .to_conversation(&conversation_id, "assignment_changed", payload.clone());
     // Prior and new assignees are both added to the delivery targets
     // (CRD 4106).
     let mut targets = vec![&payload["assignedTo"]];
@@ -770,17 +805,24 @@ pub fn publish_assignment_change(
         match assignee["type"].as_str() {
             Some("team") => {
                 if let Some(id) = assignee["id"].as_i64() {
-                    state.realtime.to_team(id, "assignment_changed", payload.clone());
+                    state
+                        .realtime
+                        .to_team(id, "assignment_changed", payload.clone());
                 }
             }
             _ => {
                 let uid = num_id(&assignee["id"]);
-                state.realtime.to_user(&uid, "assignment_changed", payload.clone());
+                state
+                    .realtime
+                    .to_user(&uid, "assignment_changed", payload.clone());
             }
         }
     }
     let ms = started.elapsed().as_secs_f64() * 1000.0;
-    state.realtime.module.record_event("assignment_changed", "high", "api", ms, true);
+    state
+        .realtime
+        .module
+        .record_event("assignment_changed", "high", "api", ms, true);
     Ok(publish_result(event_id, started, None))
 }
 
@@ -793,19 +835,33 @@ pub fn publish_notification(state: &AppState, user: &AuthUser, payload: &Value) 
     let valid = finite_num(payload.get("notificationId")).is_some()
         && nonempty_str(payload.get("type")).is_some()
         && nonempty_str(payload.get("title")).is_some()
-        && payload.get("content").map(Value::is_string).unwrap_or(false)
+        && payload
+            .get("content")
+            .map(Value::is_string)
+            .unwrap_or(false)
         && targets.is_some_and(|t| !t.is_empty() && t.iter().all(|u| u.is_number()));
     if !valid {
-        return Err(AppError::BadRequest("Invalid notification event data".into()));
+        return Err(AppError::BadRequest(
+            "Invalid notification event data".into(),
+        ));
     }
     let targets = targets.expect("validated");
     let event_id = uuid::Uuid::new_v4().to_string();
     for target in targets {
-        state.realtime.to_user(&num_id(target), "notification", payload.clone());
+        state
+            .realtime
+            .to_user(&num_id(target), "notification", payload.clone());
     }
     let ms = started.elapsed().as_secs_f64() * 1000.0;
-    state.realtime.module.record_event("notification", "normal", "api", ms, true);
-    Ok(publish_result(event_id, started, Some(("targetCount", json!(targets.len())))))
+    state
+        .realtime
+        .module
+        .record_event("notification", "normal", "api", ms, true);
+    Ok(publish_result(
+        event_id,
+        started,
+        Some(("targetCount", json!(targets.len()))),
+    ))
 }
 
 /// Publish a system-announcement / broadcast event (CRD 4117-4123):
@@ -821,7 +877,9 @@ pub fn publish_system_event(state: &AppState, user: &AuthUser, payload: &Value) 
             .is_some_and(|s| ["low", "medium", "high", "critical"].contains(&s))
         && (payload.get("affectedUsers").is_none()
             || payload["affectedUsers"].is_null()
-            || payload["affectedUsers"].as_array().is_some_and(|a| a.iter().all(Value::is_number)));
+            || payload["affectedUsers"]
+                .as_array()
+                .is_some_and(|a| a.iter().all(Value::is_number)));
     if !valid {
         return Err(AppError::BadRequest("Invalid system event data".into()));
     }
@@ -831,18 +889,29 @@ pub fn publish_system_event(state: &AppState, user: &AuthUser, payload: &Value) 
         _ => "normal",
     };
     let event_id = uuid::Uuid::new_v4().to_string();
-    match payload.get("affectedUsers").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+    match payload
+        .get("affectedUsers")
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty())
+    {
         Some(users) => {
             for u in users {
-                state.realtime.to_user(&num_id(u), "system_announcement", payload.clone());
+                state
+                    .realtime
+                    .to_user(&num_id(u), "system_announcement", payload.clone());
             }
         }
         None => {
-            state.realtime.global("system_announcement", payload.clone());
+            state
+                .realtime
+                .global("system_announcement", payload.clone());
         }
     }
     let ms = started.elapsed().as_secs_f64() * 1000.0;
-    state.realtime.module.record_event("system_announcement", priority, "system", ms, true);
+    state
+        .realtime
+        .module
+        .record_event("system_announcement", priority, "system", ms, true);
     Ok(publish_result(event_id, started, None))
 }
 

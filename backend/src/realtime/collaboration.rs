@@ -12,10 +12,11 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
+use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::envelope;
@@ -85,7 +86,7 @@ impl CollabState {
         role: &str,
     ) -> std::result::Result<(), RoomFull> {
         self.touch_init();
-        let mut rooms = self.rooms.lock().expect("collab rooms lock");
+        let mut rooms = self.rooms.lock();
         let room = rooms.entry(conversation_id).or_default();
         let now = crate::db::now_iso();
         if let Some(existing) = room.get_mut(user_id) {
@@ -113,7 +114,7 @@ impl CollabState {
     /// Remove a viewer; leaving when not present is harmless (CRD 2374).
     pub fn leave(&self, conversation_id: i64, user_id: &str) {
         self.touch_init();
-        let mut rooms = self.rooms.lock().expect("collab rooms lock");
+        let mut rooms = self.rooms.lock();
         if let Some(room) = rooms.get_mut(&conversation_id) {
             room.remove(user_id);
             if room.is_empty() {
@@ -135,7 +136,7 @@ impl CollabState {
         active: bool,
     ) {
         self.touch_init();
-        let mut rooms = self.rooms.lock().expect("collab rooms lock");
+        let mut rooms = self.rooms.lock();
         let room = rooms.entry(conversation_id).or_default();
         let now = crate::db::now_iso();
         let viewer = room.entry(user_id.to_string()).or_insert_with(|| Viewer {
@@ -160,24 +161,25 @@ impl CollabState {
         metadata: Value,
     ) {
         self.touch_init();
-        if let Ok(mut presence) = self.presence.lock() {
-            presence.insert(
-                user_id.to_string(),
-                Presence {
-                    status: status.to_string(),
-                    current_conversation,
-                    last_seen: crate::db::now_iso(),
-                    metadata,
-                    expires: Instant::now() + PRESENCE_TTL,
-                },
-            );
-        }
+        let mut presence = self.presence.lock();
+        presence.insert(
+            user_id.to_string(),
+            Presence {
+                status: status.to_string(),
+                current_conversation,
+                last_seen: crate::db::now_iso(),
+                metadata,
+                expires: Instant::now() + PRESENCE_TTL,
+            },
+        );
     }
 
     /// Current (unexpired) presence record for a user (CRD 2410).
     pub fn presence_snapshot(&self, user_id: &str) -> Option<Value> {
-        let presence = self.presence.lock().ok()?;
-        let p = presence.get(user_id).filter(|p| p.expires > Instant::now())?;
+        let presence = self.presence.lock();
+        let p = presence
+            .get(user_id)
+            .filter(|p| p.expires > Instant::now())?;
         Some(json!({
             "userId": user_id,
             "status": p.status,
@@ -192,13 +194,21 @@ impl CollabState {
         // anything else is omitted from listings (CRD 2349, 2407).
         let user_id: f64 = v.user_id.parse().ok().filter(|n: &f64| n.is_finite())?;
         let id_label = format!("User {}", v.user_id);
-        let username = if v.username.is_empty() { id_label.clone() } else { v.username.clone() };
+        let username = if v.username.is_empty() {
+            id_label.clone()
+        } else {
+            v.username.clone()
+        };
         let display = if !v.display_name.is_empty() {
             v.display_name.clone()
         } else {
             username.clone()
         };
-        let role = if v.role.is_empty() { "agent".to_string() } else { v.role.clone() };
+        let role = if v.role.is_empty() {
+            "agent".to_string()
+        } else {
+            v.role.clone()
+        };
         Some(json!({
             "userId": user_id,
             "username": username,
@@ -231,7 +241,7 @@ impl CollabState {
 
     /// Normalized viewer listing (CRD 2347-2353).
     pub fn viewers(&self, conversation_id: i64) -> Vec<Value> {
-        let rooms = self.rooms.lock().expect("collab rooms lock");
+        let rooms = self.rooms.lock();
         rooms
             .get(&conversation_id)
             .map(|room| room.values().filter_map(Self::viewer_json).collect())
@@ -240,23 +250,29 @@ impl CollabState {
 
     /// Active (unexpired) typing entries (CRD 2336).
     pub fn typing_entries(&self, conversation_id: i64) -> Vec<Value> {
-        let rooms = self.rooms.lock().expect("collab rooms lock");
+        let rooms = self.rooms.lock();
         rooms
             .get(&conversation_id)
             .map(|room| {
-                room.values().filter_map(|v| Self::typing_json(conversation_id, v)).collect()
+                room.values()
+                    .filter_map(|v| Self::typing_json(conversation_id, v))
+                    .collect()
             })
             .unwrap_or_default()
     }
 
     /// Aggregate statistics (CRD 2400-2404).
     pub fn stats(&self) -> Value {
-        let rooms = self.rooms.lock().expect("collab rooms lock");
+        let rooms = self.rooms.lock();
         let total_viewers: usize = rooms.values().map(HashMap::len).sum();
         let total_typing: usize = rooms
             .values()
             .flat_map(HashMap::values)
-            .filter(|v| v.typing.as_ref().is_some_and(|(exp, _)| *exp > Instant::now()))
+            .filter(|v| {
+                v.typing
+                    .as_ref()
+                    .is_some_and(|(exp, _)| *exp > Instant::now())
+            })
             .count();
         let mut ranked: Vec<(i64, usize)> =
             rooms.iter().map(|(cid, room)| (*cid, room.len())).collect();
@@ -279,26 +295,28 @@ impl CollabState {
     /// count removed (CRD 2425-2429).
     pub fn cleanup(&self) -> usize {
         let mut cleaned = 0usize;
-        if let Ok(mut rooms) = self.rooms.lock() {
-            for room in rooms.values_mut() {
-                for v in room.values_mut() {
-                    if v.typing.as_ref().is_some_and(|(exp, _)| *exp <= Instant::now()) {
-                        v.typing = None;
-                        cleaned += 1;
-                    }
+        let mut rooms = self.rooms.lock();
+        for room in rooms.values_mut() {
+            for v in room.values_mut() {
+                if v.typing
+                    .as_ref()
+                    .is_some_and(|(exp, _)| *exp <= Instant::now())
+                {
+                    v.typing = None;
+                    cleaned += 1;
                 }
             }
         }
-        if let Ok(mut presence) = self.presence.lock() {
-            let before = presence.len();
-            presence.retain(|_, p| p.expires > Instant::now());
-            cleaned += before - presence.len();
-        }
+        drop(rooms);
+        let mut presence = self.presence.lock();
+        let before = presence.len();
+        presence.retain(|_, p| p.expires > Instant::now());
+        cleaned += before - presence.len();
         cleaned
     }
 
     fn last_activity(&self, conversation_id: i64) -> Option<String> {
-        let rooms = self.rooms.lock().expect("collab rooms lock");
+        let rooms = self.rooms.lock();
         rooms
             .get(&conversation_id)
             .and_then(|room| room.values().map(|v| v.last_activity.clone()).max())
@@ -391,9 +409,12 @@ pub async fn conversation_state(
     let typing = state.realtime.collab.typing_entries(conversation_id);
     // Live-room metrics enrich the snapshot; when unavailable the reduced
     // snapshot below still carries the viewer list (CRD 2335).
-    let metrics = state.realtime.room_metrics_snapshot(&conversation_id.to_string());
-    let connection_count =
-        metrics["activeConnections"].as_u64().unwrap_or(viewers.len() as u64);
+    let metrics = state
+        .realtime
+        .room_metrics_snapshot(&conversation_id.to_string());
+    let connection_count = metrics["activeConnections"]
+        .as_u64()
+        .unwrap_or(viewers.len() as u64);
     let last_activity = state
         .realtime
         .collab
@@ -477,7 +498,11 @@ pub async fn join(
 }
 
 fn room_full_response() -> Response {
-    coded_error(StatusCode::FORBIDDEN, "ROOM_FULL", "Conversation room is full")
+    coded_error(
+        StatusCode::FORBIDDEN,
+        "ROOM_FULL",
+        "Conversation room is full",
+    )
 }
 
 /// POST /api/collaboration/conversations/{conversationId}/leave
@@ -496,7 +521,11 @@ pub async fn leave(
         "user_left",
         json!({ "userId": user.id, "conversationId": conversation_id }),
     );
-    Ok(envelope::with_status(StatusCode::OK, Some(Value::Null), Some("Left conversation")))
+    Ok(envelope::with_status(
+        StatusCode::OK,
+        Some(Value::Null),
+        Some("Left conversation"),
+    ))
 }
 
 /// POST /api/collaboration/typing (CRD 2376-2382).
@@ -514,7 +543,9 @@ pub async fn typing(
         ));
     };
     if status != "start" && status != "stop" {
-        return Err(AppError::BadRequest("Invalid status. Must be \"start\" or \"stop\"".into()));
+        return Err(AppError::BadRequest(
+            "Invalid status. Must be \"start\" or \"stop\"".into(),
+        ));
     }
     let active = status == "start";
     state.realtime.collab.set_typing(
@@ -525,7 +556,11 @@ pub async fn typing(
         &user.role,
         active,
     );
-    let event = if active { "typing_start" } else { "typing_stop" };
+    let event = if active {
+        "typing_start"
+    } else {
+        "typing_stop"
+    };
     emit(
         &state,
         conversation_id,
@@ -552,9 +587,14 @@ pub async fn presence(
     body: Option<Json<Value>>,
 ) -> Result {
     let body = body.map(|Json(v)| v).unwrap_or(Value::Null);
-    let Some(status) = body.get("status").and_then(Value::as_str).filter(|s| !s.is_empty())
+    let Some(status) = body
+        .get("status")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
     else {
-        return Err(AppError::BadRequest("Missing required field: status".into()));
+        return Err(AppError::BadRequest(
+            "Missing required field: status".into(),
+        ));
     };
     if !["online", "away", "busy", "offline"].contains(&status) {
         return Err(AppError::BadRequest(
@@ -563,7 +603,10 @@ pub async fn presence(
     }
     let current = body_conversation_id(body.get("currentConversation"));
     let metadata = body.get("metadata").cloned().unwrap_or(Value::Null);
-    state.realtime.collab.set_presence(&user.id, status, current, metadata);
+    state
+        .realtime
+        .collab
+        .set_presence(&user.id, status, current, metadata);
     // Focused conversation supplied -> presence-update into that room
     // (CRD 2388, 2441).
     if let Some(conversation_id) = current {
@@ -575,7 +618,11 @@ pub async fn presence(
             json!({ "userId": user.id, "status": status, "conversationId": conversation_id }),
         );
     }
-    Ok(envelope::with_status(StatusCode::OK, Some(Value::Null), Some("Presence updated")))
+    Ok(envelope::with_status(
+        StatusCode::OK,
+        Some(Value::Null),
+        Some("Presence updated"),
+    ))
 }
 
 /// GET /api/collaboration/stats (CRD 2400-2404).
@@ -620,8 +667,7 @@ pub async fn health(
         "timestamp": crate::db::now_iso(),
     });
     if !initialized {
-        data["note"] =
-            json!("Collaboration initializes lazily on first use; retry after activity");
+        data["note"] = json!("Collaboration initializes lazily on first use; retry after activity");
     }
     Ok(envelope::ok(data))
 }

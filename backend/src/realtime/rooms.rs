@@ -77,7 +77,9 @@ pub async fn room_connect(
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Response {
     // The room's mode is fixed at creation time (CRD 3479).
-    let mode = state.realtime.ensure_room(&conversation_id, q.mode.as_deref());
+    let mode = state
+        .realtime
+        .ensure_room(&conversation_id, q.mode.as_deref());
 
     // 1. Authenticate per the mode; failures reject before any socket exists
     //    (CRD 3493, 3502-3506).
@@ -99,7 +101,10 @@ pub async fn room_connect(
             role,
             team_ids: Vec::new(),
         };
-        (identity, chrono::Utc::now().timestamp() + MAX_SCHEDULED_CLOSE_SECS)
+        (
+            identity,
+            chrono::Utc::now().timestamp() + MAX_SCHEDULED_CLOSE_SECS,
+        )
     } else if let Some(token) = q.token.clone().filter(|s| !s.is_empty()) {
         // Full mode, bearer token: identity and role come from the verified
         // credential (CRD 3488).
@@ -120,7 +125,9 @@ pub async fn room_connect(
     {
         // Full mode, challenge-response: single-use, unexpired, signature must
         // match the keyed signature for that challenge (CRD 3489, 3505).
-        let Some(challenge) = state.realtime.consume_challenge(&conversation_id, &challenge_id)
+        let Some(challenge) = state
+            .realtime
+            .consume_challenge(&conversation_id, &challenge_id)
         else {
             return AppError::Unauthorized("Invalid challenge response".into()).into_response();
         };
@@ -147,9 +154,7 @@ pub async fn room_connect(
     // Must be a protocol-upgrade request (CRD 3479).
     let ws = match ws {
         Ok(ws) => ws,
-        Err(_) => {
-            return AppError::BadRequest("WebSocket upgrade required".into()).into_response()
-        }
+        Err(_) => return AppError::BadRequest("WebSocket upgrade required".into()).into_response(),
     };
 
     // 2. Capacity is enforced strictly before acceptance (CRD 3491, 3507).
@@ -167,6 +172,9 @@ pub async fn room_connect(
             .into_response()
         }
     };
+    if let Some(transition) = &registration.presence_transition {
+        super::broadcaster::publish_remote_presence_change(&state, transition).await;
+    }
 
     // Optional explicit token expiry schedules the forced close (CRD 3486,
     // 3499); otherwise the credential's own expiry applies.
@@ -178,7 +186,14 @@ pub async fn room_connect(
     .min(now + MAX_SCHEDULED_CLOSE_SECS);
 
     ws.on_upgrade(move |socket| {
-        run_socket(state, socket, registration, identity, Some(conversation_id), exp)
+        run_socket(
+            state,
+            socket,
+            registration,
+            identity,
+            Some(conversation_id),
+            exp,
+        )
     })
 }
 
@@ -197,7 +212,10 @@ pub async fn challenge(
     let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")))
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
         .map(str::to_string)
         .ok_or_else(|| AppError::Unauthorized("Authentication required".into()))?;
     let claims = tokens::verify(&token, &state.config.jwt_secret)
@@ -250,10 +268,14 @@ pub async fn force_disconnect(
         .get("connectionId")
         .and_then(Value::as_str)
         .ok_or_else(|| AppError::BadRequest("connectionId is required".into()))?;
-    if let Some(snapshot) =
-        state.realtime.remove_connection(connection_id, &user.id, user.is_admin())
+    if let Some(outcome) =
+        state
+            .realtime
+            .remove_connection(connection_id, &user.id, user.is_admin())
     {
-        user_sessions::persist_snapshot(&state.db, &snapshot).await;
+        super::broadcaster::publish_remote_presence_change(&state, &outcome.presence_transition)
+            .await;
+        user_sessions::persist_snapshot(&state.db, &outcome.snapshot).await;
     }
     Ok(envelope::ok(json!({
         "conversationId": conversation_id,
@@ -277,7 +299,9 @@ pub async fn broadcast(
         .map(|Json(v)| v)
         .filter(|v| v.is_object())
         .ok_or_else(|| AppError::BadRequest("event body is required".into()))?;
-    let delivered = state.realtime.room_broadcast_raw(&conversation_id, event.clone());
+    let delivered = state
+        .realtime
+        .room_broadcast_raw(&conversation_id, event.clone());
     super::broadcaster::publish_remote_room_broadcast(&state, &conversation_id, &event).await;
     Ok(envelope::ok(json!({ "delivered": delivered })))
 }
@@ -299,5 +323,7 @@ pub async fn room_metrics(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     authenticate(&state, &headers).await?;
-    Ok(envelope::ok(state.realtime.room_metrics_snapshot(&conversation_id)))
+    Ok(envelope::ok(
+        state.realtime.room_metrics_snapshot(&conversation_id),
+    ))
 }

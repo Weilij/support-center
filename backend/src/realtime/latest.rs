@@ -6,9 +6,9 @@
 //! best-effort: every read path falls back to authoritative storage, and
 //! refresh failures never block correct response generation (CRD 4168-4174).
 
+use parking_lot::Mutex;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::state::AppState;
@@ -40,7 +40,7 @@ pub struct LatestMessageCache {
 impl LatestMessageCache {
     /// Cached snapshot, if present and unexpired.
     pub fn peek(&self, conversation_id: &str) -> Option<Value> {
-        let inner = self.inner.lock().ok()?;
+        let inner = self.inner.lock();
         inner
             .entries
             .get(conversation_id)
@@ -50,17 +50,16 @@ impl LatestMessageCache {
 
     /// Store/refresh a snapshot with the 24-hour expiry (CRD 4151).
     pub fn store(&self, conversation_id: &str, snapshot: Value) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.entries.retain(|_, (at, _)| at.elapsed() < LATEST_TTL);
-            inner.entries.insert(conversation_id.to_string(), (Instant::now(), snapshot));
-        }
+        let mut inner = self.inner.lock();
+        inner.entries.retain(|_, (at, _)| at.elapsed() < LATEST_TTL);
+        inner
+            .entries
+            .insert(conversation_id.to_string(), (Instant::now(), snapshot));
     }
 
     /// Remove the cached snapshot; failures are non-fatal (CRD 4156-4158).
     pub fn invalidate(&self, conversation_id: &str) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.entries.remove(conversation_id);
-        }
+        self.inner.lock().entries.remove(conversation_id);
     }
 
     /// Mark a refresh pending; returns false when one is already pending
@@ -68,35 +67,34 @@ impl LatestMessageCache {
     fn begin_refresh(&self, conversation_id: &str) -> bool {
         self.inner
             .lock()
-            .map(|mut i| i.pending.insert(conversation_id.to_string()))
-            .unwrap_or(false)
+            .pending
+            .insert(conversation_id.to_string())
     }
 
     fn end_refresh(&self, conversation_id: &str, succeeded: bool) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.pending.remove(conversation_id);
-        }
-        if let Ok(mut c) = self.counters.lock() {
-            c.0 += 1;
-            if succeeded {
-                c.1 += 1;
-            } else {
-                c.2 += 1;
-            }
+        self.inner.lock().pending.remove(conversation_id);
+        let mut c = self.counters.lock();
+        c.0 += 1;
+        if succeeded {
+            c.1 += 1;
+        } else {
+            c.2 += 1;
         }
     }
 
     /// (processed, succeeded, failed) refresh counters (CRD 4193).
     pub fn refresh_counters(&self) -> (u64, u64, u64) {
-        self.counters.lock().map(|c| *c).unwrap_or((0, 0, 0))
+        *self.counters.lock()
     }
 
     /// Number of unexpired cached snapshots.
     pub fn len(&self) -> usize {
         self.inner
             .lock()
-            .map(|i| i.entries.values().filter(|(at, _)| at.elapsed() < LATEST_TTL).count())
-            .unwrap_or(0)
+            .entries
+            .values()
+            .filter(|(at, _)| at.elapsed() < LATEST_TTL)
+            .count()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -155,7 +153,10 @@ pub async fn get_latest(state: &AppState, conversation_id: &str) -> Option<Value
     // On cache errors this is also the direct-storage fallback path
     // (CRD 4138): a derive failure simply yields absence rather than an error.
     let derived = derive(state, conversation_id).await.ok().flatten()?;
-    state.realtime.latest.store(conversation_id, derived.clone());
+    state
+        .realtime
+        .latest
+        .store(conversation_id, derived.clone());
     Some(derived)
 }
 
@@ -199,7 +200,10 @@ pub async fn refresh(state: &AppState, conversation_id: &str) -> bool {
         return false;
     };
     if let Some(snapshot) = latest {
-        state.realtime.latest.store(conversation_id, snapshot.clone());
+        state
+            .realtime
+            .latest
+            .store(conversation_id, snapshot.clone());
         // Exact frame shape per CRD 4180-4182; broadcast failure is non-fatal.
         let frame = json!({
             "type": "latest_message_updated",
@@ -211,7 +215,9 @@ pub async fn refresh(state: &AppState, conversation_id: &str) -> bool {
             },
             "timestamp": crate::db::now_iso(),
         });
-        state.realtime.to_conversation_raw(conversation_id, &frame.to_string());
+        state
+            .realtime
+            .to_conversation_raw(conversation_id, &frame.to_string());
     }
     true
 }
@@ -227,7 +233,10 @@ pub fn schedule_refresh(state: std::sync::Arc<AppState>, conversation_id: String
         let ok = refresh(&state, &conversation_id).await;
         state.realtime.latest.end_refresh(&conversation_id, ok);
         if !ok {
-            tracing::warn!(conversation_id, "latest-message refresh abandoned after retries");
+            tracing::warn!(
+                conversation_id,
+                "latest-message refresh abandoned after retries"
+            );
         }
     });
 }

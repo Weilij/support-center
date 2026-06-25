@@ -7,9 +7,7 @@ mod common;
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use common::ws::{
-    connect_rejected, mint, send_json, serve, wait_for_event, ws_connect, Ws,
-};
+use common::ws::{connect_rejected, mint, send_json, serve, wait_for_event, ws_connect, Ws};
 use common::{spawn_app, TestApp};
 use futures_util::StreamExt;
 use serde_json::json;
@@ -32,10 +30,18 @@ async fn seed(app: &TestApp) -> Seeded {
     let team_id = app.seed_team("Sessions Team").await;
     let other_team_id = app.seed_team("Other Sessions Team").await;
     app.add_membership(&agent_id, team_id, "member", true).await;
-    let customer = app.seed_customer("line", "U-us-1", "US Customer", Some(team_id)).await;
-    let team_conv = app.seed_conversation(customer, Some(team_id), "assigned").await;
-    let team_conv2 = app.seed_conversation(customer, Some(team_id), "assigned").await;
-    let foreign_conv = app.seed_conversation(customer, Some(other_team_id), "assigned").await;
+    let customer = app
+        .seed_customer("line", "U-us-1", "US Customer", Some(team_id))
+        .await;
+    let team_conv = app
+        .seed_conversation(customer, Some(team_id), "assigned")
+        .await;
+    let team_conv2 = app
+        .seed_conversation(customer, Some(team_id), "assigned")
+        .await;
+    let foreign_conv = app
+        .seed_conversation(customer, Some(other_team_id), "assigned")
+        .await;
     let pool_conv = app.seed_conversation(customer, None, "active").await;
     let (admin_token, _, _) = app.login("admin@us.io", "Secret123!").await;
     let (agent_token, _, _) = app.login("agent@us.io", "Secret123!").await;
@@ -56,7 +62,9 @@ fn session_ws(token: &str, role: &str, user_id: &str) -> String {
 }
 
 async fn open_session(addr: std::net::SocketAddr, token: &str, role: &str, user_id: &str) -> Ws {
-    let mut ws = ws_connect(addr, &session_ws(token, role, user_id)).await.unwrap();
+    let mut ws = ws_connect(addr, &session_ws(token, role, user_id))
+        .await
+        .unwrap();
     wait_for_event(&mut ws, "user_connected").await;
     ws
 }
@@ -70,8 +78,7 @@ async fn session_open_parameter_and_auth_contract() {
     let addr = serve(&app).await;
 
     // Missing token or role -> 400 "Missing required parameters" (CRD 3714).
-    let (status, body) =
-        connect_rejected(addr, "/api/realtime/session/websocket?role=agent").await;
+    let (status, body) = connect_rejected(addr, "/api/realtime/session/websocket?role=agent").await;
     assert_eq!(status, 400);
     assert_eq!(body["error"], "Missing required parameters");
     let (status, body) = connect_rejected(
@@ -85,15 +92,17 @@ async fn session_open_parameter_and_auth_contract() {
     // Missing userId -> 400 "Missing userId parameter" (CRD 3715).
     let (status, body) = connect_rejected(
         addr,
-        &format!("/api/realtime/session/websocket?token={}&role=agent", s.agent_token),
+        &format!(
+            "/api/realtime/session/websocket?token={}&role=agent",
+            s.agent_token
+        ),
     )
     .await;
     assert_eq!(status, 400);
     assert_eq!(body["error"], "Missing userId parameter");
 
     // Invalid token -> 401 "Unauthorized" (CRD 3716).
-    let (status, body) =
-        connect_rejected(addr, &session_ws("garbage", "agent", &s.agent_id)).await;
+    let (status, body) = connect_rejected(addr, &session_ws("garbage", "agent", &s.agent_id)).await;
     assert_eq!(status, 401);
     assert_eq!(body["error"], "Unauthorized");
 
@@ -149,7 +158,10 @@ async fn session_token_expiry_forces_close_with_refresh_code() {
     let expiry = chrono::Utc::now().timestamp() + 2;
     let mut ws = ws_connect(
         addr,
-        &format!("{}&tokenExpiry={expiry}", session_ws(&s.agent_token, "agent", &s.agent_id)),
+        &format!(
+            "{}&tokenExpiry={expiry}",
+            session_ws(&s.agent_token, "agent", &s.agent_id)
+        ),
     )
     .await
     .unwrap();
@@ -182,7 +194,12 @@ async fn http_subscribe_unsubscribe_permissions_and_session_events() {
 
     // Missing conversation id -> 400.
     let (status, _, _) = app
-        .request("POST", "/api/realtime/session/connect", Some(&s.agent_token), Some(json!({})))
+        .request(
+            "POST",
+            "/api/realtime/session/connect",
+            Some(&s.agent_token),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
@@ -267,7 +284,11 @@ async fn subscription_ceiling_is_silently_capped_over_http_and_errors_over_ws() 
     let addr = serve(&app).await;
     // Fill the followed set to the cap (CRD 3731: cap is 50).
     for i in 0..50 {
-        assert!(app.state.realtime.subscribe(&s.admin_id, &format!("conv-{i}")).is_some());
+        assert!(app
+            .state
+            .realtime
+            .subscribe(&s.admin_id, &format!("conv-{i}"))
+            .is_some());
     }
     let mut ws = open_session(addr, &s.admin_token, "admin", &s.admin_id).await;
 
@@ -284,7 +305,11 @@ async fn subscription_ceiling_is_silently_capped_over_http_and_errors_over_ws() 
     assert_eq!(body["data"]["subscriptionCount"], 50);
 
     // The inbound subscribe frame surfaces the cap as an error (CRD 3802).
-    send_json(&mut ws, json!({ "type": "subscribe", "conversationId": s.team_conv })).await;
+    send_json(
+        &mut ws,
+        json!({ "type": "subscribe", "conversationId": s.team_conv }),
+    )
+    .await;
     let err = wait_for_event(&mut ws, "error").await;
     assert_eq!(err["payload"]["message"], "Maximum subscriptions reached");
 }
@@ -298,11 +323,24 @@ async fn preferences_defaults_shallow_merge_and_method_contract() {
 
     // Defaults: all toggles enabled (CRD 3813).
     let (status, body, _) = app
-        .request("GET", "/api/realtime/session/preferences", Some(&s.agent_token), None)
+        .request(
+            "GET",
+            "/api/realtime/session/preferences",
+            Some(&s.agent_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
-    for key in ["newMessage", "messageRecall", "conversationAssignment", "systemNotifications"] {
-        assert_eq!(body["data"]["notificationSettings"][key], true, "default {key}");
+    for key in [
+        "newMessage",
+        "messageRecall",
+        "conversationAssignment",
+        "systemNotifications",
+    ] {
+        assert_eq!(
+            body["data"]["notificationSettings"][key], true,
+            "default {key}"
+        );
     }
 
     // Shallow merge of supplied fields (CRD 3757-3759).
@@ -324,17 +362,30 @@ async fn preferences_defaults_shallow_merge_and_method_contract() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["notificationSettings"]["newMessage"], false);
-    assert_eq!(body["data"]["notificationSettings"]["systemNotifications"], false);
+    assert_eq!(
+        body["data"]["notificationSettings"]["systemNotifications"],
+        false
+    );
     assert_eq!(body["data"]["sound"], "chime");
 
     let (_, body, _) = app
-        .request("GET", "/api/realtime/session/preferences", Some(&s.agent_token), None)
+        .request(
+            "GET",
+            "/api/realtime/session/preferences",
+            Some(&s.agent_token),
+            None,
+        )
         .await;
     assert_eq!(body["data"]["notificationSettings"]["newMessage"], false);
 
     // Any other method on this path -> 405 "Method not allowed" (CRD 3760).
     let (status, body, _) = app
-        .request("POST", "/api/realtime/session/preferences", Some(&s.agent_token), Some(json!({})))
+        .request(
+            "POST",
+            "/api/realtime/session/preferences",
+            Some(&s.agent_token),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
     assert_eq!(body["error"], "Method not allowed");
@@ -347,7 +398,11 @@ async fn followed_set_preferences_and_stats_survive_reconnect() {
     let addr = serve(&app).await;
 
     let mut ws = open_session(addr, &s.agent_token, "agent", &s.agent_id).await;
-    send_json(&mut ws, json!({ "type": "subscribe", "conversationId": s.team_conv })).await;
+    send_json(
+        &mut ws,
+        json!({ "type": "subscribe", "conversationId": s.team_conv }),
+    )
+    .await;
     let ack = wait_for_event(&mut ws, "subscription_added").await;
     assert_eq!(ack["payload"]["subscriptionCount"], 1);
     let (status, _, _) = app
@@ -370,7 +425,12 @@ async fn followed_set_preferences_and_stats_survive_reconnect() {
     let mut offline = false;
     for _ in 0..50 {
         let (_, body, _) = app
-            .request("GET", "/api/realtime/session/status", Some(&s.agent_token), None)
+            .request(
+                "GET",
+                "/api/realtime/session/status",
+                Some(&s.agent_token),
+                None,
+            )
             .await;
         if body["data"]["sessionCount"] == 0 && body["data"]["online"] == false {
             offline = true;
@@ -378,7 +438,10 @@ async fn followed_set_preferences_and_stats_survive_reconnect() {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(offline, "user never transitioned to offline after closing the last session");
+    assert!(
+        offline,
+        "user never transitioned to offline after closing the last session"
+    );
 
     // State is restored from persistence on the next session: the welcome
     // carries the followed set, merged preferences and cumulative statistics
@@ -420,7 +483,12 @@ async fn presence_heartbeat_status_and_metrics_snapshots() {
 
     // Status snapshot (CRD 3762-3765).
     let (status, body, _) = app
-        .request("GET", "/api/realtime/session/status", Some(&s.agent_token), None)
+        .request(
+            "GET",
+            "/api/realtime/session/status",
+            Some(&s.agent_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["userId"], json!(s.agent_id));
@@ -432,15 +500,96 @@ async fn presence_heartbeat_status_and_metrics_snapshots() {
 
     // Metrics snapshot adds a derived uptime (CRD 3767-3770).
     let (status, body, _) = app
-        .request("GET", "/api/realtime/session/metrics", Some(&s.agent_token), None)
+        .request(
+            "GET",
+            "/api/realtime/session/metrics",
+            Some(&s.agent_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["data"]["uptimeSeconds"].is_number());
     assert_eq!(body["data"]["sessionCount"], 1);
 
     // The whole session surface requires authentication.
-    let (status, _, _) = app.request("GET", "/api/realtime/session/status", None, None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/realtime/session/status", None, None)
+        .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn presence_transitions_publish_remote_fanout_once_per_online_state() {
+    let app = spawn_app().await;
+    let s = seed(&app).await;
+    let addr = serve(&app).await;
+
+    let mut ws = open_session(addr, &s.agent_token, "agent", &s.agent_id).await;
+    let online: (String, String) = sqlx::query_as(
+        "SELECT event, targets FROM realtime_broadcast_fanout_events
+         WHERE source_instance = $1
+         ORDER BY created_at DESC
+         LIMIT 1",
+    )
+    .bind(app.state.realtime.instance_id())
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
+    let event: serde_json::Value = serde_json::from_str(&online.0).unwrap();
+    let targets: serde_json::Value = serde_json::from_str(&online.1).unwrap();
+    assert_eq!(event["type"], "presence_changed");
+    assert_eq!(event["data"]["userId"], s.agent_id);
+    assert_eq!(event["data"]["status"], "online");
+    assert_eq!(targets[0]["type"], "presence");
+    assert_eq!(targets[0]["userId"], s.agent_id);
+
+    let count_after_online: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM realtime_broadcast_fanout_events")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    let mut second = open_session(addr, &s.agent_token, "agent", &s.agent_id).await;
+    let count_after_second: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM realtime_broadcast_fanout_events")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    assert_eq!(count_after_second, count_after_online);
+
+    second.close(None).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let count_after_one_close: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM realtime_broadcast_fanout_events")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    assert_eq!(count_after_one_close, count_after_online);
+
+    ws.close(None).await.unwrap();
+    let mut offline = None;
+    for _ in 0..50 {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT event FROM realtime_broadcast_fanout_events
+             WHERE source_instance = $1
+             ORDER BY created_at DESC
+             LIMIT 1",
+        )
+        .bind(app.state.realtime.instance_id())
+        .fetch_optional(&app.state.db)
+        .await
+        .unwrap();
+        if let Some((event,)) = row {
+            let value: serde_json::Value = serde_json::from_str(&event).unwrap();
+            if value["data"]["status"] == "offline" {
+                offline = Some(value);
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let offline = offline.expect("offline presence fanout was not published");
+    assert_eq!(offline["type"], "presence_changed");
+    assert_eq!(offline["data"]["userId"], s.agent_id);
 }
 
 // ----------------------------------------- pushed delivery (CRD 3772-3786)
@@ -454,7 +603,12 @@ async fn broadcast_pushes_to_every_live_session_of_the_user() {
     let mut b = open_session(addr, &s.agent_token, "agent", &s.agent_id).await;
 
     let (status, _, _) = app
-        .request("POST", "/api/realtime/session/broadcast", Some(&s.agent_token), Some(json!({})))
+        .request(
+            "POST",
+            "/api/realtime/session/broadcast",
+            Some(&s.agent_token),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
@@ -488,7 +642,9 @@ async fn broadcast_pushes_to_every_live_session_of_the_user() {
             "POST",
             "/api/realtime/session/broadcast",
             Some(&s.admin_token),
-            Some(json!({ "userId": s.agent_id, "message": { "type": "admin_note", "payload": {} } })),
+            Some(
+                json!({ "userId": s.agent_id, "message": { "type": "admin_note", "payload": {} } }),
+            ),
         )
         .await;
     assert_eq!(status, StatusCode::OK);
@@ -506,7 +662,12 @@ async fn batch_events_validation_delivery_and_received_counter() {
     // Missing or non-array events -> 400 "Invalid events format" (CRD 3785).
     for bad in [json!({}), json!({ "events": "nope" })] {
         let (status, body, _) = app
-            .request("POST", "/api/realtime/session/batch-events", Some(&s.agent_token), Some(bad))
+            .request(
+                "POST",
+                "/api/realtime/session/batch-events",
+                Some(&s.agent_token),
+                Some(bad),
+            )
             .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"], "Invalid events format");
@@ -544,7 +705,12 @@ async fn batch_events_validation_delivery_and_received_counter() {
 
     // The received-messages counter advances (CRD 3814).
     let (_, body, _) = app
-        .request("GET", "/api/realtime/session/status", Some(&s.agent_token), None)
+        .request(
+            "GET",
+            "/api/realtime/session/status",
+            Some(&s.agent_token),
+            None,
+        )
         .await;
     assert_eq!(body["data"]["stats"]["messagesReceived"], 2);
 }
@@ -562,15 +728,25 @@ async fn inbound_frames_are_size_and_rate_limited() {
     let oversized = json!({ "type": "ping", "padding": "x".repeat(11_000) });
     send_json(&mut ws, oversized).await;
     let err = wait_for_event(&mut ws, "error").await;
-    assert_eq!(err["payload"]["message"], "Message too large. Maximum size is 10240 bytes");
+    assert_eq!(
+        err["payload"]["message"],
+        "Message too large. Maximum size is 10240 bytes"
+    );
 
     // At most 10 frames per 1-second window; the excess frame yields an error
     // and is not processed (CRD 3796).
     for i in 0..11 {
-        send_json(&mut ws, json!({ "type": "ping", "timestamp": format!("p{i}") })).await;
+        send_json(
+            &mut ws,
+            json!({ "type": "ping", "timestamp": format!("p{i}") }),
+        )
+        .await;
     }
     let err = wait_for_event(&mut ws, "error").await;
-    assert_eq!(err["payload"]["message"], "Rate limit exceeded. Please slow down.");
+    assert_eq!(
+        err["payload"]["message"],
+        "Rate limit exceeded. Please slow down."
+    );
 }
 
 // -------------------------------- session frame fan-out & counters (CRD 3800-3806)
@@ -595,7 +771,11 @@ async fn typing_events_rebroadcast_to_own_sessions_and_chat_ack_counts() {
 
     // Chat frames require a followed conversation and are acknowledged to the
     // requesting session only; the sent counter increments (CRD 3804).
-    send_json(&mut a, json!({ "type": "subscribe", "conversationId": s.team_conv })).await;
+    send_json(
+        &mut a,
+        json!({ "type": "subscribe", "conversationId": s.team_conv }),
+    )
+    .await;
     wait_for_event(&mut a, "subscription_added").await;
     send_json(
         &mut a,
@@ -607,7 +787,12 @@ async fn typing_events_rebroadcast_to_own_sessions_and_chat_ack_counts() {
     assert_eq!(ack["payload"]["conversationId"], json!(s.team_conv));
 
     let (_, body, _) = app
-        .request("GET", "/api/realtime/session/status", Some(&s.agent_token), None)
+        .request(
+            "GET",
+            "/api/realtime/session/status",
+            Some(&s.agent_token),
+            None,
+        )
         .await;
     assert_eq!(body["data"]["stats"]["messagesSent"], 1);
 }

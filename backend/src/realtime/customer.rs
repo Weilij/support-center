@@ -19,10 +19,11 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
+use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
 use tokio::sync::mpsc;
 
 use crate::domain::conversations::channels::{OutboundGateway, OutboundItem, BATCH_CAP};
@@ -30,10 +31,8 @@ use crate::state::AppState;
 
 const REMOTE_FANOUT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 const REMOTE_FANOUT_BATCH: i64 = 100;
-const REMOTE_FANOUT_RETENTION: std::time::Duration =
-    std::time::Duration::from_secs(24 * 60 * 60);
-const REMOTE_FANOUT_CLEANUP_INTERVAL: std::time::Duration =
-    std::time::Duration::from_secs(60 * 60);
+const REMOTE_FANOUT_RETENTION: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+const REMOTE_FANOUT_CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 // ------------------------------------------------------------ channel registry
 
@@ -54,7 +53,11 @@ impl CustomerChannels {
     /// Register a connection under a freshly generated unique identifier and
     /// broadcast a presence "connected" event to the channel's *other*
     /// connections (CRD 3864, 3966).
-    pub fn connect(&self, conversation_id: &str, user_id: &str) -> (String, mpsc::UnboundedReceiver<String>) {
+    pub fn connect(
+        &self,
+        conversation_id: &str,
+        user_id: &str,
+    ) -> (String, mpsc::UnboundedReceiver<String>) {
         let connection_id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = mpsc::unbounded_channel();
         let presence = json!({
@@ -63,12 +66,18 @@ impl CustomerChannels {
             "timestamp": crate::db::now_iso(),
         })
         .to_string();
-        let mut inner = self.inner.lock().expect("customer channels lock");
+        let mut inner = self.inner.lock();
         let channel = inner.entry(conversation_id.to_string()).or_default();
         for conn in channel.values() {
             let _ = conn.tx.send(presence.clone());
         }
-        channel.insert(connection_id.clone(), CustConn { user_id: user_id.to_string(), tx });
+        channel.insert(
+            connection_id.clone(),
+            CustConn {
+                user_id: user_id.to_string(),
+                tx,
+            },
+        );
         (connection_id, rx)
     }
 
@@ -76,9 +85,13 @@ impl CustomerChannels {
     /// the user holds no other remaining connections on the channel
     /// (CRD 3959, 3967).
     pub fn disconnect(&self, conversation_id: &str, connection_id: &str) {
-        let mut inner = self.inner.lock().expect("customer channels lock");
-        let Some(channel) = inner.get_mut(conversation_id) else { return };
-        let Some(removed) = channel.remove(connection_id) else { return };
+        let mut inner = self.inner.lock();
+        let Some(channel) = inner.get_mut(conversation_id) else {
+            return;
+        };
+        let Some(removed) = channel.remove(connection_id) else {
+            return;
+        };
         let user_still_connected = channel.values().any(|c| c.user_id == removed.user_id);
         if !user_still_connected {
             let presence = json!({
@@ -100,8 +113,10 @@ impl CustomerChannels {
     /// send fails are pruned (CRD 3876). Returns the delivery count.
     pub fn broadcast(&self, conversation_id: &str, event: &Value) -> usize {
         let frame = event.to_string();
-        let mut inner = self.inner.lock().expect("customer channels lock");
-        let Some(channel) = inner.get_mut(conversation_id) else { return 0 };
+        let mut inner = self.inner.lock();
+        let Some(channel) = inner.get_mut(conversation_id) else {
+            return 0;
+        };
         let mut dead: Vec<String> = Vec::new();
         let mut delivered = 0usize;
         for (id, conn) in channel.iter() {
@@ -120,8 +135,10 @@ impl CustomerChannels {
     /// (total connection count, distinct connected user ids) for the
     /// diagnostic block of the notify endpoint (CRD 3877).
     pub fn snapshot(&self, conversation_id: &str) -> (usize, Vec<String>) {
-        let inner = self.inner.lock().expect("customer channels lock");
-        let Some(channel) = inner.get(conversation_id) else { return (0, Vec::new()) };
+        let inner = self.inner.lock();
+        let Some(channel) = inner.get(conversation_id) else {
+            return (0, Vec::new());
+        };
         let mut users: Vec<String> = Vec::new();
         for conn in channel.values() {
             if !users.contains(&conn.user_id) {
@@ -199,7 +216,10 @@ pub async fn process_remote_customer_events(
     for row in rows {
         match serde_json::from_str::<Value>(&row.event) {
             Ok(event) => {
-                state.realtime.customers.broadcast(&row.conversation_id, &event);
+                state
+                    .realtime
+                    .customers
+                    .broadcast(&row.conversation_id, &event);
             }
             Err(err) => {
                 tracing::warn!(
@@ -304,7 +324,10 @@ pub async fn run_customer_socket(
             }
         }
     }
-    state.realtime.customers.disconnect(&conversation_id, &connection_id);
+    state
+        .realtime
+        .customers
+        .disconnect(&conversation_id, &connection_id);
 }
 
 // ------------------------------------------------------------------- helpers
@@ -318,7 +341,10 @@ fn plain(status: StatusCode, message: &'static str) -> Response {
 }
 
 fn header<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
-    headers.get(name).and_then(|v| v.to_str().ok()).filter(|v| !v.is_empty())
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty())
 }
 
 /// Conversation-identifier header for the message API (CRD 3892).
@@ -356,18 +382,28 @@ pub async fn channel_ws(
     // Upgrade header absent -> plain 400 (CRD 3868).
     let ws = match ws {
         Ok(ws) => ws,
-        Err(_) => return plain(StatusCode::BAD_REQUEST, "Expected WebSocket upgrade request"),
+        Err(_) => {
+            return plain(
+                StatusCode::BAD_REQUEST,
+                "Expected WebSocket upgrade request",
+            )
+        }
     };
     let Some(conversation_id) = q.conversation_id.filter(|c| !c.is_empty()) else {
         return plain(StatusCode::BAD_REQUEST, "Conversation ID is required");
     };
 
     let fast_path = q.pre_validated.as_deref() == Some("true")
-        && q.validated_user_id.as_deref().is_some_and(|u| !u.is_empty());
+        && q.validated_user_id
+            .as_deref()
+            .is_some_and(|u| !u.is_empty());
     let user_id = if fast_path {
         // Identity accepted as-is; role defaults to agent, label to a generic
         // one (CRD 3859, 3862) — only the user id is observable in events.
-        let _ = (q.validated_role.as_deref().unwrap_or("agent"), q.validated_username.as_deref().unwrap_or("User"));
+        let _ = (
+            q.validated_role.as_deref().unwrap_or("agent"),
+            q.validated_username.as_deref().unwrap_or("User"),
+        );
         q.validated_user_id.clone().unwrap_or_default()
     } else {
         // Fallback path: session-store lookup (CRD 3863, 3869-3870).
@@ -399,7 +435,10 @@ pub async fn channel_ws(
         let Some(profile) = parsed else {
             return fail(StatusCode::UNAUTHORIZED, "Session data unreadable");
         };
-        profile["userId"].as_str().map(str::to_string).unwrap_or(agent_id)
+        profile["userId"]
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or(agent_id)
     };
 
     ws.on_upgrade(move |socket| async move {
@@ -417,10 +456,15 @@ pub async fn notify_message(
     body: Option<Json<Value>>,
 ) -> Response {
     let body = body.map(|Json(v)| v).unwrap_or(Value::Null);
-    let Some(conversation_id) = body["conversationId"].as_str().map(str::to_string).or_else(|| {
-        body["conversationId"].as_i64().map(|n| n.to_string())
-    }) else {
-        return fail(StatusCode::INTERNAL_SERVER_ERROR, "conversationId is missing");
+    let Some(conversation_id) = body["conversationId"]
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| body["conversationId"].as_i64().map(|n| n.to_string()))
+    else {
+        return fail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "conversationId is missing",
+        );
     };
     let message = body.get("message").cloned().unwrap_or(json!({}));
     let now = crate::db::now_iso();
@@ -465,14 +509,19 @@ pub async fn notify_message_updated(
     body: Option<Json<Value>>,
 ) -> Response {
     let body = body.map(|Json(v)| v).unwrap_or(Value::Null);
-    let conversation_id = body["conversationId"].as_str().map(str::to_string).or_else(|| {
-        body["conversationId"].as_i64().map(|n| n.to_string())
-    });
-    let message_id = body["messageId"].as_str().map(str::to_string).or_else(|| {
-        body["messageId"].as_i64().map(|n| n.to_string())
-    });
+    let conversation_id = body["conversationId"]
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| body["conversationId"].as_i64().map(|n| n.to_string()));
+    let message_id = body["messageId"]
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| body["messageId"].as_i64().map(|n| n.to_string()));
     let (Some(conversation_id), Some(message_id)) = (conversation_id, message_id) else {
-        return fail(StatusCode::INTERNAL_SERVER_ERROR, "conversationId and messageId are missing");
+        return fail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "conversationId and messageId are missing",
+        );
     };
     let mut data = json!({ "conversationId": conversation_id, "messageId": message_id });
     if let Some(extra) = body.get("data").and_then(Value::as_object) {
@@ -580,9 +629,17 @@ pub async fn list_messages(
 ) -> Response {
     let headers = headers.clone();
     let Some(conversation_id) = header(&headers, CONVERSATION_HEADER).map(str::to_string) else {
-        return fail(StatusCode::BAD_REQUEST, "Conversation ID header is required");
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "Conversation ID header is required",
+        );
     };
-    let limit = q.limit.as_deref().and_then(|v| v.parse::<i64>().ok()).filter(|v| *v > 0).unwrap_or(50);
+    let limit = q
+        .limit
+        .as_deref()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(50);
 
     // "before" cursor: strictly older than the anchor message; an
     // unresolvable cursor degrades to the latest page (CRD 3896).
@@ -598,7 +655,12 @@ pub async fn list_messages(
         .await
         {
             Ok(v) => v,
-            Err(_) => return fail(StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch messages"),
+            Err(_) => {
+                return fail(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to fetch messages",
+                )
+            }
         };
         if let Some(at) = anchor.filter(|a| !a.is_empty()) {
             clause.push_str(" AND created_at < ?");
@@ -619,7 +681,12 @@ pub async fn list_messages(
     }
     let rows = match mq.bind(limit).fetch_all(&state.db).await {
         Ok(v) => v,
-        Err(_) => return fail(StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch messages"),
+        Err(_) => {
+            return fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to fetch messages",
+            )
+        }
     };
 
     let mut by_message: HashMap<String, Vec<Value>> = HashMap::new();
@@ -645,7 +712,12 @@ pub async fn list_messages(
                     }
                 }
             }
-            Err(_) => return fail(StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch messages"),
+            Err(_) => {
+                return fail(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to fetch messages",
+                )
+            }
         }
     }
 
@@ -716,7 +788,10 @@ pub async fn create_message(
 ) -> Response {
     let headers = headers.clone();
     let Some(conversation_id) = header(&headers, CONVERSATION_HEADER).map(str::to_string) else {
-        return fail(StatusCode::BAD_REQUEST, "Conversation ID header is required");
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "Conversation ID header is required",
+        );
     };
     let Some(credential) = header(&headers, SESSION_HEADER).map(str::to_string) else {
         return fail(StatusCode::UNAUTHORIZED, "Session token header is required");
@@ -727,7 +802,10 @@ pub async fn create_message(
     let attachment_ids = body.attachment_ids.unwrap_or_default();
     // At least one of content or attachments (CRD 3909, 3922).
     if content.is_empty() && attachment_ids.is_empty() {
-        return fail(StatusCode::BAD_REQUEST, "Content or attachments are required");
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "Content or attachments are required",
+        );
     }
     // Attachments force the file kind (CRD 3911).
     let message_type = if attachment_ids.is_empty() {
@@ -747,7 +825,12 @@ pub async fn create_message(
     .await
     {
         Ok(v) => v,
-        Err(_) => return fail(StatusCode::INTERNAL_SERVER_ERROR, "Failed to create message"),
+        Err(_) => {
+            return fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to create message",
+            )
+        }
     };
     let agent_id = agent.as_ref().map(|(id, _)| id.clone());
     let sender_name = token_name
@@ -776,7 +859,11 @@ pub async fn create_message(
         .bind(&message_id)
         .bind(&conversation_id)
         .bind(&agent_id)
-        .bind(if content.is_empty() { None } else { Some(content.clone()) })
+        .bind(if content.is_empty() {
+            None
+        } else {
+            Some(content.clone())
+        })
         .bind(&message_type)
         .bind(&now)
         .bind(metadata.to_string())
@@ -809,7 +896,10 @@ pub async fn create_message(
     }
     .await;
     if insert.is_err() {
-        return fail(StatusCode::INTERNAL_SERVER_ERROR, "Failed to create message");
+        return fail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to create message",
+        );
     }
 
     let attachments: Vec<Value> = if attachment_ids.is_empty() {
@@ -958,7 +1048,10 @@ pub async fn upload(
 ) -> Response {
     let headers = headers.clone();
     let Some(conversation_id) = header(&headers, CONVERSATION_HEADER).map(str::to_string) else {
-        return fail(StatusCode::BAD_REQUEST, "Conversation ID header is required");
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "Conversation ID header is required",
+        );
     };
     let Some(session_token) = header(&headers, SESSION_HEADER).map(str::to_string) else {
         return fail(StatusCode::UNAUTHORIZED, "Session token header is required");
@@ -966,13 +1059,12 @@ pub async fn upload(
 
     // The session token must resolve to a live, unexpired session record
     // (CRD 3932, 3938).
-    let live: Result<Option<String>, _> = sqlx::query_scalar(
-        "SELECT id FROM auth_sessions WHERE id = $1 AND expires_at > $2",
-    )
-    .bind(&session_token)
-    .bind(crate::db::now_iso())
-    .fetch_optional(&state.db)
-    .await;
+    let live: Result<Option<String>, _> =
+        sqlx::query_scalar("SELECT id FROM auth_sessions WHERE id = $1 AND expires_at > $2")
+            .bind(&session_token)
+            .bind(crate::db::now_iso())
+            .fetch_optional(&state.db)
+            .await;
     match live {
         Ok(Some(_)) => {}
         Ok(None) => return fail(StatusCode::UNAUTHORIZED, "Session not found or expired"),
@@ -983,7 +1075,10 @@ pub async fn upload(
     while let Ok(Some(field)) = multipart.next_field().await {
         if field.name() == Some("file") {
             let filename = field.file_name().unwrap_or("upload.bin").to_string();
-            let mime = field.content_type().unwrap_or("application/octet-stream").to_string();
+            let mime = field
+                .content_type()
+                .unwrap_or("application/octet-stream")
+                .to_string();
             match field.bytes().await {
                 Ok(bytes) => {
                     file = Some((filename, mime, bytes.to_vec()));
@@ -1003,12 +1098,22 @@ pub async fn upload(
         .and_then(|e| e.to_str())
         .map(|e| {
             let safe: String = e.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
-            if safe.is_empty() { String::new() } else { format!(".{safe}") }
+            if safe.is_empty() {
+                String::new()
+            } else {
+                format!(".{safe}")
+            }
         })
         .unwrap_or_default();
     let safe_conv: String = conversation_id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let storage_key = format!("conv_{safe_conv}_{}{extension}", uuid::Uuid::new_v4());
     let dir = std::path::Path::new(&state.config.upload_dir);

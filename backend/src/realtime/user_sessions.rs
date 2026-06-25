@@ -47,18 +47,27 @@ pub async fn hydrate(state: &Arc<AppState>, user_id: &str) {
     .fetch_optional(&state.db)
     .await
     .unwrap_or(None);
-    let Some((last_seen, subscriptions, preferences, stats)) = row else { return };
-    let subscriptions: Vec<String> =
-        serde_json::from_str(&subscriptions).unwrap_or_default();
+    let Some((last_seen, subscriptions, preferences, stats)) = row else {
+        return;
+    };
+    let subscriptions: Vec<String> = serde_json::from_str(&subscriptions).unwrap_or_default();
     let preferences = preferences.and_then(|p| serde_json::from_str(&p).ok());
     let stats = stats.and_then(|s| serde_json::from_str::<Value>(&s).ok());
-    state.realtime.hydrate_user(user_id, last_seen, subscriptions, preferences, stats.as_ref());
+    state.realtime.hydrate_user(
+        user_id,
+        last_seen,
+        subscriptions,
+        preferences,
+        stats.as_ref(),
+    );
 }
 
 /// Upsert one user-state snapshot row (CRD 3815: re-persisted on relevant
 /// changes). Best-effort: persistence failures never alter request outcomes.
 pub async fn persist_snapshot(db: &PgPool, snapshot: &Value) {
-    let Some(user_id) = snapshot["userId"].as_str() else { return };
+    let Some(user_id) = snapshot["userId"].as_str() else {
+        return;
+    };
     let _ = sqlx::query(
         "INSERT INTO realtime_user_state
              (user_id, online, last_seen, subscriptions, preferences, stats, updated_at)
@@ -137,9 +146,7 @@ pub async fn session_connect(
     let agent = match store::find_agent_by_id(&state.db, &claims.sub).await {
         Ok(Some(a)) if a.is_active != 0 => a,
         Ok(_) => return AppError::unauthorized().into_response(),
-        Err(_) => {
-            return AppError::Internal("WebSocket upgrade failed".into()).into_response()
-        }
+        Err(_) => return AppError::Internal("WebSocket upgrade failed".into()).into_response(),
     };
     let teams = match state.team_cache.get(&agent.id, TEAM_CACHE_TTL) {
         Some(t) => t,
@@ -148,9 +155,7 @@ pub async fn session_connect(
                 state.team_cache.put(&agent.id, t.clone());
                 t
             }
-            Err(_) => {
-                return AppError::Internal("WebSocket upgrade failed".into()).into_response()
-            }
+            Err(_) => return AppError::Internal("WebSocket upgrade failed".into()).into_response(),
         },
     };
     let identity = ConnIdentity {
@@ -163,9 +168,7 @@ pub async fn session_connect(
 
     let ws = match ws {
         Ok(ws) => ws,
-        Err(_) => {
-            return AppError::BadRequest("WebSocket upgrade required".into()).into_response()
-        }
+        Err(_) => return AppError::BadRequest("WebSocket upgrade required".into()).into_response(),
     };
 
     // Restore persisted state before the session registers so the welcome
@@ -174,17 +177,22 @@ pub async fn session_connect(
     hydrate(&state, &identity.user_id).await;
 
     // Per-user simultaneous-session cap (CRD 3709, 3717, 3719: cap is 5).
-    let registration =
-        match state.realtime.register(identity.clone(), None, q.device_id.clone()) {
-            Ok(r) => r,
-            Err(RegisterError::CeilingReached(_)) => {
-                return AppError::TooManyRequests {
-                    message: "Connection limit reached".into(),
-                    retry_after: 30,
-                }
-                .into_response()
+    let registration = match state
+        .realtime
+        .register(identity.clone(), None, q.device_id.clone())
+    {
+        Ok(r) => r,
+        Err(RegisterError::CeilingReached(_)) => {
+            return AppError::TooManyRequests {
+                message: "Connection limit reached".into(),
+                retry_after: 30,
             }
-        };
+            .into_response()
+        }
+    };
+    if let Some(transition) = &registration.presence_transition {
+        super::broadcaster::publish_remote_presence_change(&state, transition).await;
+    }
 
     // Session metadata and the recomputed user state are persisted (CRD 3710).
     persist_user(&state, &identity.user_id).await;
@@ -239,7 +247,9 @@ pub async fn subscribe(
         "conversation_subscribed",
         json!({ "conversationId": cid, "subscriptionCount": count }),
     );
-    Ok(envelope::ok(json!({ "conversationId": cid, "subscriptionCount": count })))
+    Ok(envelope::ok(
+        json!({ "conversationId": cid, "subscriptionCount": count }),
+    ))
 }
 
 /// Unsubscribe the user from a conversation — POST /disconnect, alias
@@ -260,7 +270,9 @@ pub async fn unsubscribe(
         "conversation_unsubscribed",
         json!({ "conversationId": cid, "subscriptionCount": count }),
     );
-    Ok(envelope::ok(json!({ "conversationId": cid, "subscriptionCount": count })))
+    Ok(envelope::ok(
+        json!({ "conversationId": cid, "subscriptionCount": count }),
+    ))
 }
 
 /// Update presence (heartbeat) — POST /presence (CRD 3743-3748).
@@ -273,7 +285,9 @@ pub async fn presence(
     hydrate(&state, &user.id).await;
     let (online, last_seen) = state.realtime.heartbeat(&user.id);
     persist_user(&state, &user.id).await;
-    Ok(envelope::ok(json!({ "online": online, "lastSeen": last_seen })))
+    Ok(envelope::ok(
+        json!({ "online": online, "lastSeen": last_seen }),
+    ))
 }
 
 /// Read notification preferences — GET /preferences (CRD 3750-3753).
@@ -345,7 +359,11 @@ pub async fn metrics(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
 /// Resolve the target user for the trusted delivery operations: the caller
 /// itself, or — administrators only — an explicit `userId` in the body.
 fn delivery_target(user: &AuthUser, body: &Value) -> Result<String> {
-    match body.get("userId").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+    match body
+        .get("userId")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
         Some(target) if target != user.id => {
             if !user.is_admin() {
                 return Err(AppError::Forbidden("Administrator role required".into()));
@@ -371,8 +389,11 @@ pub async fn broadcast(
         .filter(|m| m.is_object())
         .ok_or_else(|| AppError::BadRequest("message is required".into()))?;
     let target = delivery_target(&user, &body)?;
-    let event_type =
-        message.get("type").and_then(Value::as_str).unwrap_or("event").to_string();
+    let event_type = message
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("event")
+        .to_string();
     let payload = message.get("payload").cloned().unwrap_or(message.clone());
     let delivered = state.realtime.to_user(&target, &event_type, payload);
     Ok(envelope::ok(json!({ "delivered": delivered })))
@@ -393,8 +414,11 @@ pub async fn batch_events(
     let target = delivery_target(&user, &body)?;
     let mut delivered = 0u64;
     for event in &events {
-        let event_type =
-            event.get("type").and_then(Value::as_str).unwrap_or("event").to_string();
+        let event_type = event
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("event")
+            .to_string();
         let mut payload = event.get("data").cloned().unwrap_or_else(|| event.clone());
         // The conversation association and timestamp are preserved; the
         // timestamp defaults to now (CRD 3782).

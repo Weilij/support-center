@@ -39,7 +39,10 @@ pub async fn connect(
 ) -> Response {
     // Resolve auth token: query param takes precedence; fall back to the
     // HttpOnly mcss_access cookie sent automatically by the browser.
-    let token = q.token.clone().or_else(|| crate::middleware::cookies::cookie_value(&headers, "mcss_access"));
+    let token = q
+        .token
+        .clone()
+        .or_else(|| crate::middleware::cookies::cookie_value(&headers, "mcss_access"));
 
     // Handshake gate first (CRD 600-610): token checks, role, identity,
     // conversation access.
@@ -61,9 +64,7 @@ pub async fn connect(
     // Must be a protocol-upgrade request (CRD 3231, 3255).
     let ws = match ws {
         Ok(ws) => ws,
-        Err(_) => {
-            return AppError::BadRequest("WebSocket upgrade required".into()).into_response()
-        }
+        Err(_) => return AppError::BadRequest("WebSocket upgrade required".into()).into_response(),
     };
 
     // Restore the persisted per-user realtime state (subscriptions,
@@ -80,10 +81,16 @@ pub async fn connect(
     ) {
         Ok(r) => r,
         Err(RegisterError::CeilingReached(reason)) => {
-            return AppError::TooManyRequests { message: reason.to_string(), retry_after: 30 }
-                .into_response()
+            return AppError::TooManyRequests {
+                message: reason.to_string(),
+                retry_after: 30,
+            }
+            .into_response()
         }
     };
+    if let Some(transition) = &registration.presence_transition {
+        super::broadcaster::publish_remote_presence_change(&state, transition).await;
+    }
 
     // Best-effort connection-quality analytics record (CRD 610, 645).
     {
@@ -231,8 +238,10 @@ pub(crate) async fn run_socket(
 
     // On the user's last connection the final state snapshot (offline,
     // last-seen refreshed) is re-persisted (CRD 3824, 3828).
-    if let Some(snapshot) = state.realtime.unregister(&connection_id) {
-        super::user_sessions::persist_snapshot(&state.db, &snapshot).await;
+    if let Some(outcome) = state.realtime.unregister(&connection_id) {
+        super::broadcaster::publish_remote_presence_change(&state, &outcome.presence_transition)
+            .await;
+        super::user_sessions::persist_snapshot(&state.db, &outcome.snapshot).await;
     }
 }
 
@@ -244,11 +253,14 @@ fn send_error(state: &Arc<AppState>, connection_id: &str, message: &str) {
 }
 
 fn send_event(state: &Arc<AppState>, connection_id: &str, event: &str, payload: Value) {
-    state.realtime.to_connection(connection_id, frame(event, payload));
+    state
+        .realtime
+        .to_connection(connection_id, frame(event, payload));
 }
 
 fn field<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
-    v.get(key).or_else(|| v.get("payload").and_then(|p| p.get(key)))
+    v.get(key)
+        .or_else(|| v.get("payload").and_then(|p| p.get(key)))
 }
 
 fn field_str<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
@@ -361,8 +373,7 @@ async fn handle_frame(
                     send_error(state, connection_id, "Permission denied to send messages");
                     return;
                 }
-                let message_type =
-                    field_str(&v, "messageType").unwrap_or("text").to_string();
+                let message_type = field_str(&v, "messageType").unwrap_or("text").to_string();
                 // Typing indicators are relayed to other participants only,
                 // never stored (CRD 3560).
                 if message_type == "typing" {
@@ -396,14 +407,20 @@ async fn handle_frame(
                 });
                 // High-priority broadcast to all participants + bounded
                 // history for reconnection sync (CRD 3561-3565).
-                state.realtime.to_conversation_message(cid, "message_sent", payload);
+                state
+                    .realtime
+                    .to_conversation_message(cid, "message_sent", payload);
                 state.realtime.note_message_sent(&identity.user_id);
             }
             None => {
                 // Personal channel: requires a subscribed target conversation;
                 // acknowledged only (CRD 3414, 3804).
                 let Some(cid) = field_str(&v, "conversationId").map(str::to_string) else {
-                    send_error(state, connection_id, "Conversation ID required for chat messages");
+                    send_error(
+                        state,
+                        connection_id,
+                        "Conversation ID required for chat messages",
+                    );
                     return;
                 };
                 if !state.realtime.is_subscribed(&identity.user_id, &cid) {
@@ -435,7 +452,11 @@ async fn handle_frame(
             }
             let subtype = field_str(&v, "event")
                 .or_else(|| field_str(&v, "eventType"))
-                .or_else(|| v.get("payload").and_then(|p| p.get("type")).and_then(Value::as_str))
+                .or_else(|| {
+                    v.get("payload")
+                        .and_then(|p| p.get("type"))
+                        .and_then(Value::as_str)
+                })
                 .unwrap_or("");
             match subtype {
                 "typing_start" | "typing_stop" => {
@@ -446,9 +467,12 @@ async fn handle_frame(
                     });
                     match room {
                         Some(cid) => {
-                            state
-                                .realtime
-                                .relay_to_room_others(cid, connection_id, subtype, payload);
+                            state.realtime.relay_to_room_others(
+                                cid,
+                                connection_id,
+                                subtype,
+                                payload,
+                            );
                         }
                         None => {
                             // Re-broadcast to the user's own live sessions (CRD 3805).
@@ -470,8 +494,7 @@ async fn handle_frame(
                     return;
                 }
                 let since = field_str(&v, "since").map(str::to_string);
-                let (missed, last_message_at) =
-                    state.realtime.sync_since(cid, since.as_deref());
+                let (missed, last_message_at) = state.realtime.sync_since(cid, since.as_deref());
                 let missed_count = missed.len();
                 send_event(
                     state,
@@ -490,7 +513,11 @@ async fn handle_frame(
         },
 
         other => {
-            send_error(state, connection_id, &format!("Unknown message type: {other}"));
+            send_error(
+                state,
+                connection_id,
+                &format!("Unknown message type: {other}"),
+            );
         }
     }
 }
@@ -527,6 +554,8 @@ pub(crate) async fn can_view(
         Some(Some(team_id)) => team_ids.contains(&team_id),
         None => false,
     };
-    state.realtime.cache_access(&cache_key, conversation_id, allowed);
+    state
+        .realtime
+        .cache_access(&cache_key, conversation_id, allowed);
     allowed
 }

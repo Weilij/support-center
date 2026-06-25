@@ -8,9 +8,9 @@
 //! shared reachability registry, fire-and-forget remote fan-out per CRD 3542,
 //! 3467) is deferred — observable behavior is single-instance equivalent.
 
+use parking_lot::Mutex;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Mutex;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
@@ -185,6 +185,18 @@ impl GatewayConfig {
 pub struct Registration {
     pub connection_id: String,
     pub rx: mpsc::UnboundedReceiver<String>,
+    pub presence_transition: Option<PresenceTransition>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PresenceTransition {
+    pub identity: ConnIdentity,
+    pub status: &'static str,
+}
+
+pub struct UnregisterOutcome {
+    pub snapshot: Value,
+    pub presence_transition: PresenceTransition,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -249,13 +261,11 @@ impl RealtimeHub {
     // ------------------------------------------------------------- configuration
 
     pub fn config(&self) -> GatewayConfig {
-        self.config.lock().map(|c| c.clone()).unwrap_or_default()
+        self.config.lock().clone()
     }
 
     pub fn set_config(&self, new: GatewayConfig) {
-        if let Ok(mut c) = self.config.lock() {
-            *c = new;
-        }
+        *self.config.lock() = new;
     }
 
     /// Broadcasts are suppressed when the feature is disabled or the
@@ -279,20 +289,32 @@ impl RealtimeHub {
         conversation_id: Option<String>,
         device_id: Option<String>,
     ) -> Result<Registration, RegisterError> {
-        let mut inner = self.inner.lock().expect("hub lock");
-        let user_conns =
-            inner.conns.values().filter(|c| c.identity.user_id == identity.user_id).count();
+        let mut inner = self.inner.lock();
+        let user_conns = inner
+            .conns
+            .values()
+            .filter(|c| c.identity.user_id == identity.user_id)
+            .count();
         if user_conns >= MAX_CONNECTIONS_PER_USER {
-            return Err(RegisterError::CeilingReached("per-user connection limit reached"));
+            return Err(RegisterError::CeilingReached(
+                "per-user connection limit reached",
+            ));
         }
         if inner.conns.len() >= MAX_CONNECTIONS_GLOBAL {
-            return Err(RegisterError::CeilingReached("global connection limit reached"));
+            return Err(RegisterError::CeilingReached(
+                "global connection limit reached",
+            ));
         }
         if let Some(cid) = &conversation_id {
-            let room_conns =
-                inner.conns.values().filter(|c| c.conversation_id.as_deref() == Some(cid)).count();
+            let room_conns = inner
+                .conns
+                .values()
+                .filter(|c| c.conversation_id.as_deref() == Some(cid))
+                .count();
             if room_conns >= ROOM_CAPACITY {
-                return Err(RegisterError::CeilingReached("room connection limit reached"));
+                return Err(RegisterError::CeilingReached(
+                    "room connection limit reached",
+                ));
             }
         }
 
@@ -408,15 +430,22 @@ impl RealtimeHub {
             Self::presence_locked(&inner, &identity, "online");
         }
 
-        Ok(Registration { connection_id, rx })
+        Ok(Registration {
+            connection_id,
+            rx,
+            presence_transition: first_overall.then_some(PresenceTransition {
+                identity,
+                status: "online",
+            }),
+        })
     }
 
     /// Remove a connection (socket close, error, forced disconnect, reap).
     /// When this was the user's last live connection the user's final state
     /// snapshot (offline, last-seen refreshed) is returned so the caller can
     /// re-persist it (CRD 3828).
-    pub fn unregister(&self, connection_id: &str) -> Option<Value> {
-        let mut inner = self.inner.lock().expect("hub lock");
+    pub fn unregister(&self, connection_id: &str) -> Option<UnregisterOutcome> {
+        let mut inner = self.inner.lock();
         let entry = inner.conns.remove(connection_id)?;
         let identity = entry.identity.clone();
 
@@ -454,8 +483,10 @@ impl RealtimeHub {
 
         // Last connection overall => offline + state evicted from memory after
         // taking a final snapshot for persistence (CRD 3428, 3431, 3824, 3828).
-        let user_still_connected =
-            inner.conns.values().any(|c| c.identity.user_id == identity.user_id);
+        let user_still_connected = inner
+            .conns
+            .values()
+            .any(|c| c.identity.user_id == identity.user_id);
         if !user_still_connected {
             let snapshot = inner.users.remove(&identity.user_id).map(|mut u| {
                 u.online = false;
@@ -463,7 +494,13 @@ impl RealtimeHub {
                 Self::user_snapshot_json(&identity.user_id, &u, 0)
             });
             Self::presence_locked(&inner, &identity, "offline");
-            return snapshot;
+            return snapshot.map(|snapshot| UnregisterOutcome {
+                snapshot,
+                presence_transition: PresenceTransition {
+                    identity,
+                    status: "offline",
+                },
+            });
         }
         None
     }
@@ -477,9 +514,9 @@ impl RealtimeHub {
         connection_id: &str,
         caller: &str,
         caller_is_admin: bool,
-    ) -> Option<Value> {
+    ) -> Option<UnregisterOutcome> {
         let owned = {
-            let inner = self.inner.lock().expect("hub lock");
+            let inner = self.inner.lock();
             match inner.conns.get(connection_id) {
                 Some(c) => caller_is_admin || c.identity.user_id == caller,
                 None => return None,
@@ -494,18 +531,17 @@ impl RealtimeHub {
     /// Refresh a connection's (and its room's) last-activity timestamp
     /// (CRD 3545).
     pub fn touch(&self, connection_id: &str) {
-        if let Ok(mut inner) = self.inner.lock() {
-            let room = match inner.conns.get_mut(connection_id) {
-                Some(c) => {
-                    c.last_activity = Instant::now();
-                    c.conversation_id.clone()
-                }
-                None => None,
-            };
-            if let Some(cid) = room {
-                if let Some(r) = inner.rooms.get_mut(&cid) {
-                    r.last_activity = crate::db::now_iso();
-                }
+        let mut inner = self.inner.lock();
+        let room = match inner.conns.get_mut(connection_id) {
+            Some(c) => {
+                c.last_activity = Instant::now();
+                c.conversation_id.clone()
+            }
+            None => None,
+        };
+        if let Some(cid) = room {
+            if let Some(r) = inner.rooms.get_mut(&cid) {
+                r.last_activity = crate::db::now_iso();
             }
         }
     }
@@ -513,7 +549,7 @@ impl RealtimeHub {
     /// Connections idle past the inactivity timeout are reaped (CRD 3431).
     /// Returns the ids so callers can close their sockets.
     pub fn idle_connections(&self) -> Vec<String> {
-        let inner = self.inner.lock().expect("hub lock");
+        let inner = self.inner.lock();
         inner
             .conns
             .values()
@@ -526,7 +562,11 @@ impl RealtimeHub {
         // Presence events go to the account's team(s) and administrators
         // (CRD 3446); event names follow the taxonomy's user connected /
         // user disconnected identifiers (CRD 3438).
-        let event = if status == "online" { "user_connected" } else { "user_disconnected" };
+        let event = if status == "online" {
+            "user_connected"
+        } else {
+            "user_disconnected"
+        };
         let payload = json!({
             "userId": identity.user_id,
             "userName": identity.display_name,
@@ -536,7 +576,11 @@ impl RealtimeHub {
         let mut sent: HashSet<&str> = HashSet::new();
         for c in inner.conns.values() {
             let is_admin = c.identity.role == "admin";
-            let in_team = c.identity.team_ids.iter().any(|t| identity.team_ids.contains(t));
+            let in_team = c
+                .identity
+                .team_ids
+                .iter()
+                .any(|t| identity.team_ids.contains(t));
             if (is_admin || in_team)
                 && c.identity.user_id != identity.user_id
                 && sent.insert(c.id.as_str())
@@ -552,7 +596,7 @@ impl RealtimeHub {
         if !self.broadcasts_enabled() {
             return;
         }
-        let inner = self.inner.lock().expect("hub lock");
+        let inner = self.inner.lock();
         let identity = ConnIdentity {
             user_id: user_id.to_string(),
             email: String::new(),
@@ -560,14 +604,21 @@ impl RealtimeHub {
             role: "agent".into(),
             team_ids: team_ids.to_vec(),
         };
-        let f = frame("presence_changed", json!({
-            "userId": user_id,
-            "userName": display_name,
-            "status": status,
-        }));
+        let f = frame(
+            "presence_changed",
+            json!({
+                "userId": user_id,
+                "userName": display_name,
+                "status": status,
+            }),
+        );
         for c in inner.conns.values() {
             let is_admin = c.identity.role == "admin";
-            let in_team = c.identity.team_ids.iter().any(|t| identity.team_ids.contains(t));
+            let in_team = c
+                .identity
+                .team_ids
+                .iter()
+                .any(|t| identity.team_ids.contains(t));
             if (is_admin || in_team) && c.identity.user_id != identity.user_id {
                 let _ = c.tx.send(f.clone());
             }
@@ -580,7 +631,7 @@ impl RealtimeHub {
         if !self.broadcasts_enabled() {
             return 0;
         }
-        let mut inner = self.inner.lock().expect("hub lock");
+        let mut inner = self.inner.lock();
         inner.broadcasts_attempted += 1;
         let f = frame(event, payload);
         let mut delivered: usize = 0;
@@ -606,7 +657,7 @@ impl RealtimeHub {
             return 0;
         }
         let subscribed: HashSet<String> = {
-            let inner = self.inner.lock().expect("hub lock");
+            let inner = self.inner.lock();
             inner
                 .users
                 .iter()
@@ -633,7 +684,7 @@ impl RealtimeHub {
         if !self.broadcasts_enabled() {
             return 0;
         }
-        let inner = self.inner.lock().expect("hub lock");
+        let inner = self.inner.lock();
         let subscribed: HashSet<&String> = inner
             .users
             .iter()
@@ -664,7 +715,7 @@ impl RealtimeHub {
             return 0;
         }
         let subscribed: HashSet<String> = {
-            let inner = self.inner.lock().expect("hub lock");
+            let inner = self.inner.lock();
             inner
                 .users
                 .iter()
@@ -693,7 +744,7 @@ impl RealtimeHub {
         payload: Value,
     ) -> usize {
         {
-            let mut inner = self.inner.lock().expect("hub lock");
+            let mut inner = self.inner.lock();
             let room = inner.rooms.entry(conversation_id.to_string()).or_default();
             room.last_message_at = Some(crate::db::now_iso());
             room.last_activity = crate::db::now_iso();
@@ -714,7 +765,7 @@ impl RealtimeHub {
     /// Deliver one already-framed message to a single connection (protocol
     /// replies: pong, acks, error frames).
     pub fn to_connection(&self, connection_id: &str, framed: String) -> bool {
-        let inner = self.inner.lock().expect("hub lock");
+        let inner = self.inner.lock();
         inner
             .conns
             .get(connection_id)
@@ -761,7 +812,7 @@ impl RealtimeHub {
 
     /// Next value of the room's monotonically increasing order counter.
     pub fn next_seq(&self, conversation_id: &str) -> u64 {
-        let mut inner = self.inner.lock().expect("hub lock");
+        let mut inner = self.inner.lock();
         let room = inner.rooms.entry(conversation_id.to_string()).or_default();
         room.seq += 1;
         room.seq
@@ -789,7 +840,7 @@ impl RealtimeHub {
         conversation_id: &str,
         since: Option<&str>,
     ) -> (Vec<Value>, Option<String>) {
-        let inner = self.inner.lock().expect("hub lock");
+        let inner = self.inner.lock();
         let Some(room) = inner.rooms.get(conversation_id) else {
             return (Vec::new(), None);
         };
@@ -799,7 +850,9 @@ impl RealtimeHub {
                 .history
                 .iter()
                 .filter(|m| {
-                    m.get("timestamp").and_then(Value::as_str).is_some_and(|t| t > since)
+                    m.get("timestamp")
+                        .and_then(Value::as_str)
+                        .is_some_and(|t| t > since)
                 })
                 .cloned()
                 .collect(),
@@ -812,20 +865,23 @@ impl RealtimeHub {
     /// Create the room if absent, fixing its mode at creation time
     /// (CRD 3479: full vs simplified, set once). Returns the effective mode.
     pub fn ensure_room(&self, conversation_id: &str, mode: Option<&str>) -> String {
-        let mut inner = self.inner.lock().expect("hub lock");
-        let room = inner.rooms.entry(conversation_id.to_string()).or_insert_with(|| {
-            let mut r = RoomState::default();
-            if mode == Some("simplified") {
-                r.mode = "simplified".into();
-            }
-            r
-        });
+        let mut inner = self.inner.lock();
+        let room = inner
+            .rooms
+            .entry(conversation_id.to_string())
+            .or_insert_with(|| {
+                let mut r = RoomState::default();
+                if mode == Some("simplified") {
+                    r.mode = "simplified".into();
+                }
+                r
+            });
         room.mode.clone()
     }
 
     /// The room's mode; rooms default to full-featured (CRD 3479).
     pub fn room_mode(&self, conversation_id: &str) -> String {
-        let inner = self.inner.lock().expect("hub lock");
+        let inner = self.inner.lock();
         inner
             .rooms
             .get(conversation_id)
@@ -850,7 +906,7 @@ impl RealtimeHub {
 
     /// Participant listing for the room HTTP surface (CRD 3536-3537).
     pub fn room_info(&self, conversation_id: &str) -> Value {
-        let inner = self.inner.lock().expect("hub lock");
+        let inner = self.inner.lock();
         let (participants, conns) = Self::room_participants_locked(&inner, conversation_id);
         json!({
             "participants": participants,
@@ -862,10 +918,12 @@ impl RealtimeHub {
     /// Room metrics (CRD 3539-3540): full mode additionally reports history
     /// length and an uptime estimate.
     pub fn room_metrics_snapshot(&self, conversation_id: &str) -> Value {
-        let inner = self.inner.lock().expect("hub lock");
+        let inner = self.inner.lock();
         let (participants, conns) = Self::room_participants_locked(&inner, conversation_id);
         let room = inner.rooms.get(conversation_id);
-        let mode = room.map(|r| r.mode.clone()).unwrap_or_else(|| "full".into());
+        let mode = room
+            .map(|r| r.mode.clone())
+            .unwrap_or_else(|| "full".into());
         let mut out = json!({
             "conversationId": conversation_id,
             "mode": mode,
@@ -877,8 +935,7 @@ impl RealtimeHub {
         });
         if mode != "simplified" {
             out["historyLength"] = json!(room.map(|r| r.history.len()).unwrap_or(0));
-            out["uptimeSeconds"] =
-                json!(room.map(|r| r.created.elapsed().as_secs()).unwrap_or(0));
+            out["uptimeSeconds"] = json!(room.map(|r| r.created.elapsed().as_secs()).unwrap_or(0));
         }
         out
     }
@@ -886,8 +943,11 @@ impl RealtimeHub {
     /// Deliver a fully-formed injected event to every active connection in
     /// the room as an event frame (CRD 3530-3534).
     pub fn room_broadcast_raw(&self, conversation_id: &str, event: Value) -> usize {
-        let event_type =
-            event.get("type").and_then(Value::as_str).unwrap_or("event").to_string();
+        let event_type = event
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("event")
+            .to_string();
         self.fan_out(
             |c| c.conversation_id.as_deref() == Some(conversation_id),
             &event_type,
@@ -907,7 +967,7 @@ impl RealtimeHub {
         token: &str,
         token_exp: i64,
     ) -> (String, String) {
-        let mut inner = self.inner.lock().expect("hub lock");
+        let mut inner = self.inner.lock();
         let room = inner.rooms.entry(conversation_id.to_string()).or_default();
         room.challenges.retain(|_, c| c.expires > Instant::now());
         let id = uuid::Uuid::new_v4().to_string();
@@ -929,8 +989,12 @@ impl RealtimeHub {
 
     /// Consume a challenge: single-use, expired challenges are deleted on
     /// access and verify as absent (CRD 3518, 3676).
-    pub fn consume_challenge(&self, conversation_id: &str, challenge_id: &str) -> Option<Challenge> {
-        let mut inner = self.inner.lock().expect("hub lock");
+    pub fn consume_challenge(
+        &self,
+        conversation_id: &str,
+        challenge_id: &str,
+    ) -> Option<Challenge> {
+        let mut inner = self.inner.lock();
         let room = inner.rooms.get_mut(conversation_id)?;
         let challenge = room.challenges.remove(challenge_id)?;
         (challenge.expires > Instant::now()).then_some(challenge)
@@ -941,7 +1005,7 @@ impl RealtimeHub {
     /// Subscribe a user's personal channel to a conversation (CRD 3413).
     /// Returns the new subscription count, or `None` at the per-account ceiling.
     pub fn subscribe(&self, user_id: &str, conversation_id: &str) -> Option<usize> {
-        let mut inner = self.inner.lock().expect("hub lock");
+        let mut inner = self.inner.lock();
         let user = inner.users.entry(user_id.to_string()).or_default();
         if !user.subscriptions.contains(conversation_id)
             && user.subscriptions.len() >= MAX_SUBSCRIPTIONS_PER_USER
@@ -956,14 +1020,14 @@ impl RealtimeHub {
 
     /// Unsubscribe always succeeds (CRD 3413). Returns the remaining count.
     pub fn unsubscribe(&self, user_id: &str, conversation_id: &str) -> usize {
-        let mut inner = self.inner.lock().expect("hub lock");
+        let mut inner = self.inner.lock();
         let user = inner.users.entry(user_id.to_string()).or_default();
         user.subscriptions.remove(conversation_id);
         user.subscriptions.len()
     }
 
     pub fn is_subscribed(&self, user_id: &str, conversation_id: &str) -> bool {
-        let inner = self.inner.lock().expect("hub lock");
+        let inner = self.inner.lock();
         inner
             .users
             .get(user_id)
@@ -971,22 +1035,28 @@ impl RealtimeHub {
     }
 
     pub fn note_message_sent(&self, user_id: &str) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.users.entry(user_id.to_string()).or_default().messages_sent += 1;
-        }
+        self.inner
+            .lock()
+            .users
+            .entry(user_id.to_string())
+            .or_default()
+            .messages_sent += 1;
     }
 
     pub fn note_messages_received(&self, user_id: &str, count: u64) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.users.entry(user_id.to_string()).or_default().messages_received += count;
-        }
+        self.inner
+            .lock()
+            .users
+            .entry(user_id.to_string())
+            .or_default()
+            .messages_received += count;
     }
 
     // -------------------------------------------- per-user state (§5.3)
 
     /// Whether the user's realtime state is currently held in memory.
     pub fn has_user_state(&self, user_id: &str) -> bool {
-        self.inner.lock().map(|i| i.users.contains_key(user_id)).unwrap_or(false)
+        self.inner.lock().users.contains_key(user_id)
     }
 
     /// Restore a persisted user-state snapshot (CRD 3812-3815). A no-op when
@@ -999,12 +1069,15 @@ impl RealtimeHub {
         preferences: Option<Value>,
         stats: Option<&Value>,
     ) {
-        let Ok(mut inner) = self.inner.lock() else { return };
+        let mut inner = self.inner.lock();
         if inner.users.contains_key(user_id) {
             return;
         }
         let stat = |key: &str| {
-            stats.and_then(|s| s.get(key)).and_then(Value::as_u64).unwrap_or(0)
+            stats
+                .and_then(|s| s.get(key))
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
         };
         inner.users.insert(
             user_id.to_string(),
@@ -1037,9 +1110,12 @@ impl RealtimeHub {
     /// flag, last-seen, live-session count, followed conversations, preferences
     /// and activity statistics.
     pub fn user_state_snapshot(&self, user_id: &str) -> Value {
-        let inner = self.inner.lock().expect("hub lock");
-        let sessions =
-            inner.conns.values().filter(|c| c.identity.user_id == user_id).count();
+        let inner = self.inner.lock();
+        let sessions = inner
+            .conns
+            .values()
+            .filter(|c| c.identity.user_id == user_id)
+            .count();
         match inner.users.get(user_id) {
             Some(u) => Self::user_snapshot_json(user_id, u, sessions),
             None => Self::user_snapshot_json(user_id, &UserState::default(), sessions),
@@ -1049,7 +1125,7 @@ impl RealtimeHub {
     /// Presence heartbeat (CRD 3743-3748): marks the user online and refreshes
     /// last-seen. Returns (online, lastSeen).
     pub fn heartbeat(&self, user_id: &str) -> (bool, String) {
-        let mut inner = self.inner.lock().expect("hub lock");
+        let mut inner = self.inner.lock();
         let user = inner.users.entry(user_id.to_string()).or_default();
         user.online = true;
         let now = crate::db::now_iso();
@@ -1059,7 +1135,7 @@ impl RealtimeHub {
 
     /// Current notification preferences (defaults when never set, CRD 3813).
     pub fn preferences(&self, user_id: &str) -> Value {
-        let inner = self.inner.lock().expect("hub lock");
+        let inner = self.inner.lock();
         inner
             .users
             .get(user_id)
@@ -1070,7 +1146,7 @@ impl RealtimeHub {
     /// Shallow-merge supplied preference fields over the current preferences
     /// (CRD 3755-3759); returns the merged result.
     pub fn merge_preferences(&self, user_id: &str, patch: &Value) -> Value {
-        let mut inner = self.inner.lock().expect("hub lock");
+        let mut inner = self.inner.lock();
         let user = inner.users.entry(user_id.to_string()).or_default();
         let mut current = user.preferences.clone().unwrap_or_else(default_preferences);
         if let (Some(cur), Some(new)) = (current.as_object_mut(), patch.as_object()) {
@@ -1083,15 +1159,19 @@ impl RealtimeHub {
     }
 
     pub fn subscription_count(&self, user_id: &str) -> usize {
-        let inner = self.inner.lock().expect("hub lock");
-        inner.users.get(user_id).map(|u| u.subscriptions.len()).unwrap_or(0)
+        let inner = self.inner.lock();
+        inner
+            .users
+            .get(user_id)
+            .map(|u| u.subscriptions.len())
+            .unwrap_or(0)
     }
 
     // --------------------------------------------------- authorization cache
 
     /// Cached agent->conversation access decision (~5 minutes, CRD 3258).
     pub fn cached_access(&self, user_id: &str, conversation_id: &str) -> Option<bool> {
-        let inner = self.inner.lock().expect("hub lock");
+        let inner = self.inner.lock();
         inner
             .access_cache
             .get(&(user_id.to_string(), conversation_id.to_string()))
@@ -1100,39 +1180,46 @@ impl RealtimeHub {
     }
 
     pub fn cache_access(&self, user_id: &str, conversation_id: &str, allowed: bool) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.access_cache.retain(|_, (at, _)| at.elapsed() < ACCESS_CACHE_TTL);
-            inner
-                .access_cache
-                .insert((user_id.to_string(), conversation_id.to_string()), (Instant::now(), allowed));
-        }
+        let mut inner = self.inner.lock();
+        inner
+            .access_cache
+            .retain(|_, (at, _)| at.elapsed() < ACCESS_CACHE_TTL);
+        inner.access_cache.insert(
+            (user_id.to_string(), conversation_id.to_string()),
+            (Instant::now(), allowed),
+        );
     }
 
     /// Invalidate cached access for a conversation when assignments change
     /// (CRD 3258, 646).
     pub fn invalidate_access(&self, conversation_id: &str) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.access_cache.retain(|(_, cid), _| cid != conversation_id);
-        }
+        self.inner
+            .lock()
+            .access_cache
+            .retain(|(_, cid), _| cid != conversation_id);
     }
 
     // ------------------------------------------------------------ snapshots
 
     pub fn connection_count(&self) -> usize {
-        self.inner.lock().map(|i| i.conns.len()).unwrap_or(0)
+        self.inner.lock().conns.len()
     }
 
     /// Number of live sessions held by one user.
     pub fn user_session_count(&self, user_id: &str) -> usize {
-        let inner = self.inner.lock().expect("hub lock");
-        inner.conns.values().filter(|c| c.identity.user_id == user_id).count()
+        let inner = self.inner.lock();
+        inner
+            .conns
+            .values()
+            .filter(|c| c.identity.user_id == user_id)
+            .count()
     }
 
     /// Live reachability derived from current connections: (user ids with a
     /// personal channel, conversation ids with a live room connection). Used
     /// by the routed-delivery debug snapshot (CRD 3656-3657, 3669).
     pub fn reachability_snapshot(&self) -> (Vec<String>, Vec<String>) {
-        let inner = self.inner.lock().expect("hub lock");
+        let inner = self.inner.lock();
         let mut users = HashSet::new();
         let mut conversations = HashSet::new();
         for c in inner.conns.values() {
@@ -1145,20 +1232,27 @@ impl RealtimeHub {
                 }
             }
         }
-        (users.into_iter().collect(), conversations.into_iter().collect())
+        (
+            users.into_iter().collect(),
+            conversations.into_iter().collect(),
+        )
     }
 
     /// (total, conversation-bound, personal) connection counts.
     pub fn connection_breakdown(&self) -> (usize, usize, usize) {
-        let inner = self.inner.lock().expect("hub lock");
+        let inner = self.inner.lock();
         let total = inner.conns.len();
-        let rooms = inner.conns.values().filter(|c| c.conversation_id.is_some()).count();
+        let rooms = inner
+            .conns
+            .values()
+            .filter(|c| c.conversation_id.is_some())
+            .count();
         (total, rooms, total - rooms)
     }
 
     /// Broadcast error rate derived from per-send delivery counters (CRD 3296).
     pub fn error_rate(&self) -> f64 {
-        let inner = self.inner.lock().expect("hub lock");
+        let inner = self.inner.lock();
         let total = inner.broadcasts_delivered + inner.send_failures;
         if total == 0 {
             return 0.0;
@@ -1168,13 +1262,17 @@ impl RealtimeHub {
 
     /// (attempted, delivered, failed) broadcast counters for metrics views.
     pub fn broadcast_counters(&self) -> (u64, u64, u64) {
-        let inner = self.inner.lock().expect("hub lock");
-        (inner.broadcasts_attempted, inner.broadcasts_delivered, inner.send_failures)
+        let inner = self.inner.lock();
+        (
+            inner.broadcasts_attempted,
+            inner.broadcasts_delivered,
+            inner.send_failures,
+        )
     }
 
     /// Currently tracked connections for the operational dashboard (CRD 3332).
     pub fn connections_snapshot(&self) -> Vec<Value> {
-        let inner = self.inner.lock().expect("hub lock");
+        let inner = self.inner.lock();
         inner
             .conns
             .values()
@@ -1194,7 +1292,7 @@ impl RealtimeHub {
 
     /// Connection counts by conversation, by account and by protocol (CRD 3329).
     pub fn dashboard_counts(&self) -> Value {
-        let inner = self.inner.lock().expect("hub lock");
+        let inner = self.inner.lock();
         let mut by_conversation: HashMap<String, usize> = HashMap::new();
         let mut by_user: HashMap<String, usize> = HashMap::new();
         for c in inner.conns.values() {
@@ -1213,9 +1311,12 @@ impl RealtimeHub {
     /// Per-user/conversation component snapshot for the connectivity self-test
     /// (CRD 3404-3408).
     pub fn test_snapshot(&self, user_id: &str, conversation_id: Option<&str>) -> Value {
-        let inner = self.inner.lock().expect("hub lock");
-        let user_conns =
-            inner.conns.values().filter(|c| c.identity.user_id == user_id).count();
+        let inner = self.inner.lock();
+        let user_conns = inner
+            .conns
+            .values()
+            .filter(|c| c.identity.user_id == user_id)
+            .count();
         let user_online = user_conns > 0;
         let room = conversation_id.map(|cid| {
             let conns = inner
@@ -1249,5 +1350,23 @@ impl RealtimeHub {
             },
             "conversationRoom": room,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hub_lock_survives_panic_while_held() {
+        let hub = RealtimeHub::new();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = hub.inner.lock();
+            panic!("simulate panic while holding realtime hub lock");
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(hub.connection_count(), 0);
     }
 }

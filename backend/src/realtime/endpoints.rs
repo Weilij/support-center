@@ -50,7 +50,10 @@ pub async fn disconnect(
         headers
             .get("authorization")
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")))
+            .and_then(|v| {
+                v.strip_prefix("Bearer ")
+                    .or_else(|| v.strip_prefix("bearer "))
+            })
             .map(str::to_string)
     });
     let outcome = match gate::authorize(&state, token.as_deref(), None).await {
@@ -65,10 +68,17 @@ pub async fn disconnect(
     // Best-effort, mutually exclusive cleanup (CRD 3274, 3278): the hub lock
     // serializes concurrent attempts; an unknown id is a no-op. The final
     // user-state snapshot is re-persisted when this was the last session.
-    if let Some(snapshot) =
-        state.realtime.remove_connection(connection_id, &outcome.identity.user_id, is_admin)
+    if let Some(disconnected) =
+        state
+            .realtime
+            .remove_connection(connection_id, &outcome.identity.user_id, is_admin)
     {
-        super::user_sessions::persist_snapshot(&state.db, &snapshot).await;
+        super::broadcaster::publish_remote_presence_change(
+            &state,
+            &disconnected.presence_transition,
+        )
+        .await;
+        super::user_sessions::persist_snapshot(&state.db, &disconnected.snapshot).await;
     }
     envelope::ok(json!({
         "connectionId": connection_id,
@@ -147,14 +157,15 @@ pub async fn migration_config(
 /// Hydrate the in-memory gateway configuration from its persisted row
 /// (called at service start; absent row keeps the defaults).
 pub async fn hydrate_config(state: &Arc<AppState>) {
-    let row: Option<String> =
-        sqlx::query_scalar("SELECT config FROM realtime_config WHERE id = 1")
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten();
+    let row: Option<String> = sqlx::query_scalar("SELECT config FROM realtime_config WHERE id = 1")
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
     let Some(raw) = row else { return };
-    let Ok(v) = serde_json::from_str::<Value>(&raw) else { return };
+    let Ok(v) = serde_json::from_str::<Value>(&raw) else {
+        return;
+    };
     let mut config = GatewayConfig::default();
     if let Some(enabled) = v.get("enabled").and_then(Value::as_bool) {
         config.enabled = enabled;
@@ -174,7 +185,10 @@ pub async fn hydrate_config(state: &Arc<AppState>) {
 // --------------------------------------------------------- health (CRD 3294-3311)
 
 async fn db_healthy(state: &Arc<AppState>) -> bool {
-    sqlx::query_scalar::<_, i64>("SELECT 1::bigint").fetch_one(&state.db).await.is_ok()
+    sqlx::query_scalar::<_, i64>("SELECT 1::bigint")
+        .fetch_one(&state.db)
+        .await
+        .is_ok()
 }
 
 /// GET /api/websocket/health — basic when anonymous (CRD 3294-3297),
@@ -223,9 +237,7 @@ async fn comprehensive_health(state: &Arc<AppState>) -> Response {
     let now = crate::db::now_iso();
     let config = state.realtime.config();
     let db_ok = db_healthy(state).await;
-    let component = |status: &str, message: &str| {
-        json!({ "status": status, "message": message, "lastCheck": now })
-    };
+    let component = |status: &str, message: &str| json!({ "status": status, "message": message, "lastCheck": now });
     let components = json!({
         "realtimeInfrastructure": component("healthy", "Realtime hub operational"),
         "realtimeFeature": if config.enabled {
@@ -247,8 +259,11 @@ async fn comprehensive_health(state: &Arc<AppState>) -> Response {
     } else {
         "healthy"
     };
-    let code =
-        if overall == "unhealthy" { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::OK };
+    let code = if overall == "unhealthy" {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    };
     let (total, rooms, personal) = state.realtime.connection_breakdown();
     let body = json!({
         "status": overall,
@@ -269,7 +284,9 @@ pub async fn readiness(State(state): State<Arc<AppState>>, headers: HeaderMap) -
     require_user(&state, &headers).await?;
     let config = state.realtime.config();
     if !config.enabled {
-        return Ok(envelope::ok(json!({ "ready": true, "note": "realtime feature disabled" })));
+        return Ok(envelope::ok(
+            json!({ "ready": true, "note": "realtime feature disabled" }),
+        ));
     }
     if !db_healthy(&state).await {
         return Ok(envelope::with_status(
@@ -284,7 +301,9 @@ pub async fn readiness(State(state): State<Arc<AppState>>, headers: HeaderMap) -
 /// GET /api/websocket/liveness (CRD 3309-3311).
 pub async fn liveness(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Result {
     require_user(&state, &headers).await?;
-    Ok(envelope::ok(json!({ "alive": true, "timestamp": crate::db::now_iso() })))
+    Ok(envelope::ok(
+        json!({ "alive": true, "timestamp": crate::db::now_iso() }),
+    ))
 }
 
 // --------------------------------------------------------- metrics (CRD 3313-3324)
@@ -331,9 +350,7 @@ pub async fn health_detail(State(state): State<Arc<AppState>>, headers: HeaderMa
     let started = std::time::Instant::now();
     let db_ok = db_healthy(&state).await;
     let db_ms = started.elapsed().as_millis() as u64;
-    let component = |available: bool, response_ms: u64| {
-        json!({ "available": available, "responseTimeMs": response_ms })
-    };
+    let component = |available: bool, response_ms: u64| json!({ "available": available, "responseTimeMs": response_ms });
     let score: u32 = if db_ok { 100 } else { 50 };
     Ok(envelope::ok(json!({
         "components": {
@@ -406,7 +423,9 @@ pub async fn dashboard_connections(
     require_admin(&state, &headers).await?;
     let connections = state.realtime.connections_snapshot();
     let count = connections.len();
-    Ok(envelope::ok(json!({ "connections": connections, "count": count })))
+    Ok(envelope::ok(
+        json!({ "connections": connections, "count": count }),
+    ))
 }
 
 /// GET /api/websocket/dashboard/history — administrator only (CRD 3336-3339).
@@ -466,12 +485,14 @@ pub async fn dashboard_alerts(State(state): State<Arc<AppState>>, headers: Heade
     .await?;
     let alerts: Vec<Value> = rows
         .into_iter()
-        .map(|(id, level, title, description, triggered_by, created_at)| {
-            json!({
-                "id": id, "level": level, "title": title, "description": description,
-                "triggeredBy": triggered_by, "createdAt": created_at,
-            })
-        })
+        .map(
+            |(id, level, title, description, triggered_by, created_at)| {
+                json!({
+                    "id": id, "level": level, "title": title, "description": description,
+                    "triggeredBy": triggered_by, "createdAt": created_at,
+                })
+            },
+        )
         .collect();
     let count = alerts.len();
     Ok(envelope::ok(json!({ "alerts": alerts, "count": count })))
@@ -482,8 +503,9 @@ pub async fn dashboard_alerts(State(state): State<Arc<AppState>>, headers: Heade
 /// GET /api/websocket/analytics/dashboard — administrator only.
 pub async fn analytics_dashboard(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Result {
     require_admin(&state, &headers).await?;
-    let error_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM realtime_error_events").fetch_one(&state.db).await?;
+    let error_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM realtime_error_events")
+        .fetch_one(&state.db)
+        .await?;
     let quality_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM realtime_quality_samples")
         .fetch_one(&state.db)
         .await?;
@@ -524,7 +546,9 @@ fn parse_time_range(raw: Option<&str>) -> std::result::Result<i64, AppError> {
             .map_err(|_| AppError::BadRequest("timeRange must be a number of hours".into()))?,
     };
     if !(1..=168).contains(&hours) {
-        return Err(AppError::BadRequest("timeRange must be between 1 and 168 hours".into()));
+        return Err(AppError::BadRequest(
+            "timeRange must be between 1 and 168 hours".into(),
+        ));
     }
     Ok(hours)
 }
@@ -590,8 +614,7 @@ pub async fn analytics_record_error(
         })
         .filter(|s| !s.is_empty() && s != "null");
     let error_type = body.get("errorType").and_then(Value::as_str);
-    let (Some(timestamp), Some(error_code), Some(error_type)) =
-        (timestamp, error_code, error_type)
+    let (Some(timestamp), Some(error_code), Some(error_type)) = (timestamp, error_code, error_type)
     else {
         return Err(AppError::BadRequest(
             "timestamp, errorCode and errorType are required".into(),
@@ -623,8 +646,7 @@ pub async fn analytics_record_quality(
     let timestamp = body.get("timestamp").and_then(Value::as_str);
     let user_id = body.get("userId").and_then(Value::as_str);
     let connection_id = body.get("connectionId").and_then(Value::as_str);
-    let (Some(timestamp), Some(user_id), Some(connection_id)) =
-        (timestamp, user_id, connection_id)
+    let (Some(timestamp), Some(user_id), Some(connection_id)) = (timestamp, user_id, connection_id)
     else {
         return Err(AppError::BadRequest(
             "timestamp, userId and connectionId are required".into(),
@@ -659,7 +681,9 @@ pub async fn analytics_trigger_alert(
     let title = body.get("title").and_then(Value::as_str);
     let description = body.get("description").and_then(Value::as_str);
     let (Some(level), Some(title), Some(description)) = (level, title, description) else {
-        return Err(AppError::BadRequest("level, title and description are required".into()));
+        return Err(AppError::BadRequest(
+            "level, title and description are required".into(),
+        ));
     };
     // Allowed levels per CRD 3381: informational, warning, critical, emergency.
     if !["informational", "warning", "critical", "emergency"].contains(&level) {
@@ -756,7 +780,9 @@ pub async fn analytics_update_alert_config(
         ));
     };
     if !(0.0..=1.0).contains(&er) {
-        return Err(AppError::BadRequest("errorRateThreshold must be between 0 and 1".into()));
+        return Err(AppError::BadRequest(
+            "errorRateThreshold must be between 0 and 1".into(),
+        ));
     }
     if !(0.0..=30_000.0).contains(&lat) {
         return Err(AppError::BadRequest(
@@ -819,7 +845,10 @@ pub async fn analytics_export_trends(
                 StatusCode::OK,
                 [
                     ("Content-Type", "text/csv"),
-                    ("Content-Disposition", "attachment; filename=\"realtime-trends.csv\""),
+                    (
+                        "Content-Disposition",
+                        "attachment; filename=\"realtime-trends.csv\"",
+                    ),
                 ],
                 csv,
             )
@@ -847,7 +876,9 @@ pub async fn test_connection(
     let Some(user_id) = q.user_id.filter(|s| !s.is_empty()) else {
         return Err(AppError::BadRequest("userId is required".into()));
     };
-    let snapshot = state.realtime.test_snapshot(&user_id, q.conversation_id.as_deref());
+    let snapshot = state
+        .realtime
+        .test_snapshot(&user_id, q.conversation_id.as_deref());
     Ok(envelope::ok(json!({
         "components": snapshot,
         "configuration": state.realtime.config().to_json(),

@@ -39,6 +39,7 @@ base64 = "0.22"
 dotenvy = "0.15"
 http = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+parking_lot = "0.12"
 
 [dev-dependencies]
 http-body-util = "0.1"
