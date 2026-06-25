@@ -32,6 +32,14 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(handlers::list_messages).post(handlers::send_message),
         )
         .route(
+            "/api/conversations/{id}/messages/{msgId}/media",
+            get(handlers::proxy_media),
+        )
+        .route(
+            "/api/conversations/{id}/messages/{msgId}/media/preview",
+            get(handlers::proxy_media_preview),
+        )
+        .route(
             "/api/conversations/{id}/attachments",
             // Raise the transport body cap so the documented 10 MB application
             // limit (CRD 779, 782) is what callers observe, not the framework's

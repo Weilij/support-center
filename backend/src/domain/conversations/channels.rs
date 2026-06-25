@@ -313,6 +313,36 @@ pub async fn deliver_pending(
     );
 }
 
+/// Fetch LINE message content (image/video/audio/file) with the channel token.
+/// `preview` requests the smaller preview rendition (image/video only). Returns
+/// `(bytes, content_type)` or `None` on any failure — best-effort, never panics.
+pub(crate) async fn fetch_line_media(
+    token: &str,
+    message_id: &str,
+    preview: bool,
+) -> Option<(Vec<u8>, String)> {
+    let suffix = if preview { "/preview" } else { "" };
+    let url = format!("https://api-data.line.me/v2/bot/message/{message_id}/content{suffix}");
+    let resp = http_client()
+        .get(&url)
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let bytes = resp.bytes().await.ok()?;
+    Some((bytes.to_vec(), content_type))
+}
+
 #[cfg(test)]
 mod gateway_tests {
     use super::*;

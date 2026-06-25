@@ -1119,3 +1119,114 @@ async fn conversations_require_authentication() {
     let (status, _, _) = app.request("GET", "/api/conversations", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+// ------------------------------------------------------------- LINE media proxy
+
+/// Seed a media message (image/video/audio/file) with a platform message id,
+/// returning its id. Mirrors the columns `seed_message` writes plus the media bits.
+async fn seed_media_message(
+    app: &TestApp,
+    conversation_id: &str,
+    content_type: &str,
+    platform_message_id: &str,
+) -> String {
+    let id = uuid::Uuid::new_v4().to_string();
+    let customer_id: Option<i64> = sqlx::query_scalar("SELECT customer_id FROM conversations WHERE id = $1")
+        .bind(conversation_id)
+        .fetch_optional(&app.state.db)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO messages (id, conversation_id, sender_type, customer_id, content,
+                               content_type, platform_message_id, created_at)
+         VALUES ($1, $2, 'customer', $3, '', $4, $5, $6)",
+    )
+    .bind(&id)
+    .bind(conversation_id)
+    .bind(customer_id)
+    .bind(content_type)
+    .bind(platform_message_id)
+    .bind(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+    id
+}
+
+#[tokio::test]
+async fn media_proxy_text_message_is_404() {
+    let app = spawn_app().await;
+    let token = admin_token(&app).await;
+    let cust = app.seed_customer("line", "U1", "Alice", None).await;
+    let conv = app.seed_conversation(cust, None, "active").await;
+    let msg = app.seed_message(&conv, "customer", "just text", None).await;
+
+    let (status, _, _) = app
+        .request("GET", &format!("/api/conversations/{conv}/messages/{msg}/media"), Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn media_proxy_image_without_token_is_404() {
+    // Harness default has no LINE channel token, so this reaches the token check
+    // and 404s before any network call.
+    let app = spawn_app().await;
+    let token = admin_token(&app).await;
+    let cust = app.seed_customer("line", "U1", "Alice", None).await;
+    let conv = app.seed_conversation(cust, None, "active").await;
+    let msg = seed_media_message(&app, &conv, "image", "lineMsg123").await;
+
+    let (status, _, _) = app
+        .request("GET", &format!("/api/conversations/{conv}/messages/{msg}/media"), Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // The preview variant behaves the same way.
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &format!("/api/conversations/{conv}/messages/{msg}/media/preview"),
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn media_proxy_unknown_message_is_404() {
+    let app = spawn_app().await;
+    let token = admin_token(&app).await;
+    let cust = app.seed_customer("line", "U1", "Alice", None).await;
+    let conv = app.seed_conversation(cust, None, "active").await;
+    let missing = uuid::Uuid::new_v4().to_string();
+
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &format!("/api/conversations/{conv}/messages/{missing}/media"),
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn media_proxy_denies_agent_without_access() {
+    let app = spawn_app().await;
+    let team_a = app.seed_team("A").await;
+    let team_b = app.seed_team("B").await;
+    let (token, _) = agent_token(&app, "agent@test.dev", team_a).await;
+    let cust = app.seed_customer("line", "U1", "Alice", None).await;
+    // Conversation assigned to a team the agent does not belong to.
+    let conv = app.seed_conversation(cust, Some(team_b), "assigned").await;
+    let msg = seed_media_message(&app, &conv, "image", "lineMsg999").await;
+
+    let (status, body, _) = app
+        .request("GET", &format!("/api/conversations/{conv}/messages/{msg}/media"), Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"], json!("Permission denied"));
+}

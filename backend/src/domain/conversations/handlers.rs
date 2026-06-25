@@ -2,6 +2,8 @@
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Multipart, Path, Query, State};
+use axum::http::{header, HeaderValue, StatusCode};
+use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::{Extension, Json};
 use serde::Deserialize;
@@ -581,6 +583,97 @@ pub async fn list_messages(
         "totalPages": total_pages,
         "hasMore": page < total_pages,
     })))
+}
+
+// ------------------------------------------- Inbound LINE media proxy (Bearer-authed stream)
+
+#[derive(sqlx::FromRow)]
+struct MediaMsgRow {
+    content_type: String,
+    platform_message_id: Option<String>,
+    metadata: Option<String>,
+}
+
+/// `metadata.media.fileName` if present (for the download filename).
+fn file_name_from_metadata(metadata: Option<&str>) -> Option<String> {
+    let v: Value = serde_json::from_str(metadata?).ok()?;
+    v.get("media")
+        .and_then(|m| m.get("fileName"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.replace(['"', '\\', '\r', '\n'], "_"))
+}
+
+async fn proxy_media_inner(
+    state: &Arc<AppState>,
+    user: &AuthUser,
+    conv_id: &str,
+    msg_id: &str,
+    preview: bool,
+) -> Result {
+    if !store::can_act_on(&state.db, user, conv_id).await? {
+        return Err(permission_denied());
+    }
+    let row: Option<MediaMsgRow> = sqlx::query_as(
+        "SELECT content_type, platform_message_id, metadata FROM messages
+         WHERE id = $1 AND conversation_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(msg_id)
+    .bind(conv_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let row = row.ok_or_else(|| AppError::NotFound("Message not found".into()))?;
+    if !["image", "video", "audio", "file"].contains(&row.content_type.as_str()) {
+        return Err(AppError::NotFound("No downloadable media for this message".into()));
+    }
+    let message_id = row
+        .platform_message_id
+        .clone()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::NotFound("Media unavailable".into()))?;
+    let token = state
+        .config
+        .line_channel_access_token
+        .clone()
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| AppError::NotFound("Media unavailable".into()))?;
+    let use_preview = preview && (row.content_type == "image" || row.content_type == "video");
+    let (bytes, content_type) = channels::fetch_line_media(&token, &message_id, use_preview)
+        .await
+        .ok_or_else(|| AppError::NotFound("Media unavailable".into()))?;
+
+    let mut resp = (StatusCode::OK, bytes).into_response();
+    let h = resp.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&content_type) {
+        h.insert(header::CONTENT_TYPE, v);
+    }
+    if row.content_type == "file" {
+        let name = file_name_from_metadata(row.metadata.as_deref())
+            .unwrap_or_else(|| msg_id.to_string());
+        if let Ok(v) = HeaderValue::from_str(&format!("inline; filename=\"{name}\"")) {
+            h.insert(header::CONTENT_DISPOSITION, v);
+        }
+    }
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=3600"));
+    Ok(resp)
+}
+
+/// GET /api/conversations/{id}/messages/{msgId}/media
+pub async fn proxy_media(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
+    Path((conv_id, msg_id)): Path<(String, String)>,
+) -> Result {
+    proxy_media_inner(&state, &user, &conv_id, &msg_id, false).await
+}
+
+/// GET /api/conversations/{id}/messages/{msgId}/media/preview
+pub async fn proxy_media_preview(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
+    Path((conv_id, msg_id)): Path<(String, String)>,
+) -> Result {
+    proxy_media_inner(&state, &user, &conv_id, &msg_id, true).await
 }
 
 // ------------------------------------------- Send a message (async delivery, CRD 765-773)
