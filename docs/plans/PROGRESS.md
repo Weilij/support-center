@@ -90,8 +90,9 @@ Remaining external/infrastructure boundaries:
       D1, KV, R2, and Queue resources.
 - [x] Installer provisioning management endpoints: project-name status polling,
       active-run cancellation, and deployment index listing are wired.
-- [ ] Installer production artifact upload, Worker routes/custom domains, and
-      Pages deployment assets.
+- [x] Installer optional Worker route provisioning: custom-domain runs create
+      Cloudflare Worker routes for the deployed backend script.
+- [ ] Installer production artifact upload and Pages deployment assets.
 - [x] Multi-instance customer-channel realtime fan-out: customer conversation
       events relay across backend instances through Postgres event/ack tables.
 - [ ] Broader realtime scale-out hardening for non-customer-channel rooms and

@@ -94,6 +94,12 @@ struct ProvisionContext {
     queue_name: Option<String>,
 }
 
+#[derive(Debug, Default)]
+struct ProvisionConfig {
+    custom_domain: Option<String>,
+    zone_id: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct OAuthTokenResponse {
     access_token: String,
@@ -298,6 +304,7 @@ impl CloudflareApi {
         project: &str,
         creds: &CloudCredentials,
         context: &mut ProvisionContext,
+        config: &ProvisionConfig,
     ) -> Result<Option<ProvisionedResource>, String> {
         let account = &creds.account_id;
         let resource = match step {
@@ -399,6 +406,21 @@ impl CloudflareApi {
                         })),
                     )
                     .await?;
+                let route = match (&config.custom_domain, &config.zone_id) {
+                    (Some(domain), Some(zone_id)) => Some(
+                        self.request_json(
+                            reqwest::Method::POST,
+                            &format!("/zones/{zone_id}/workers/routes"),
+                            creds,
+                            Some(json!({
+                                "pattern": format!("{domain}/*"),
+                                "script": name.clone(),
+                            })),
+                        )
+                        .await?,
+                    ),
+                    _ => None,
+                };
                 ProvisionedResource {
                     step,
                     kind: "worker_script",
@@ -406,6 +428,7 @@ impl CloudflareApi {
                     result: json!({
                         "script": result,
                         "settings": settings,
+                        "route": route,
                     }),
                 }
             }
@@ -691,6 +714,10 @@ struct StartBody {
     api_token: Option<String>,
     #[serde(rename = "accountId")]
     account_id: Option<String>,
+    #[serde(rename = "customDomain")]
+    custom_domain: Option<String>,
+    #[serde(rename = "zoneId")]
+    zone_id: Option<String>,
 }
 
 fn valid_project_name(name: &str) -> bool {
@@ -698,6 +725,29 @@ fn valid_project_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+fn valid_zone_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn valid_custom_domain(domain: &str) -> bool {
+    if domain.len() > 253 || domain.starts_with('.') || domain.ends_with('.') {
+        return false;
+    }
+    let labels: Vec<&str> = domain.split('.').collect();
+    labels.len() >= 2
+        && labels.iter().all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
 }
 
 fn is_cancelled(runs: &Arc<Mutex<HashMap<String, Value>>>, id: &str) -> bool {
@@ -749,9 +799,37 @@ async fn deployment_start(
         )
             .into_response();
     }
+    let custom_domain = body
+        .custom_domain
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
+    let zone_id = body
+        .zone_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(domain) = custom_domain.as_deref() {
+        if !valid_custom_domain(domain) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Invalid custom domain format"})),
+            )
+                .into_response();
+        }
+        if zone_id.as_deref().filter(|id| valid_zone_id(id)).is_none() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "zoneId required when customDomain is set"})),
+            )
+                .into_response();
+        }
+    }
     let creds = CloudCredentials {
         api_token: token,
         account_id: account,
+    };
+    let provision_config = ProvisionConfig {
+        custom_domain,
+        zone_id,
     };
     let run_id = uuid::Uuid::new_v4().to_string();
     installer.runs.lock().unwrap().insert(
@@ -763,6 +841,8 @@ async fn deployment_start(
             "currentStep": STEPS[0],
             "completedSteps": [],
             "resources": [],
+            "customDomain": provision_config.custom_domain.clone(),
+            "zoneId": provision_config.zone_id.clone(),
             "progressPercent": 0,
             "startedAt": now_ms(),
         }),
@@ -795,7 +875,13 @@ async fn deployment_start(
                 return;
             }
             match cloud
-                .provision_step(step, &project, &creds, &mut provision_context)
+                .provision_step(
+                    step,
+                    &project,
+                    &creds,
+                    &mut provision_context,
+                    &provision_config,
+                )
                 .await
             {
                 Ok(Some(resource)) => resources.push(resource),
@@ -920,6 +1006,7 @@ async fn deployments(State(installer): State<Installer>) -> Response {
                 "status": run["status"],
                 "currentStep": run["currentStep"],
                 "progressPercent": run["progressPercent"],
+                "customDomain": run.get("customDomain").cloned().unwrap_or(Value::Null),
                 "startedAt": run["startedAt"],
                 "completedAt": run.get("completedAt").cloned().unwrap_or(Value::Null),
                 "error": run.get("error").cloned().unwrap_or(Value::Null),
@@ -1075,6 +1162,7 @@ mod tests {
                         "/client/v4/accounts/{account}/workers/scripts/{script}/settings",
                         axum::routing::patch(record),
                     )
+                    .route("/client/v4/zones/{zone}/workers/routes", post(record))
                     .route("/client/v4/accounts/{account}/pages/projects", post(record))
                     .with_state(calls.clone()),
             );
@@ -1268,7 +1356,9 @@ mod tests {
             Some(json!({
                 "projectName": "smoke-tenant",
                 "apiToken": "tok_live",
-                "accountId": "acc_123"
+                "accountId": "acc_123",
+                "customDomain": "support.example.com",
+                "zoneId": "zone_123"
             })),
         )
         .await;
@@ -1364,6 +1454,13 @@ mod tests {
             paths.contains(&"/client/v4/accounts/acc_123/pages/projects"),
             "{paths:?}"
         );
+        let route_call = calls
+            .iter()
+            .find(|c| c["path"] == "/client/v4/zones/zone_123/workers/routes")
+            .expect("worker route call");
+        assert_eq!(route_call["method"], "POST");
+        assert_eq!(route_call["body"]["pattern"], "support.example.com/*");
+        assert_eq!(route_call["body"]["script"], "smoke-tenant-backend");
 
         let (status, _) = send(&app, "GET", "/deployment/status/ghost", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
@@ -1377,6 +1474,7 @@ mod tests {
         assert_eq!(index["count"], 1);
         assert_eq!(index["items"][0]["projectName"], "smoke-tenant");
         assert_eq!(index["items"][0]["status"], "completed");
+        assert_eq!(index["items"][0]["customDomain"], "support.example.com");
     }
 
     #[tokio::test]
