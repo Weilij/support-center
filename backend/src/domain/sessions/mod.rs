@@ -1,10 +1,11 @@
 //! Conversation-Session Management (CRD §1.2B, lines 329-483), mounted at
 //! `/api/sessions`.
 //!
-//! Module-wide gates per the section preamble (CRD 331): bearer auth on everything
-//! except health/info, a 60 req / 60 s "session"-scoped rate limit on mutating and
-//! creating endpoints, a 1 MB declared-content-length cap (413), and an
-//! endpoint-catalog 404 for unknown paths under the module.
+//! Module-wide gates: health/info are open; all other routes require ops-area
+//! authorization (supervisor/system_admin). Mutating and creating endpoints also
+//! carry a 60 req / 60 s "session"-scoped rate limit, a 1 MB
+//! declared-content-length cap (413), and an endpoint-catalog 404 for unknown
+//! paths under the module.
 
 pub mod handlers;
 pub mod store;

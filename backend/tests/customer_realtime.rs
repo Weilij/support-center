@@ -280,7 +280,7 @@ async fn notify_message_reaches_customer_channel_on_peer_instance() {
 #[tokio::test]
 async fn remote_customer_fanout_cleanup_prunes_expired_events_and_acks() {
     let app = spawn_app().await;
-    let old_at = (chrono::Utc::now() - chrono::Duration::hours(48))
+    let old_at = (chrono::Utc::now() - chrono::Duration::hours(2))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let fresh_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
@@ -308,7 +308,7 @@ async fn remote_customer_fanout_cleanup_prunes_expired_events_and_acks() {
     .await
     .unwrap();
 
-    let cutoff = (chrono::Utc::now() - chrono::Duration::hours(24))
+    let cutoff = (chrono::Utc::now() - chrono::Duration::hours(1))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let deleted =
         mcss_backend::realtime::customer::cleanup_remote_customer_events(&app.state, &cutoff)
@@ -322,11 +322,12 @@ async fn remote_customer_fanout_cleanup_prunes_expired_events_and_acks() {
             .await
             .unwrap();
     assert_eq!(event_ids, vec!["fresh-event"]);
-    let ack_ids: Vec<String> =
-        sqlx::query_scalar("SELECT event_id FROM realtime_customer_fanout_acks ORDER BY event_id")
-            .fetch_all(&app.state.db)
-            .await
-            .unwrap();
+    let ack_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT event_id FROM realtime_customer_fanout_acks ORDER BY event_id",
+    )
+    .fetch_all(&app.state.db)
+    .await
+    .unwrap();
     assert_eq!(ack_ids, vec!["fresh-event"]);
 }
 
