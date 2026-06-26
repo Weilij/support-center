@@ -103,7 +103,7 @@ pub fn default_display_name(platform: &str) -> &'static str {
         "line" => "LINE User",
         "facebook" => "Facebook User",
         "instagram" => "Instagram User",
-        "shopee" => "Shopee User",
+        "shopee" => "Customer",
         _ => "Customer",
     }
 }
