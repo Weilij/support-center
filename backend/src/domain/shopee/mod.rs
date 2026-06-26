@@ -21,11 +21,11 @@ use serde_json::json;
 use crate::middleware::auth::{require_auth, AuthUser};
 use crate::state::AppState;
 
-fn require_admin(user: &AuthUser) -> Result<(), axum::response::Response> {
+fn require_admin(user: &AuthUser) -> Option<axum::response::Response> {
     if user.is_admin() {
-        Ok(())
+        None
     } else {
-        Err((
+        Some((
             axum::http::StatusCode::FORBIDDEN,
             Json(json!({"success": false, "error": "Administrator role required"})),
         )
@@ -57,7 +57,7 @@ async fn auth_authorize(
     Extension(user): Extension<AuthUser>,
     Query(q): Query<AuthorizeQuery>,
 ) -> axum::response::Response {
-    if let Err(resp) = require_admin(&user) {
+    if let Some(resp) = require_admin(&user) {
         return resp;
     }
     if q.shop_id <= 0 {
@@ -102,7 +102,7 @@ async fn auth_callback(
     Extension(user): Extension<AuthUser>,
     Query(params): Query<HashMap<String, String>>,
 ) -> axum::response::Response {
-    if let Err(resp) = require_admin(&user) {
+    if let Some(resp) = require_admin(&user) {
         return resp;
     }
     let oauth_state = params.get("state").map(String::as_str).unwrap_or_default();

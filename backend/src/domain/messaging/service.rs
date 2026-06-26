@@ -196,7 +196,7 @@ pub async fn process_delayed(state: &AppState, delayed_id: &str) -> Value {
                     "platform": platform,
                     "platformMessageId": platform_message_id,
                 })),
-                Err(e) => Err(e),
+                Err(e) => Err(e.to_string()),
             }
         }
         // In-app webchat: create the real persisted message, sent with a

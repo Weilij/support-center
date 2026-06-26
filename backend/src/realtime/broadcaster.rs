@@ -318,6 +318,29 @@ pub async fn publish_remote_presence_change(
     publish_remote_broadcast(state, &event, &targets, &json!({ "priority": "high" })).await;
 }
 
+fn remote_event_envelope(event_type: &str, payload: Value) -> Value {
+    json!({
+        "id": uuid::Uuid::new_v4().to_string(),
+        "type": event_type,
+        "timestamp": crate::db::now_iso(),
+        "data": payload,
+    })
+}
+
+/// Publish a domain-originated event to peer instances. The local caller is
+/// still responsible for immediate in-process delivery; this helper mirrors the
+/// same event through the shared fan-out table for other live hubs.
+pub async fn publish_remote_event(
+    state: &Arc<AppState>,
+    event_type: &str,
+    payload: Value,
+    targets: Vec<Value>,
+    priority: &str,
+) {
+    let event = remote_event_envelope(event_type, payload);
+    publish_remote_broadcast(state, &event, &targets, &json!({ "priority": priority })).await;
+}
+
 #[derive(sqlx::FromRow)]
 struct RemoteBroadcastEvent {
     id: String,

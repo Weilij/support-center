@@ -38,6 +38,8 @@ pub struct Config {
     pub line_channel_access_token: Option<String>,
     /// LINE push endpoint; override only in tests/dev harnesses.
     pub line_push_url: String,
+    /// LINE data API base URL used to retrieve message content.
+    pub line_content_api_base_url: String,
     /// Separate HMAC secret for signing/verifying file download URLs (review #8).
     /// Falls back to `jwt_secret` when unset so existing deployments keep working.
     pub file_signing_secret: Option<String>,
@@ -108,6 +110,11 @@ impl Config {
                 .ok()
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "https://api.line.me/v2/bot/message/push".into()),
+            line_content_api_base_url: std::env::var("LINE_CONTENT_API_BASE_URL")
+                .ok()
+                .map(|s| s.trim_end_matches('/').to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "https://api-data.line.me".into()),
             facebook_verify_token: std::env::var("FACEBOOK_VERIFY_TOKEN")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -206,6 +213,7 @@ pub fn test_config() -> Config {
         line_bot_id: None,
         line_channel_access_token: None,
         line_push_url: "https://api.line.me/v2/bot/message/push".into(),
+        line_content_api_base_url: "https://api-data.line.me".into(),
         file_signing_secret: None,
         shopee_partner_id: None,
         shopee_partner_key: None,
