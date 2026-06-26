@@ -103,7 +103,7 @@ pub fn default_display_name(platform: &str) -> &'static str {
         "line" => "LINE User",
         "facebook" => "Facebook User",
         "instagram" => "Instagram User",
-        "shopee" => "Customer",
+        "shopee" => "Shopee User",
         _ => "Customer",
     }
 }
@@ -997,7 +997,7 @@ mod placeholder_tests {
         assert_eq!(default_display_name("line"), "LINE User");
         assert_eq!(default_display_name("facebook"), "Facebook User");
         assert_eq!(default_display_name("instagram"), "Instagram User");
-        assert_eq!(default_display_name("shopee"), "Customer");
+        assert_eq!(default_display_name("shopee"), "Shopee User");
     }
 
     #[test]
