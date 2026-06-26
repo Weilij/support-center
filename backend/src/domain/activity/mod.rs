@@ -13,7 +13,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use std::sync::Arc;
 
-use crate::middleware::auth::require_analytics_area;
+use crate::middleware::auth::require_auth;
 use crate::state::AppState;
 
 pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
@@ -25,18 +25,26 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/activities/heatmap", get(handlers::heatmap))
         .route("/api/activities/metrics", get(handlers::metrics))
         .route("/api/activities/cleanup", post(handlers::cleanup))
-        .route("/api/activities/stats/resources", get(handlers::resource_stats))
+        .route(
+            "/api/activities/stats/resources",
+            get(handlers::resource_stats),
+        )
         .route("/api/activities/stats/roles", get(handlers::role_stats))
         .route("/api/activities/stats/custom", get(handlers::custom_stats))
-        .route("/api/activities/user/{userId}/stats", get(handlers::user_stats))
+        .route(
+            "/api/activities/user/{userId}/stats",
+            get(handlers::user_stats),
+        )
         .route("/api/activities/{id}", get(handlers::get_activity))
-        .layer(from_fn_with_state(state.clone(), require_analytics_area));
+        .layer(from_fn_with_state(state.clone(), require_auth));
 
     // The restore operation authenticates inside the handler: the CRD's observable
     // ordering loads and validates the entry (404 / NOT_REVERSIBLE / ALREADY_RESTORED)
     // before the caller is authenticated (CRD 2553-2556).
-    let open = Router::new()
-        .route("/api/activities/{id}/restore", post(restore::restore_activity));
+    let open = Router::new().route(
+        "/api/activities/{id}/restore",
+        post(restore::restore_activity),
+    );
 
     authed.merge(open)
 }

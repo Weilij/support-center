@@ -20,13 +20,16 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::middleware::auth::require_ops_area;
+use crate::middleware::auth::require_auth;
 use crate::middleware::rate_limit::{self, RatePolicy};
 use crate::state::AppState;
 
 /// Per-client mutation budget under the "session" namespace (CRD 331).
-const SESSION_RATE: RatePolicy =
-    RatePolicy { scope: "session", max_requests: 60, window: Duration::from_secs(60) };
+const SESSION_RATE: RatePolicy = RatePolicy {
+    scope: "session",
+    max_requests: 60,
+    window: Duration::from_secs(60),
+};
 
 const MAX_BODY_BYTES: u64 = 1024 * 1024;
 
@@ -74,7 +77,10 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/", get(handlers::list_sessions))
         .route("/search", get(handlers::search_sessions))
         .route("/stats", get(handlers::stats))
-        .route("/stats/{conversationId}", get(handlers::stats_for_conversation))
+        .route(
+            "/stats/{conversationId}",
+            get(handlers::stats_for_conversation),
+        )
         .route("/activity", get(handlers::activity_stats))
         .route("/detect-boundary", post(handlers::detect_boundary))
         .route("/topics/stats", get(handlers::topic_stats))
@@ -87,7 +93,7 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
 
     let authed = rate_limited
         .merge(plain)
-        .layer(from_fn_with_state(state.clone(), require_ops_area));
+        .layer(from_fn_with_state(state.clone(), require_auth));
 
     let module = open
         .merge(authed)
