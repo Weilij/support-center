@@ -3,8 +3,13 @@
 
 mod common;
 
+use axum::extract::{Path, Query};
+use axum::http::{HeaderMap, StatusCode};
+use axum::routing::get;
+use axum::{Json, Router};
 use common::{spawn_app, spawn_app_custom, TestApp};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 async fn admin_in_team(app: &TestApp, email: &str, team: i64) -> String {
     let id = app.seed_agent(email, "Passw0rd!", "admin").await;
@@ -25,10 +30,71 @@ fn line_body() -> Value {
 }
 
 async fn create_line(app: &TestApp, token: &str) -> Value {
-    let (status, body, _) =
-        app.request("POST", "/api/channels", Some(token), Some(line_body())).await;
+    let (status, body, _) = app
+        .request("POST", "/api/channels", Some(token), Some(line_body()))
+        .await;
     assert_eq!(status, 201, "create failed: {body}");
     body
+}
+
+async fn mock_platform_verify_server() -> String {
+    async fn line_info(headers: HeaderMap) -> Result<Json<Value>, StatusCode> {
+        let token = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        if token.contains("invalid") {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+        Ok(Json(json!({
+            "userId": "Uline-bot",
+            "basicId": "@testbot",
+            "displayName": "Support Bot",
+        })))
+    }
+
+    async fn graph_node(
+        Path(id): Path<String>,
+        Query(_query): Query<HashMap<String, String>>,
+        headers: HeaderMap,
+    ) -> Result<Json<Value>, StatusCode> {
+        let token = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        if token.contains("invalid") {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+        Ok(Json(json!({
+            "id": id,
+            "name": format!("Page {id}"),
+            "display_phone_number": "+15551234567",
+            "verified_name": "Support WhatsApp",
+        })))
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new()
+                .route("/line/bot/info", get(line_info))
+                .route("/graph/{id}", get(graph_node)),
+        )
+        .await
+        .unwrap();
+    });
+    format!("http://{addr}")
+}
+
+async fn spawn_channels_app() -> TestApp {
+    let base = mock_platform_verify_server().await;
+    spawn_app_custom(|c| {
+        c.line_bot_info_url = format!("{base}/line/bot/info");
+        c.meta_graph_url = format!("{base}/graph");
+    })
+    .await
 }
 
 async fn credentials_blob(app: &TestApp, id: i64) -> String {
@@ -58,7 +124,9 @@ async fn list_scopes_to_primary_team_with_platform_filter() {
     let token_b = admin_in_team(&app, "b@x.io", team_b).await;
     create_line(&app, &token_a).await;
 
-    let (status, body, _) = app.request("GET", "/api/channels", Some(&token_a), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/channels", Some(&token_a), None)
+        .await;
     assert_eq!(status, 200);
     assert_eq!(body["count"], 1);
     assert_eq!(body["data"][0]["teamId"], team_a);
@@ -66,15 +134,29 @@ async fn list_scopes_to_primary_team_with_platform_filter() {
     assert!(body["data"][0].get("credentials").is_none());
 
     // The other team sees nothing.
-    let (_, body, _) = app.request("GET", "/api/channels", Some(&token_b), None).await;
+    let (_, body, _) = app
+        .request("GET", "/api/channels", Some(&token_b), None)
+        .await;
     assert_eq!(body["count"], 0);
 
     // Platform filter.
-    let (_, body, _) =
-        app.request("GET", "/api/channels?platform=facebook", Some(&token_a), None).await;
+    let (_, body, _) = app
+        .request(
+            "GET",
+            "/api/channels?platform=facebook",
+            Some(&token_a),
+            None,
+        )
+        .await;
     assert_eq!(body["count"], 0);
-    let (status, body, _) =
-        app.request("GET", "/api/channels?platform=carrier-pigeon", Some(&token_a), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            "/api/channels?platform=carrier-pigeon",
+            Some(&token_a),
+            None,
+        )
+        .await;
     assert_eq!(status, 400, "{body}");
 }
 
@@ -91,17 +173,26 @@ async fn admin_without_team_lists_all_or_by_team_param() {
     app.seed_agent("root@x.io", "Passw0rd!", "admin").await;
     let (token, _, _) = app.login("root@x.io", "Passw0rd!").await;
 
-    let (status, body, _) = app.request("GET", "/api/channels", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/channels", Some(&token), None)
+        .await;
     assert_eq!(status, 200);
     assert_eq!(body["count"], 2);
 
-    let (_, body, _) =
-        app.request("GET", &format!("/api/channels?teamId={team_a}"), Some(&token), None).await;
+    let (_, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/channels?teamId={team_a}"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(body["count"], 1);
 
     // Non-numeric team identifier from an admin -> 400 (CRD 2630).
-    let (status, _, _) =
-        app.request("GET", "/api/channels?teamId=abc", Some(&token), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/channels?teamId=abc", Some(&token), None)
+        .await;
     assert_eq!(status, 400);
 }
 
@@ -110,7 +201,9 @@ async fn non_admin_without_team_is_rejected() {
     let app = spawn_app().await;
     app.seed_agent("lone@x.io", "Passw0rd!", "agent").await;
     let (token, _, _) = app.login("lone@x.io", "Passw0rd!").await;
-    let (status, body, _) = app.request("GET", "/api/channels", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/channels", Some(&token), None)
+        .await;
     assert_eq!(status, 400, "{body}");
 }
 
@@ -123,8 +216,9 @@ async fn create_requires_admin_role() {
     let agent = app.seed_agent("agent@x.io", "Passw0rd!", "agent").await;
     app.add_membership(&agent, team, "member", true).await;
     let (token, _, _) = app.login("agent@x.io", "Passw0rd!").await;
-    let (status, body, _) =
-        app.request("POST", "/api/channels", Some(&token), Some(line_body())).await;
+    let (status, body, _) = app
+        .request("POST", "/api/channels", Some(&token), Some(line_body()))
+        .await;
     assert_eq!(status, 403, "{body}");
 }
 
@@ -135,17 +229,28 @@ async fn create_validates_platform_and_required_fields() {
     let token = admin_in_team(&app, "a@x.io", team).await;
 
     // Missing platform.
-    let (status, _, _) =
-        app.request("POST", "/api/channels", Some(&token), Some(json!({}))).await;
+    let (status, _, _) = app
+        .request("POST", "/api/channels", Some(&token), Some(json!({})))
+        .await;
     assert_eq!(status, 400);
     // Invalid platform.
     let (status, _, _) = app
-        .request("POST", "/api/channels", Some(&token), Some(json!({"platform": "telegram"})))
+        .request(
+            "POST",
+            "/api/channels",
+            Some(&token),
+            Some(json!({"platform": "telegram"})),
+        )
         .await;
     assert_eq!(status, 400);
     // Missing the platform config object.
     let (status, _, _) = app
-        .request("POST", "/api/channels", Some(&token), Some(json!({"platform": "line"})))
+        .request(
+            "POST",
+            "/api/channels",
+            Some(&token),
+            Some(json!({"platform": "line"})),
+        )
         .await;
     assert_eq!(status, 400);
     // Missing a required field -> field-specific message (CRD 2642).
@@ -158,7 +263,13 @@ async fn create_validates_platform_and_required_fields() {
         )
         .await;
     assert_eq!(status, 400);
-    assert!(body["error"].as_str().unwrap().contains("channelAccessToken"), "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("channelAccessToken"),
+        "{body}"
+    );
 }
 
 #[tokio::test]
@@ -181,7 +292,10 @@ async fn create_persists_encrypted_credentials_and_webhook_url() {
     assert!(!body.to_string().contains("access-token-abc"));
     // Generated inbound address embeds platform, team and token (CRD 2637, 2722).
     let url = body["webhookUrl"].as_str().unwrap();
-    assert!(url.contains(&format!("/api/webhooks/line/{team}/")), "{url}");
+    assert!(
+        url.contains(&format!("/api/webhooks/line/{team}/")),
+        "{url}"
+    );
 
     // Stored blob is protected, not plaintext (guarantee 1).
     let blob = credentials_blob(&app, id).await;
@@ -233,11 +347,15 @@ async fn create_rejects_duplicate_active_platform() {
     let team = app.seed_team("Team").await;
     let token = admin_in_team(&app, "a@x.io", team).await;
     create_line(&app, &token).await;
-    let (status, body, _) =
-        app.request("POST", "/api/channels", Some(&token), Some(line_body())).await;
+    let (status, body, _) = app
+        .request("POST", "/api/channels", Some(&token), Some(line_body()))
+        .await;
     assert_eq!(status, 400);
     assert_eq!(body["success"], false);
-    assert!(body["error"].as_str().unwrap().contains("already exists"), "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("already exists"),
+        "{body}"
+    );
 }
 
 // ------------------------------------------------------------ get one (CRD 2644-2650)
@@ -248,11 +366,14 @@ async fn get_channel_enforces_ownership_with_admin_override() {
     let team_a = app.seed_team("Team A").await;
     let team_b = app.seed_team("Team B").await;
     let token_a = admin_in_team(&app, "a@x.io", team_a).await;
-    let id = create_line(&app, &token_a).await["data"]["id"].as_i64().unwrap();
+    let id = create_line(&app, &token_a).await["data"]["id"]
+        .as_i64()
+        .unwrap();
 
     // Owner reads it, sanitized.
-    let (status, body, _) =
-        app.request("GET", &format!("/api/channels/{id}"), Some(&token_a), None).await;
+    let (status, body, _) = app
+        .request("GET", &format!("/api/channels/{id}"), Some(&token_a), None)
+        .await;
     assert_eq!(status, 200);
     assert!(body["data"].get("credentials").is_none());
 
@@ -260,38 +381,53 @@ async fn get_channel_enforces_ownership_with_admin_override() {
     let other = app.seed_agent("b@x.io", "Passw0rd!", "agent").await;
     app.add_membership(&other, team_b, "member", true).await;
     let (token_b, _, _) = app.login("b@x.io", "Passw0rd!").await;
-    let (status, _, _) =
-        app.request("GET", &format!("/api/channels/{id}"), Some(&token_b), None).await;
+    let (status, _, _) = app
+        .request("GET", &format!("/api/channels/{id}"), Some(&token_b), None)
+        .await;
     assert_eq!(status, 403);
 
     // A global admin may access any team's connection (CRD 2647).
     app.seed_agent("root@x.io", "Passw0rd!", "admin").await;
     let (root, _, _) = app.login("root@x.io", "Passw0rd!").await;
-    let (status, _, _) =
-        app.request("GET", &format!("/api/channels/{id}"), Some(&root), None).await;
+    let (status, _, _) = app
+        .request("GET", &format!("/api/channels/{id}"), Some(&root), None)
+        .await;
     assert_eq!(status, 200);
 
     // Not found and invalid identifier.
-    let (status, _, _) = app.request("GET", "/api/channels/99999", Some(&token_a), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/channels/99999", Some(&token_a), None)
+        .await;
     assert_eq!(status, 404);
-    let (status, body, _) =
-        app.request("GET", "/api/channels/abc", Some(&token_a), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/channels/abc", Some(&token_a), None)
+        .await;
     assert_eq!(status, 400);
-    assert!(body["error"].as_str().unwrap().contains("positive integer"), "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("positive integer"),
+        "{body}"
+    );
 }
 
 // ------------------------------------------------------------- update (CRD 2652-2659)
 
 #[tokio::test]
 async fn update_merges_config_and_resets_verification_on_secret_change() {
-    let app = spawn_app().await;
+    let app = spawn_channels_app().await;
     let team = app.seed_team("Team").await;
     let token = admin_in_team(&app, "a@x.io", team).await;
-    let id = create_line(&app, &token).await["data"]["id"].as_i64().unwrap();
+    let id = create_line(&app, &token).await["data"]["id"]
+        .as_i64()
+        .unwrap();
 
     // Verify first so we can observe the reset.
     let (status, _, _) = app
-        .request("POST", &format!("/api/channels/{id}/verify"), Some(&token), None)
+        .request(
+            "POST",
+            &format!("/api/channels/{id}/verify"),
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, 200);
 
@@ -332,14 +468,21 @@ async fn update_enforces_role_team_and_uniqueness() {
     let app = spawn_app().await;
     let team = app.seed_team("Team").await;
     let token = admin_in_team(&app, "a@x.io", team).await;
-    let id = create_line(&app, &token).await["data"]["id"].as_i64().unwrap();
+    let id = create_line(&app, &token).await["data"]["id"]
+        .as_i64()
+        .unwrap();
 
     // Non-admin -> 403.
     let agent = app.seed_agent("m@x.io", "Passw0rd!", "agent").await;
     app.add_membership(&agent, team, "member", true).await;
     let (member, _, _) = app.login("m@x.io", "Passw0rd!").await;
     let (status, _, _) = app
-        .request("PUT", &format!("/api/channels/{id}"), Some(&member), Some(json!({})))
+        .request(
+            "PUT",
+            &format!("/api/channels/{id}"),
+            Some(&member),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, 403);
 
@@ -360,7 +503,9 @@ async fn update_enforces_role_team_and_uniqueness() {
         )
         .await;
     assert_eq!(status, 200);
-    let id2 = create_line(&app, &token).await["data"]["id"].as_i64().unwrap();
+    let id2 = create_line(&app, &token).await["data"]["id"]
+        .as_i64()
+        .unwrap();
     assert_ne!(id, id2);
     let (status, body, _) = app
         .request(
@@ -371,7 +516,10 @@ async fn update_enforces_role_team_and_uniqueness() {
         )
         .await;
     assert_eq!(status, 400);
-    assert!(body["error"].as_str().unwrap().contains("already exists"), "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("already exists"),
+        "{body}"
+    );
 }
 
 // ----------------------------------------------------- disable / delete (CRD 2661-2668)
@@ -381,13 +529,19 @@ async fn delete_soft_disables_and_frees_the_platform_slot() {
     let app = spawn_app().await;
     let team = app.seed_team("Team").await;
     let token = admin_in_team(&app, "a@x.io", team).await;
-    let id = create_line(&app, &token).await["data"]["id"].as_i64().unwrap();
+    let id = create_line(&app, &token).await["data"]["id"]
+        .as_i64()
+        .unwrap();
 
-    let (status, body, _) =
-        app.request("DELETE", &format!("/api/channels/{id}"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request("DELETE", &format!("/api/channels/{id}"), Some(&token), None)
+        .await;
     assert_eq!(status, 200);
     assert_eq!(body["success"], true);
-    assert!(body["message"].as_str().unwrap().contains("disabled"), "{body}");
+    assert!(
+        body["message"].as_str().unwrap().contains("disabled"),
+        "{body}"
+    );
 
     // Not physically removed (CRD 2666).
     let active: i64 =
@@ -402,8 +556,9 @@ async fn delete_soft_disables_and_frees_the_platform_slot() {
     create_line(&app, &token).await;
 
     // Not found path.
-    let (status, _, _) =
-        app.request("DELETE", "/api/channels/55555", Some(&token), None).await;
+    let (status, _, _) = app
+        .request("DELETE", "/api/channels/55555", Some(&token), None)
+        .await;
     assert_eq!(status, 404);
 }
 
@@ -411,10 +566,12 @@ async fn delete_soft_disables_and_frees_the_platform_slot() {
 
 #[tokio::test]
 async fn verify_success_marks_verified_and_clears_errors() {
-    let app = spawn_app().await;
+    let app = spawn_channels_app().await;
     let team = app.seed_team("Team").await;
     let token = admin_in_team(&app, "a@x.io", team).await;
-    let id = create_line(&app, &token).await["data"]["id"].as_i64().unwrap();
+    let id = create_line(&app, &token).await["data"]["id"]
+        .as_i64()
+        .unwrap();
     // Seed a prior error state to observe the reset (CRD 2715).
     sqlx::query("UPDATE channel_integrations SET error_count = 3, last_error = '{}' WHERE id = $1")
         .bind(id)
@@ -423,15 +580,21 @@ async fn verify_success_marks_verified_and_clears_errors() {
         .unwrap();
 
     let (status, body, _) = app
-        .request("POST", &format!("/api/channels/{id}/verify"), Some(&token), None)
+        .request(
+            "POST",
+            &format!("/api/channels/{id}/verify"),
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["verified"], true);
     assert!(body["details"]["lastVerifiedAt"].is_string());
     assert_eq!(body["details"]["channelId"], "chan-123");
 
-    let (_, body, _) =
-        app.request("GET", &format!("/api/channels/{id}"), Some(&token), None).await;
+    let (_, body, _) = app
+        .request("GET", &format!("/api/channels/{id}"), Some(&token), None)
+        .await;
     assert_eq!(body["data"]["isVerified"], true);
     assert_eq!(body["data"]["errorCount"], 0);
     assert_eq!(body["data"]["lastError"], Value::Null);
@@ -439,7 +602,7 @@ async fn verify_success_marks_verified_and_clears_errors() {
 
 #[tokio::test]
 async fn verify_failure_increments_error_count_and_stores_record() {
-    let app = spawn_app().await;
+    let app = spawn_channels_app().await;
     let team = app.seed_team("Team").await;
     let token = admin_in_team(&app, "a@x.io", team).await;
     let (status, body, _) = app
@@ -461,13 +624,19 @@ async fn verify_failure_increments_error_count_and_stores_record() {
     let id = body["data"]["id"].as_i64().unwrap();
 
     let (status, body, _) = app
-        .request("POST", &format!("/api/channels/{id}/verify"), Some(&token), None)
+        .request(
+            "POST",
+            &format!("/api/channels/{id}/verify"),
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, 400);
     assert_eq!(body["verified"], false);
 
-    let (_, body, _) =
-        app.request("GET", &format!("/api/channels/{id}"), Some(&token), None).await;
+    let (_, body, _) = app
+        .request("GET", &format!("/api/channels/{id}"), Some(&token), None)
+        .await;
     assert_eq!(body["data"]["isVerified"], false);
     assert_eq!(body["data"]["errorCount"], 1);
     assert_eq!(body["data"]["lastError"]["type"], "verification_failed");
@@ -475,27 +644,48 @@ async fn verify_failure_increments_error_count_and_stores_record() {
 
 #[tokio::test]
 async fn verify_rejects_disabled_and_foreign_connections() {
-    let app = spawn_app().await;
+    let app = spawn_channels_app().await;
     let team_a = app.seed_team("Team A").await;
     let team_b = app.seed_team("Team B").await;
     let token_a = admin_in_team(&app, "a@x.io", team_a).await;
     let token_b = admin_in_team(&app, "b@x.io", team_b).await;
-    let id = create_line(&app, &token_a).await["data"]["id"].as_i64().unwrap();
+    let id = create_line(&app, &token_a).await["data"]["id"]
+        .as_i64()
+        .unwrap();
 
     // Another team's admin is denied (CRD 2672).
     let (status, _, _) = app
-        .request("POST", &format!("/api/channels/{id}/verify"), Some(&token_b), None)
+        .request(
+            "POST",
+            &format!("/api/channels/{id}/verify"),
+            Some(&token_b),
+            None,
+        )
         .await;
     assert_eq!(status, 403);
 
     // Disabled connection is not verifiable (CRD 2680).
-    app.request("DELETE", &format!("/api/channels/{id}"), Some(&token_a), None).await;
+    app.request(
+        "DELETE",
+        &format!("/api/channels/{id}"),
+        Some(&token_a),
+        None,
+    )
+    .await;
     let (status, body, _) = app
-        .request("POST", &format!("/api/channels/{id}/verify"), Some(&token_a), None)
+        .request(
+            "POST",
+            &format!("/api/channels/{id}/verify"),
+            Some(&token_a),
+            None,
+        )
         .await;
     assert_eq!(status, 400);
     assert_eq!(body["verified"], false);
-    assert!(body["message"].as_str().unwrap().contains("not active"), "{body}");
+    assert!(
+        body["message"].as_str().unwrap().contains("not active"),
+        "{body}"
+    );
 }
 
 // --------------------------------------------------------------- stats (CRD 2682-2687)
@@ -507,10 +697,18 @@ async fn stats_returns_counters_and_uptime_strictly_same_team() {
     let team_b = app.seed_team("Team B").await;
     let token_a = admin_in_team(&app, "a@x.io", team_a).await;
     let token_b = admin_in_team(&app, "b@x.io", team_b).await;
-    let id = create_line(&app, &token_a).await["data"]["id"].as_i64().unwrap();
+    let id = create_line(&app, &token_a).await["data"]["id"]
+        .as_i64()
+        .unwrap();
 
-    let (status, body, _) =
-        app.request("GET", &format!("/api/channels/{id}/stats"), Some(&token_a), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/channels/{id}/stats"),
+            Some(&token_a),
+            None,
+        )
+        .await;
     assert_eq!(status, 200, "{body}");
     let data = &body["data"];
     assert_eq!(data["platform"], "line");
@@ -524,19 +722,32 @@ async fn stats_returns_counters_and_uptime_strictly_same_team() {
 
     // Strict same-team ownership: even an admin of another team is denied
     // (CRD 2685).
-    let (status, _, _) =
-        app.request("GET", &format!("/api/channels/{id}/stats"), Some(&token_b), None).await;
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &format!("/api/channels/{id}/stats"),
+            Some(&token_b),
+            None,
+        )
+        .await;
     assert_eq!(status, 403);
 
     // Missing team context -> 400.
     app.seed_agent("root@x.io", "Passw0rd!", "admin").await;
     let (root, _, _) = app.login("root@x.io", "Passw0rd!").await;
-    let (status, _, _) =
-        app.request("GET", &format!("/api/channels/{id}/stats"), Some(&root), None).await;
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &format!("/api/channels/{id}/stats"),
+            Some(&root),
+            None,
+        )
+        .await;
     assert_eq!(status, 400);
 
-    let (status, _, _) =
-        app.request("GET", "/api/channels/777777/stats", Some(&token_a), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/channels/777777/stats", Some(&token_a), None)
+        .await;
     assert_eq!(status, 404);
 }
 
@@ -547,10 +758,18 @@ async fn health_classifies_healthy_degraded_down() {
     let app = spawn_app().await;
     let team = app.seed_team("Team").await;
     let token = admin_in_team(&app, "a@x.io", team).await;
-    let id = create_line(&app, &token).await["data"]["id"].as_i64().unwrap();
+    let id = create_line(&app, &token).await["data"]["id"]
+        .as_i64()
+        .unwrap();
 
-    let (status, body, _) =
-        app.request("GET", &format!("/api/channels/{id}/health"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/channels/{id}/health"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, 200);
     assert_eq!(body["data"]["status"], "healthy");
     assert_eq!(body["data"]["consecutiveErrors"], 0);
@@ -561,18 +780,33 @@ async fn health_classifies_healthy_degraded_down() {
         .execute(&app.state.db)
         .await
         .unwrap();
-    let (_, body, _) =
-        app.request("GET", &format!("/api/channels/{id}/health"), Some(&token), None).await;
+    let (_, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/channels/{id}/health"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(body["data"]["status"], "degraded");
-    assert!(!body["data"]["recommendations"].as_array().unwrap().is_empty());
+    assert!(!body["data"]["recommendations"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 
     sqlx::query("UPDATE channel_integrations SET error_count = 9 WHERE id = $1")
         .bind(id)
         .execute(&app.state.db)
         .await
         .unwrap();
-    let (_, body, _) =
-        app.request("GET", &format!("/api/channels/{id}/health"), Some(&token), None).await;
+    let (_, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/channels/{id}/health"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(body["data"]["status"], "down");
     assert!(body["data"]["checkedAt"].is_string());
 }
@@ -596,14 +830,24 @@ async fn webhook_token_triple_resolves_only_enabled_matching_connections() {
     assert_eq!(hit.unwrap().id, id);
 
     // Wrong token, wrong platform, then disabled -> all rejected.
-    assert!(resolve_by_webhook_token(&app.state.db, "line", team, "nope").await.unwrap().is_none());
-    assert!(resolve_by_webhook_token(&app.state.db, "facebook", team, routing_token)
-        .await
-        .unwrap()
-        .is_none());
-    app.request("DELETE", &format!("/api/channels/{id}"), Some(&token), None).await;
-    assert!(resolve_by_webhook_token(&app.state.db, "line", team, routing_token)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        resolve_by_webhook_token(&app.state.db, "line", team, "nope")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        resolve_by_webhook_token(&app.state.db, "facebook", team, routing_token)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    app.request("DELETE", &format!("/api/channels/{id}"), Some(&token), None)
+        .await;
+    assert!(
+        resolve_by_webhook_token(&app.state.db, "line", team, routing_token)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
