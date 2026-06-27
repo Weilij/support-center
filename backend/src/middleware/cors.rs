@@ -41,7 +41,10 @@ pub async fn cors_layer(
     // Decoration happens after the handler (CRD 5599-5602); a disallowed origin does not
     // block execution — the permissive headers are simply omitted.
     if origin_allowed {
-        if let Some(o) = origin.as_deref().and_then(|o| HeaderValue::from_str(o).ok()) {
+        if let Some(o) = origin
+            .as_deref()
+            .and_then(|o| HeaderValue::from_str(o).ok())
+        {
             resp.headers_mut()
                 .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, o);
             resp.headers_mut().insert(
@@ -115,7 +118,10 @@ fn preflight_response(
     });
     let mut resp = (StatusCode::FORBIDDEN, Json(body)).into_response();
     let h = resp.headers_mut();
-    h.insert("X-CORS-Error-Code", HeaderValue::from_static("CORS_REJECTED"));
+    h.insert(
+        "X-CORS-Error-Code",
+        HeaderValue::from_static("CORS_REJECTED"),
+    );
     if let Ok(v) = HeaderValue::from_str(code) {
         h.insert("X-CORS-Error-Code", v);
     }

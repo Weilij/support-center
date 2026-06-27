@@ -36,7 +36,9 @@ fn mint(sub: &str, role: &str, ttl_secs: i64) -> String {
 
 async fn ws_connect(addr: SocketAddr, query: &str) -> Result<Ws, WsError> {
     let url = format!("ws://{addr}/api/websocket/connect{query}");
-    tokio_tungstenite::connect_async(url).await.map(|(ws, _)| ws)
+    tokio_tungstenite::connect_async(url)
+        .await
+        .map(|(ws, _)| ws)
 }
 
 /// Expect the handshake to be rejected; return (status, close-code header, body).
@@ -108,9 +110,15 @@ async fn seed(app: &TestApp) -> Seeded {
     let team_id = app.seed_team("Realtime Team").await;
     let other_team_id = app.seed_team("Other Team").await;
     app.add_membership(&agent_id, team_id, "member", true).await;
-    let customer = app.seed_customer("line", "U-rt-1", "RT Customer", Some(team_id)).await;
-    let team_conv = app.seed_conversation(customer, Some(team_id), "assigned").await;
-    let foreign_conv = app.seed_conversation(customer, Some(other_team_id), "assigned").await;
+    let customer = app
+        .seed_customer("line", "U-rt-1", "RT Customer", Some(team_id))
+        .await;
+    let team_conv = app
+        .seed_conversation(customer, Some(team_id), "assigned")
+        .await;
+    let foreign_conv = app
+        .seed_conversation(customer, Some(other_team_id), "assigned")
+        .await;
     let pool_conv = app.seed_conversation(customer, None, "active").await;
     let (admin_token, _, _) = app.login("admin@rt.io", "Secret123!").await;
     let (agent_token, _, _) = app.login("agent@rt.io", "Secret123!").await;
@@ -248,7 +256,9 @@ async fn personal_channel_welcome_ping_pong_and_unknown_type() {
     let app = spawn_app().await;
     let s = seed(&app).await;
     let addr = serve(&app).await;
-    let mut ws = ws_connect(addr, &format!("?token={}", s.admin_token)).await.unwrap();
+    let mut ws = ws_connect(addr, &format!("?token={}", s.admin_token))
+        .await
+        .unwrap();
 
     // Personal-channel welcome (CRD 3442).
     let welcome = wait_for_event(&mut ws, "user_connected").await;
@@ -328,7 +338,11 @@ async fn room_chat_broadcast_typing_relay_and_sync() {
     wait_for_event(&mut b, "connection_established").await;
 
     // Chat message: ordered, broadcast to all participants (CRD 3414, 3561).
-    send_json(&mut a, json!({ "type": "message", "content": "hello room" })).await;
+    send_json(
+        &mut a,
+        json!({ "type": "message", "content": "hello room" }),
+    )
+    .await;
     let msg = wait_for_event(&mut b, "message_sent").await;
     assert_eq!(msg["payload"]["content"], "hello room");
     assert_eq!(msg["payload"]["senderId"], json!(s.admin_id));
@@ -358,11 +372,17 @@ async fn personal_channel_subscriptions_and_chat_ack() {
     let app = spawn_app().await;
     let s = seed(&app).await;
     let addr = serve(&app).await;
-    let mut ws = ws_connect(addr, &format!("?token={}", s.agent_token)).await.unwrap();
+    let mut ws = ws_connect(addr, &format!("?token={}", s.agent_token))
+        .await
+        .unwrap();
     wait_for_event(&mut ws, "user_connected").await;
 
     // Subscribe is permission-checked (CRD 3413): foreign team denied.
-    send_json(&mut ws, json!({ "type": "subscribe", "conversationId": s.foreign_conv })).await;
+    send_json(
+        &mut ws,
+        json!({ "type": "subscribe", "conversationId": s.foreign_conv }),
+    )
+    .await;
     let err = wait_for_event(&mut ws, "error").await;
     assert_eq!(
         err["payload"]["message"],
@@ -370,7 +390,11 @@ async fn personal_channel_subscriptions_and_chat_ack() {
     );
 
     // Accessible conversation acknowledged with the subscription count.
-    send_json(&mut ws, json!({ "type": "subscribe", "conversationId": s.team_conv })).await;
+    send_json(
+        &mut ws,
+        json!({ "type": "subscribe", "conversationId": s.team_conv }),
+    )
+    .await;
     let ack = wait_for_event(&mut ws, "subscription_added").await;
     assert_eq!(ack["payload"]["conversationId"], json!(s.team_conv));
     assert_eq!(ack["payload"]["subscriptionCount"], 1);
@@ -386,12 +410,23 @@ async fn personal_channel_subscriptions_and_chat_ack() {
     assert_eq!(ack["payload"]["userId"], json!(s.agent_id));
 
     // Chat to a non-subscribed conversation is rejected.
-    send_json(&mut ws, json!({ "type": "message", "conversationId": s.pool_conv })).await;
+    send_json(
+        &mut ws,
+        json!({ "type": "message", "conversationId": s.pool_conv }),
+    )
+    .await;
     let err = wait_for_event(&mut ws, "error").await;
-    assert_eq!(err["payload"]["message"], "Not subscribed to this conversation");
+    assert_eq!(
+        err["payload"]["message"],
+        "Not subscribed to this conversation"
+    );
 
     // Unsubscribe always succeeds and is acknowledged (CRD 3413).
-    send_json(&mut ws, json!({ "type": "unsubscribe", "conversationId": s.team_conv })).await;
+    send_json(
+        &mut ws,
+        json!({ "type": "unsubscribe", "conversationId": s.team_conv }),
+    )
+    .await;
     let ack = wait_for_event(&mut ws, "subscription_removed").await;
     assert_eq!(ack["payload"]["subscriptionCount"], 0);
 }
@@ -413,7 +448,9 @@ async fn http_send_message_broadcasts_to_room_and_team_list_views() {
     .await
     .unwrap();
     wait_for_event(&mut room_ws, "connection_established").await;
-    let mut list_ws = ws_connect(addr, &format!("?token={}", s.agent_token)).await.unwrap();
+    let mut list_ws = ws_connect(addr, &format!("?token={}", s.agent_token))
+        .await
+        .unwrap();
     wait_for_event(&mut list_ws, "user_connected").await;
 
     let (status, body, _) = app
@@ -441,7 +478,9 @@ async fn conversation_assignment_events_reach_team_members() {
     let app = spawn_app().await;
     let s = seed(&app).await;
     let addr = serve(&app).await;
-    let mut ws = ws_connect(addr, &format!("?token={}", s.agent_token)).await.unwrap();
+    let mut ws = ws_connect(addr, &format!("?token={}", s.agent_token))
+        .await
+        .unwrap();
     wait_for_event(&mut ws, "user_connected").await;
 
     let (status, body, _) = app
@@ -496,9 +535,14 @@ async fn disconnect_endpoint_closes_the_connection() {
     let app = spawn_app().await;
     let s = seed(&app).await;
     let addr = serve(&app).await;
-    let mut ws = ws_connect(addr, &format!("?token={}", s.admin_token)).await.unwrap();
+    let mut ws = ws_connect(addr, &format!("?token={}", s.admin_token))
+        .await
+        .unwrap();
     let welcome = wait_for_event(&mut ws, "user_connected").await;
-    let connection_id = welcome["payload"]["connectionId"].as_str().unwrap().to_string();
+    let connection_id = welcome["payload"]["connectionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let (status, body, _) = app
         .request(
@@ -530,7 +574,12 @@ async fn disconnect_endpoint_closes_the_connection() {
 async fn disconnect_requires_the_handshake_gate() {
     let app = spawn_app().await;
     let (status, body, _) = app
-        .request("POST", "/api/websocket/disconnect", None, Some(json!({"connectionId": "x"})))
+        .request(
+            "POST",
+            "/api/websocket/disconnect",
+            None,
+            Some(json!({"connectionId": "x"})),
+        )
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["code"], 4401);
@@ -539,13 +588,16 @@ async fn disconnect_requires_the_handshake_gate() {
 #[tokio::test]
 async fn public_health_and_migration_status() {
     let app = spawn_app().await;
-    let (status, body, _) = app.request("GET", "/api/websocket/health", None, None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/websocket/health", None, None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["status"], "healthy");
     assert!(body["data"]["totalConnections"].is_number());
 
-    let (status, body, _) =
-        app.request("GET", "/api/websocket/migration-status", None, None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/websocket/migration-status", None, None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["enabled"], true);
     assert_eq!(body["data"]["rolloutPercentage"], 100);
@@ -558,27 +610,38 @@ async fn authenticated_health_metrics_and_probes() {
     let s = seed(&app).await;
 
     // Comprehensive health when authenticated (CRD 3299-3302).
-    let (status, body, _) =
-        app.request("GET", "/api/websocket/health", Some(&s.agent_token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/websocket/health", Some(&s.agent_token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["data"]["components"]["database"]["status"].is_string());
 
     // Metrics requires authentication (CRD 3313).
-    let (status, _, _) = app.request("GET", "/api/websocket/metrics", None, None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/websocket/metrics", None, None)
+        .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    let (status, body, _) =
-        app.request("GET", "/api/websocket/metrics", Some(&s.agent_token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/websocket/metrics", Some(&s.agent_token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["status"], "ok");
     assert!(body["data"]["data"]["performance"]["latencyP95Ms"].is_number());
 
-    let (status, body, _) =
-        app.request("GET", "/api/websocket/readiness", Some(&s.agent_token), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            "/api/websocket/readiness",
+            Some(&s.agent_token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["ready"], true);
 
-    let (status, body, _) =
-        app.request("GET", "/api/websocket/liveness", Some(&s.agent_token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/websocket/liveness", Some(&s.agent_token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["alive"], true);
 }
@@ -664,7 +727,12 @@ async fn dashboard_endpoints_are_admin_only() {
         assert_eq!(status, StatusCode::OK, "admin denied on {path}");
     }
     let (status, body, _) = app
-        .request("GET", "/api/websocket/dashboard/connections", Some(&s.admin_token), None)
+        .request(
+            "GET",
+            "/api/websocket/dashboard/connections",
+            Some(&s.admin_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["count"], 0);
@@ -677,11 +745,21 @@ async fn analytics_records_validation_and_persistence() {
 
     // Missing required fields -> bad request (CRD 3371, 3377).
     let (status, _, _) = app
-        .request("POST", "/api/websocket/analytics/errors", None, Some(json!({})))
+        .request(
+            "POST",
+            "/api/websocket/analytics/errors",
+            None,
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _, _) = app
-        .request("POST", "/api/websocket/analytics/quality", None, Some(json!({})))
+        .request(
+            "POST",
+            "/api/websocket/analytics/quality",
+            None,
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
@@ -726,7 +804,12 @@ async fn analytics_records_validation_and_persistence() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, body, _) = app
-        .request("GET", "/api/websocket/analytics/trends", Some(&s.admin_token), None)
+        .request(
+            "GET",
+            "/api/websocket/analytics/trends",
+            Some(&s.admin_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["timeRangeHours"], 24);
@@ -761,14 +844,24 @@ async fn analytics_alerts_and_config() {
     assert!(body["data"]["alertId"].is_string());
 
     let (status, body, _) = app
-        .request("GET", "/api/websocket/dashboard/alerts", Some(&s.admin_token), None)
+        .request(
+            "GET",
+            "/api/websocket/dashboard/alerts",
+            Some(&s.admin_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["count"], 1);
 
     // Alert config defaults, then update with range validation (CRD 3389-3397).
     let (status, body, _) = app
-        .request("GET", "/api/websocket/analytics/config/alerts", Some(&s.admin_token), None)
+        .request(
+            "GET",
+            "/api/websocket/analytics/config/alerts",
+            Some(&s.admin_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["isDefault"], true);
@@ -807,7 +900,12 @@ async fn analytics_alerts_and_config() {
     assert_eq!(body["data"]["isDefault"], false);
 
     let (status, body, _) = app
-        .request("GET", "/api/websocket/analytics/config/alerts", Some(&s.admin_token), None)
+        .request(
+            "GET",
+            "/api/websocket/analytics/config/alerts",
+            Some(&s.admin_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["errorRateThreshold"], 0.1);
@@ -818,7 +916,9 @@ async fn analytics_alerts_and_config() {
 async fn test_connection_requires_user_id() {
     let app = spawn_app().await;
     let s = seed(&app).await;
-    let (status, _, _) = app.request("GET", "/api/websocket/test-connection", None, None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/websocket/test-connection", None, None)
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, body, _) = app
         .request(
@@ -843,7 +943,9 @@ async fn per_user_connection_ceiling_yields_429() {
     let addr = serve(&app).await;
     let mut held = Vec::new();
     for _ in 0..5 {
-        let mut ws = ws_connect(addr, &format!("?token={}", s.admin_token)).await.unwrap();
+        let mut ws = ws_connect(addr, &format!("?token={}", s.admin_token))
+            .await
+            .unwrap();
         wait_for_event(&mut ws, "user_connected").await;
         held.push(ws);
     }

@@ -6,6 +6,8 @@ use axum::Json;
 use serde::Serialize;
 use serde_json::json;
 
+pub type HandlerResult<T = Response> = std::result::Result<T, AppError>;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FieldProblem {
     pub field: String,

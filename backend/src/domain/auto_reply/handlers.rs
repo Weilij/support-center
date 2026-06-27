@@ -1,7 +1,6 @@
 //! Auto-reply management endpoints (CRD §2.5, lines 1341-1410).
 
 use axum::extract::{Path, Query, State};
-use axum::response::Response;
 use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -10,18 +9,48 @@ use std::sync::Arc;
 
 use crate::db::now_iso;
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
 
-type Result<T = Response> = std::result::Result<T, AppError>;
-
 /// id, team_id, name, trigger, priority, active, fallback, created_by, created, updated, deleted
-type RuleRow = (i64, Option<i64>, String, String, i64, i64, i64, Option<String>, String, Option<String>, Option<String>);
+type RuleRow = (
+    i64,
+    Option<i64>,
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+);
 /// id, team_id, day_of_week, start, end, timezone, active
-type ScheduleRow = (i64, i64, i64, Option<String>, Option<String>, Option<String>, i64);
+type ScheduleRow = (
+    i64,
+    i64,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    i64,
+);
 /// id, rule_id, rule_name, conversation, customer, trigger, response, matched, platform, method, created
-type LogRow = (i64, Option<i64>, Option<String>, Option<String>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, String);
+type LogRow = (
+    i64,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+);
 
 const TRIGGER_TYPES: &[&str] = &["welcome", "greeting", "keyword", "off_hours", "fallback"];
 const CONDITION_TYPES: &[&str] = &["exact", "contains", "regex", "message_type"];
@@ -55,16 +84,27 @@ fn page_params(q: &ScopeQuery) -> (i64, i64) {
 }
 
 async fn rule_view(db: &PgPool, rule_id: i64) -> Result<Value> {
-    let row: Option<RuleRow> =
-        sqlx::query_as(
-            "SELECT id, team_id, name, trigger_type, priority, is_active, allow_fallback,
+    let row: Option<RuleRow> = sqlx::query_as(
+        "SELECT id, team_id, name, trigger_type, priority, is_active, allow_fallback,
                     created_by, created_at, updated_at, deleted_at
              FROM auto_reply_rules WHERE id = $1",
-        )
-        .bind(rule_id)
-        .fetch_optional(db)
-        .await?;
-    let Some((id, team_id, name, trigger, priority, active, fallback, created_by, created, updated, deleted)) = row
+    )
+    .bind(rule_id)
+    .fetch_optional(db)
+    .await?;
+    let Some((
+        id,
+        team_id,
+        name,
+        trigger,
+        priority,
+        active,
+        fallback,
+        created_by,
+        created,
+        updated,
+        deleted,
+    )) = row
     else {
         return Err(AppError::NotFound("Rule not found".into()));
     };
@@ -161,7 +201,11 @@ pub struct RuleBody {
 
 fn validate_conditions(conditions: &[Value]) -> Result<()> {
     for c in conditions {
-        let t = c.get("conditionType").or_else(|| c.get("type")).and_then(Value::as_str).unwrap_or("");
+        let t = c
+            .get("conditionType")
+            .or_else(|| c.get("type"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
         if !CONDITION_TYPES.contains(&t) {
             return Err(AppError::BadRequest(format!(
                 "Invalid condition type '{t}': must be one of {CONDITION_TYPES:?}"
@@ -173,7 +217,11 @@ fn validate_conditions(conditions: &[Value]) -> Result<()> {
 
 fn validate_actions(actions: &[Value]) -> Result<()> {
     for a in actions {
-        let t = a.get("actionType").or_else(|| a.get("type")).and_then(Value::as_str).unwrap_or("");
+        let t = a
+            .get("actionType")
+            .or_else(|| a.get("type"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
         if !ACTION_TYPES.contains(&t) {
             return Err(AppError::BadRequest(format!(
                 "Invalid action type '{t}': must be one of {ACTION_TYPES:?}"
@@ -212,9 +260,18 @@ async fn insert_actions(db: &PgPool, rule_id: i64, actions: &[Value]) -> Result<
              VALUES ($1, $2, $3, $4)",
         )
         .bind(rule_id)
-        .bind(a.get("actionType").or_else(|| a.get("type")).and_then(Value::as_str).unwrap_or("text"))
+        .bind(
+            a.get("actionType")
+                .or_else(|| a.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("text"),
+        )
         .bind(content)
-        .bind(a.get("sortOrder").and_then(Value::as_i64).unwrap_or(idx as i64))
+        .bind(
+            a.get("sortOrder")
+                .and_then(Value::as_i64)
+                .unwrap_or(idx as i64),
+        )
         .execute(db)
         .await?;
     }
@@ -288,13 +345,14 @@ pub async fn update_rule(
     Path(id): Path<String>,
     Json(body): Json<RuleBody>,
 ) -> Result {
-    let rule_id: i64 = id.parse().map_err(|_| AppError::BadRequest("Invalid rule ID".into()))?;
-    let existing: Option<(Option<i64>,)> = sqlx::query_as(
-        "SELECT team_id FROM auto_reply_rules WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(rule_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let rule_id: i64 = id
+        .parse()
+        .map_err(|_| AppError::BadRequest("Invalid rule ID".into()))?;
+    let existing: Option<(Option<i64>,)> =
+        sqlx::query_as("SELECT team_id FROM auto_reply_rules WHERE id = $1 AND deleted_at IS NULL")
+            .bind(rule_id)
+            .fetch_optional(&state.db)
+            .await?;
     let Some((team,)) = existing else {
         return Err(AppError::NotFound("Rule not found".into()));
     };
@@ -365,13 +423,14 @@ pub async fn delete_rule(
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result {
-    let rule_id: i64 = id.parse().map_err(|_| AppError::BadRequest("Invalid rule ID".into()))?;
-    let existing: Option<(Option<i64>,)> = sqlx::query_as(
-        "SELECT team_id FROM auto_reply_rules WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(rule_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let rule_id: i64 = id
+        .parse()
+        .map_err(|_| AppError::BadRequest("Invalid rule ID".into()))?;
+    let existing: Option<(Option<i64>,)> =
+        sqlx::query_as("SELECT team_id FROM auto_reply_rules WHERE id = $1 AND deleted_at IS NULL")
+            .bind(rule_id)
+            .fetch_optional(&state.db)
+            .await?;
     let Some((team,)) = existing else {
         return Err(AppError::NotFound("Rule not found".into()));
     };
@@ -394,16 +453,15 @@ pub async fn get_schedules(
     Extension(user): Extension<AuthUser>,
     Query(q): Query<ScopeQuery>,
 ) -> Result {
-    let team = resolve_team(&q, &user)
-        .ok_or_else(|| AppError::BadRequest("teamId is required".into()))?;
-    let rows: Vec<ScheduleRow> =
-        sqlx::query_as(
-            "SELECT id, team_id, day_of_week, start_time, end_time, timezone, is_active
+    let team =
+        resolve_team(&q, &user).ok_or_else(|| AppError::BadRequest("teamId is required".into()))?;
+    let rows: Vec<ScheduleRow> = sqlx::query_as(
+        "SELECT id, team_id, day_of_week, start_time, end_time, timezone, is_active
              FROM auto_reply_business_hours WHERE team_id = $1 ORDER BY day_of_week",
-        )
-        .bind(team)
-        .fetch_all(&state.db)
-        .await?;
+    )
+    .bind(team)
+    .fetch_all(&state.db)
+    .await?;
     let items: Vec<Value> = rows
         .iter()
         .map(|(id, t, d, s, e, tz, a)| {
@@ -437,8 +495,8 @@ pub async fn replace_schedules(
     Query(q): Query<ScopeQuery>,
     Json(body): Json<SchedulesBody>,
 ) -> Result {
-    let team = resolve_team(&q, &user)
-        .ok_or_else(|| AppError::BadRequest("teamId is required".into()))?;
+    let team =
+        resolve_team(&q, &user).ok_or_else(|| AppError::BadRequest("teamId is required".into()))?;
     let entries = body
         .schedules
         .as_ref()
@@ -451,7 +509,9 @@ pub async fn replace_schedules(
     for entry in &entries {
         let day = entry.get("dayOfWeek").and_then(Value::as_i64).unwrap_or(-1);
         if !(0..=6).contains(&day) {
-            return Err(AppError::BadRequest(format!("Invalid dayOfWeek '{day}': must be 0-6")));
+            return Err(AppError::BadRequest(format!(
+                "Invalid dayOfWeek '{day}': must be 0-6"
+            )));
         }
         for key in ["startTime", "endTime"] {
             let v = entry.get(key).and_then(Value::as_str).unwrap_or("");
@@ -479,7 +539,12 @@ pub async fn replace_schedules(
         .bind(entry.get("startTime").and_then(Value::as_str))
         .bind(entry.get("endTime").and_then(Value::as_str))
         .bind(&timezone)
-        .bind(entry.get("isActive").and_then(Value::as_bool).unwrap_or(true) as i64)
+        .bind(
+            entry
+                .get("isActive")
+                .and_then(Value::as_bool)
+                .unwrap_or(true) as i64,
+        )
         .execute(&state.db)
         .await?;
     }
@@ -494,8 +559,8 @@ pub async fn list_logs(
     Extension(user): Extension<AuthUser>,
     Query(q): Query<ScopeQuery>,
 ) -> Result {
-    let team = resolve_team(&q, &user)
-        .ok_or_else(|| AppError::BadRequest("teamId is required".into()))?;
+    let team =
+        resolve_team(&q, &user).ok_or_else(|| AppError::BadRequest("teamId is required".into()))?;
     let rule_filter: Option<i64> = match &q.rule_id {
         None => None,
         Some(raw) => Some(
@@ -514,7 +579,9 @@ pub async fn list_logs(
         if chrono::DateTime::parse_from_rfc3339(d).is_err()
             && chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_err()
         {
-            return Err(AppError::BadRequest("dateFrom must be a valid ISO-8601 date".into()));
+            return Err(AppError::BadRequest(
+                "dateFrom must be a valid ISO-8601 date".into(),
+            ));
         }
     }
     let (page, size) = page_params(&q);
@@ -526,16 +593,18 @@ pub async fn list_logs(
            AND ($2 IS NULL OR l.rule_id = $3)
            AND ($4 IS NULL OR l.platform = $5)
            AND ($6 IS NULL OR l.created_at >= $7)";
-    let total: i64 = sqlx::query_scalar(&crate::db::pg_params(&format!("SELECT COUNT(*) {base_where}")))
-        .bind(team)
-        .bind(rule_filter)
-        .bind(rule_filter)
-        .bind(&q.platform)
-        .bind(&q.platform)
-        .bind(&q.date_from)
-        .bind(&q.date_from)
-        .fetch_one(&state.db)
-        .await?;
+    let total: i64 = sqlx::query_scalar(&crate::db::pg_params(&format!(
+        "SELECT COUNT(*) {base_where}"
+    )))
+    .bind(team)
+    .bind(rule_filter)
+    .bind(rule_filter)
+    .bind(&q.platform)
+    .bind(&q.platform)
+    .bind(&q.date_from)
+    .bind(&q.date_from)
+    .fetch_one(&state.db)
+    .await?;
     let today_start = chrono::Utc::now().format("%Y-%m-%dT00:00:00").to_string();
     let today_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM auto_reply_logs l
@@ -567,17 +636,35 @@ pub async fn list_logs(
 
     let items: Vec<Value> = rows
         .iter()
-        .map(|(id, rule_id, rule_name, conv, cust, trigger, response, matched, platform, method, created)| {
-            json!({
-                "id": id, "ruleId": rule_id, "ruleName": rule_name,
-                "conversationId": conv, "customerId": cust,
-                "triggerContent": trigger, "responseContent": response,
-                "matchedCondition": matched, "platform": platform,
-                "deliveryMethod": method, "createdAt": created,
-            })
-        })
+        .map(
+            |(
+                id,
+                rule_id,
+                rule_name,
+                conv,
+                cust,
+                trigger,
+                response,
+                matched,
+                platform,
+                method,
+                created,
+            )| {
+                json!({
+                    "id": id, "ruleId": rule_id, "ruleName": rule_name,
+                    "conversationId": conv, "customerId": cust,
+                    "triggerContent": trigger, "responseContent": response,
+                    "matchedCondition": matched, "platform": platform,
+                    "deliveryMethod": method, "createdAt": created,
+                })
+            },
+        )
         .collect();
-    let total_pages = if total == 0 { 0 } else { (total + size - 1) / size };
+    let total_pages = if total == 0 {
+        0
+    } else {
+        (total + size - 1) / size
+    };
     Ok(envelope::ok(json!({
         "items": items,
         "page": page,

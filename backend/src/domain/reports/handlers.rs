@@ -2,7 +2,7 @@
 
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderValue, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -10,28 +10,55 @@ use std::sync::Arc;
 
 use crate::db::now_iso;
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
 
-type Result<T = Response> = std::result::Result<T, AppError>;
-
 /// Full report-type catalog (CRD 4666); only GENERATABLE is backed by live data.
 pub const CATALOG: &[&str] = &[
-    "conversation_summary", "agent_performance", "team_analytics", "customer_satisfaction",
-    "platform_usage", "message_statistics", "response_time_analysis", "workload_distribution",
-    "system_health", "custom", "cost_analysis", "sla_compliance", "anomaly_detection",
-    "audit_trail", "resource_utilization", "trend_forecast", "customer_insights",
-    "channel_integration", "goal_achievement", "automation_effectiveness", "security_risk",
-    "knowledge_base", "call_quality", "executive_summary",
+    "conversation_summary",
+    "agent_performance",
+    "team_analytics",
+    "customer_satisfaction",
+    "platform_usage",
+    "message_statistics",
+    "response_time_analysis",
+    "workload_distribution",
+    "system_health",
+    "custom",
+    "cost_analysis",
+    "sla_compliance",
+    "anomaly_detection",
+    "audit_trail",
+    "resource_utilization",
+    "trend_forecast",
+    "customer_insights",
+    "channel_integration",
+    "goal_achievement",
+    "automation_effectiveness",
+    "security_risk",
+    "knowledge_base",
+    "call_quality",
+    "executive_summary",
 ];
-pub const GENERATABLE: &[&str] =
-    &["conversation_summary", "agent_performance", "message_statistics"];
+pub const GENERATABLE: &[&str] = &[
+    "conversation_summary",
+    "agent_performance",
+    "message_statistics",
+];
 pub const FORMATS: &[&str] = &["json", "csv", "excel", "pdf", "html"];
 pub const GENERATABLE_FORMATS: &[&str] = &["json", "csv"];
 const ADMIN_ONLY_TYPES: &[&str] = &["system_health", "custom", "team_analytics"];
-const TIME_RANGES: &[&str] =
-    &["today", "yesterday", "last_7_days", "last_30_days", "last_90_days", "this_month", "last_month", "custom"];
+const TIME_RANGES: &[&str] = &[
+    "today",
+    "yesterday",
+    "last_7_days",
+    "last_30_days",
+    "last_90_days",
+    "this_month",
+    "last_month",
+    "custom",
+];
 const MAX_CONCURRENT_GENERATING: i64 = 3;
 
 fn sanitize(s: &str) -> String {
@@ -139,14 +166,25 @@ pub struct GenerateBody {
 fn validate_generate(body: &GenerateBody) -> Result<(String, String, String, String)> {
     let kind = body.kind.as_deref().unwrap_or("");
     if !CATALOG.contains(&kind) {
-        return Err(AppError::BadRequest(format!("Invalid report type '{kind}'")));
+        return Err(AppError::BadRequest(format!(
+            "Invalid report type '{kind}'"
+        )));
     }
     let title = sanitize(body.title.as_deref().unwrap_or(""));
     if title.is_empty() || title.chars().count() > 200 {
-        return Err(AppError::BadRequest("title is required (max 200 characters)".into()));
+        return Err(AppError::BadRequest(
+            "title is required (max 200 characters)".into(),
+        ));
     }
-    if body.description.as_deref().map(|d| d.chars().count() > 1000).unwrap_or(false) {
-        return Err(AppError::BadRequest("description exceeds 1000 characters".into()));
+    if body
+        .description
+        .as_deref()
+        .map(|d| d.chars().count() > 1000)
+        .unwrap_or(false)
+    {
+        return Err(AppError::BadRequest(
+            "description exceeds 1000 characters".into(),
+        ));
     }
     let format = body.format.as_deref().unwrap_or("");
     if !FORMATS.contains(&format) {
@@ -157,8 +195,14 @@ fn validate_generate(body: &GenerateBody) -> Result<(String, String, String, Str
         return Err(AppError::BadRequest("Invalid or missing timeRange".into()));
     }
     if time_range == "custom" {
-        let s = body.custom_start.as_deref().and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok());
-        let e = body.custom_end.as_deref().and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok());
+        let s = body
+            .custom_start
+            .as_deref()
+            .and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok());
+        let e = body
+            .custom_end
+            .as_deref()
+            .and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok());
         match (s, e) {
             (Some(s), Some(e)) if s < e && e <= chrono::Utc::now() => {}
             (Some(_), Some(_)) => {
@@ -166,21 +210,45 @@ fn validate_generate(body: &GenerateBody) -> Result<(String, String, String, Str
                     "custom range start must precede end, and end must not be in the future".into(),
                 ))
             }
-            _ => return Err(AppError::BadRequest("customStart and customEnd are required".into())),
+            _ => {
+                return Err(AppError::BadRequest(
+                    "customStart and customEnd are required".into(),
+                ))
+            }
         }
     }
     if let Some(filters) = &body.filters {
-        if filters.get("teamIds").and_then(Value::as_array).map(|a| a.len() > 10).unwrap_or(false) {
+        if filters
+            .get("teamIds")
+            .and_then(Value::as_array)
+            .map(|a| a.len() > 10)
+            .unwrap_or(false)
+        {
             return Err(AppError::BadRequest("teamIds capped at 10".into()));
         }
-        if filters.get("agentIds").and_then(Value::as_array).map(|a| a.len() > 50).unwrap_or(false) {
+        if filters
+            .get("agentIds")
+            .and_then(Value::as_array)
+            .map(|a| a.len() > 50)
+            .unwrap_or(false)
+        {
             return Err(AppError::BadRequest("agentIds capped at 50".into()));
         }
-        if filters.get("tags").and_then(Value::as_array).map(|a| a.len() > 20).unwrap_or(false) {
+        if filters
+            .get("tags")
+            .and_then(Value::as_array)
+            .map(|a| a.len() > 20)
+            .unwrap_or(false)
+        {
             return Err(AppError::BadRequest("tags capped at 20".into()));
         }
     }
-    Ok((kind.to_string(), title, format.to_string(), time_range.to_string()))
+    Ok((
+        kind.to_string(),
+        title,
+        format.to_string(),
+        time_range.to_string(),
+    ))
 }
 
 async fn build_content(state: &AppState, kind: &str, format: &str) -> String {
@@ -221,7 +289,9 @@ pub async fn generate(
     let (kind, title, format, time_range) = validate_generate(&body)?;
     // Restricted types are administrator-only (CRD 4541).
     if ADMIN_ONLY_TYPES.contains(&kind.as_str()) && !user.is_admin() {
-        return Err(AppError::Forbidden("This report type is administrator-only".into()));
+        return Err(AppError::Forbidden(
+            "This report type is administrator-only".into(),
+        ));
     }
     // Catalog-valid but non-generatable type/format -> invalid parameters (CRD 4552).
     if !GENERATABLE.contains(&kind.as_str()) {
@@ -242,7 +312,9 @@ pub async fn generate(
     .fetch_one(&state.db)
     .await?;
     if generating >= MAX_CONCURRENT_GENERATING {
-        return Err(AppError::BadRequest("Too many reports are generating concurrently".into()));
+        return Err(AppError::BadRequest(
+            "Too many reports are generating concurrently".into(),
+        ));
     }
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -276,7 +348,13 @@ pub async fn generate(
         .await?;
     let content = build_content(&state, &kind, &format).await;
     let key = format!("reports/{id}.{format}");
-    match crate::domain::files::store::put_object(&state.config.upload_dir, &key, content.as_bytes()).await {
+    match crate::domain::files::store::put_object(
+        &state.config.upload_dir,
+        &key,
+        content.as_bytes(),
+    )
+    .await
+    {
         Ok(()) => {
             sqlx::query(
                 "UPDATE reports SET status = 'completed', completed_at = $1, output_url = $2,
@@ -305,10 +383,12 @@ pub async fn generate(
         }
     }
 
-    let row: ReportRow = sqlx::query_as(&crate::db::pg_params(&format!("SELECT {COLUMNS} FROM reports WHERE id = $1")))
-        .bind(&id)
-        .fetch_one(&state.db)
-        .await?;
+    let row: ReportRow = sqlx::query_as(&crate::db::pg_params(&format!(
+        "SELECT {COLUMNS} FROM reports WHERE id = $1"
+    )))
+    .bind(&id)
+    .fetch_one(&state.db)
+    .await?;
     let mut resp = envelope::ok_msg(
         json!({"report": view(&row), "estimatedTime": "under a minute"}),
         "Report generated",
@@ -349,9 +429,12 @@ pub async fn list(
            AND ($1 IS NULL OR report_type = $2) AND ($3 IS NULL OR status = $4)
            AND ($5 IS NULL OR format = $6)",
     )
-    .bind(&q.kind).bind(&q.kind)
-    .bind(&q.status).bind(&q.status)
-    .bind(&q.format).bind(&q.format)
+    .bind(&q.kind)
+    .bind(&q.kind)
+    .bind(&q.status)
+    .bind(&q.status)
+    .bind(&q.format)
+    .bind(&q.format)
     .fetch_one(&state.db)
     .await?;
     let rows: Vec<ReportRow> = sqlx::query_as(&crate::db::pg_params(&format!(
@@ -360,9 +443,12 @@ pub async fn list(
            AND ($5 IS NULL OR format = $6)
          ORDER BY created_at DESC, id DESC LIMIT $7 OFFSET $8"
     )))
-    .bind(&q.kind).bind(&q.kind)
-    .bind(&q.status).bind(&q.status)
-    .bind(&q.format).bind(&q.format)
+    .bind(&q.kind)
+    .bind(&q.kind)
+    .bind(&q.status)
+    .bind(&q.status)
+    .bind(&q.format)
+    .bind(&q.format)
     .bind(size)
     .bind((page - 1) * size)
     .fetch_all(&state.db)
@@ -375,7 +461,11 @@ pub async fn list(
     )
     .fetch_one(&state.db)
     .await?;
-    let total_pages = if total == 0 { 0 } else { (total + size - 1) / size };
+    let total_pages = if total == 0 {
+        0
+    } else {
+        (total + size - 1) / size
+    };
     Ok(envelope::ok(json!({
         "reports": rows.iter().map(view).collect::<Vec<_>>(),
         "pagination": {
@@ -434,14 +524,20 @@ pub async fn download(
     // Creator OR admin OR member of the owning team (CRD 4575).
     let allowed = user.is_admin()
         || row.created_by == user.id
-        || row.team_id.map(|t| user.can_access_team(t)).unwrap_or(false);
+        || row
+            .team_id
+            .map(|t| user.can_access_team(t))
+            .unwrap_or(false);
     if !allowed {
         return Err(AppError::Forbidden("Access denied".into()));
     }
     if row.status != "completed" {
         return Err(AppError::NotFound("Report is not completed".into()));
     }
-    let key = row.output_url.clone().filter(|k| !k.is_empty())
+    let key = row
+        .output_url
+        .clone()
+        .filter(|k| !k.is_empty())
         .ok_or_else(|| AppError::NotFound("Report file missing".into()))?;
     let Some(bytes) = crate::domain::files::store::get_object(&state.config.upload_dir, &key).await
     else {
@@ -458,16 +554,23 @@ pub async fn download(
     .bind(bytes.len() as i64)
     .execute(&state.db)
     .await?;
-    let _ = sqlx::query(
+    if let Err(error) = sqlx::query(
         "UPDATE reports SET download_count = download_count + 1, last_downloaded_at = $1 WHERE id = $2",
     )
     .bind(now_iso())
     .bind(&row.id)
     .execute(&state.db)
-    .await;
+    .await
+    {
+        tracing::warn!(error = %error, report_id = %row.id, "report download counter update failed");
+    }
 
     let format = row.format.as_deref().unwrap_or("json");
-    let content_type = if format == "csv" { "text/csv" } else { "application/json" };
+    let content_type = if format == "csv" {
+        "text/csv"
+    } else {
+        "application/json"
+    };
     let filename = format!("{}.{format}", sanitize(&row.title).replace(' ', "_"));
     let mut resp = (StatusCode::OK, bytes).into_response();
     let h = resp.headers_mut();
@@ -478,8 +581,14 @@ pub async fn download(
     if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")) {
         h.insert(header::CONTENT_DISPOSITION, v);
     }
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=300"));
-    h.insert("X-Content-Type-Options", HeaderValue::from_static("nosniff"));
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=300"),
+    );
+    h.insert(
+        "X-Content-Type-Options",
+        HeaderValue::from_static("nosniff"),
+    );
     Ok(resp)
 }
 
@@ -490,7 +599,9 @@ pub async fn delete_report(
 ) -> Result {
     let row = find_report(&state, &id).await?;
     if row.created_by != user.id && !user.is_admin() {
-        return Err(AppError::Forbidden("Only the creator or an administrator may delete".into()));
+        return Err(AppError::Forbidden(
+            "Only the creator or an administrator may delete".into(),
+        ));
     }
     if let Some(key) = row.output_url.as_deref().filter(|k| !k.is_empty()) {
         crate::domain::files::store::delete_object(&state.config.upload_dir, key).await;
@@ -605,12 +716,15 @@ pub async fn batch(
             Err(e) => Err(e.to_string()),
             Ok(row) => match action {
                 "delete" => {
-                    let _ = sqlx::query("UPDATE reports SET deleted_at = $1 WHERE id = $2")
+                    match sqlx::query("UPDATE reports SET deleted_at = $1 WHERE id = $2")
                         .bind(now_iso())
                         .bind(&row.id)
                         .execute(&state.db)
-                        .await;
-                    Ok(json!({"id": id, "success": true}))
+                        .await
+                    {
+                        Ok(_) => Ok(json!({"id": id, "success": true})),
+                        Err(error) => Err(error.to_string()),
+                    }
                 }
                 "download" | "export" => Ok(json!({
                     "id": id, "success": true,
@@ -644,12 +758,11 @@ pub async fn batch(
 
 // ---------------------------------------------------------------- templates / preview
 
-pub async fn templates(
-    Extension(_user): Extension<AuthUser>,
-    Path(kind): Path<String>,
-) -> Result {
+pub async fn templates(Extension(_user): Extension<AuthUser>, Path(kind): Path<String>) -> Result {
     if !CATALOG.contains(&kind.as_str()) {
-        return Err(AppError::BadRequest(format!("Invalid report type '{kind}'")));
+        return Err(AppError::BadRequest(format!(
+            "Invalid report type '{kind}'"
+        )));
     }
     let templates: Vec<Value> = match kind.as_str() {
         "conversation_summary" => vec![
@@ -661,7 +774,9 @@ pub async fn templates(
         ],
         _ => vec![],
     };
-    Ok(envelope::ok(json!({ "templates": templates, "type": kind })))
+    Ok(envelope::ok(
+        json!({ "templates": templates, "type": kind }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -678,7 +793,9 @@ pub async fn preview(
 ) -> Result {
     let kind = body.kind.as_deref().unwrap_or("");
     if !CATALOG.contains(&kind) {
-        return Err(AppError::BadRequest(format!("Invalid report type '{kind}'")));
+        return Err(AppError::BadRequest(format!(
+            "Invalid report type '{kind}'"
+        )));
     }
     if body.time_range.as_deref().unwrap_or("").is_empty() {
         return Err(AppError::BadRequest("timeRange is required".into()));
@@ -717,7 +834,10 @@ pub struct ScheduledBody {
 }
 
 fn validate_schedule(schedule: &Value) -> Result<(String, String, Option<i64>, Option<i64>)> {
-    let frequency = schedule.get("frequency").and_then(Value::as_str).unwrap_or("");
+    let frequency = schedule
+        .get("frequency")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if !["daily", "weekly", "monthly", "quarterly"].contains(&frequency) {
         return Err(AppError::BadRequest("Invalid schedule frequency".into()));
     }
@@ -732,10 +852,14 @@ fn validate_schedule(schedule: &Value) -> Result<(String, String, Option<i64>, O
     let dow = schedule.get("dayOfWeek").and_then(Value::as_i64);
     let dom = schedule.get("dayOfMonth").and_then(Value::as_i64);
     if frequency == "weekly" && !dow.map(|d| (0..=6).contains(&d)).unwrap_or(false) {
-        return Err(AppError::BadRequest("dayOfWeek (0-6) is required for weekly".into()));
+        return Err(AppError::BadRequest(
+            "dayOfWeek (0-6) is required for weekly".into(),
+        ));
     }
     if frequency == "monthly" && !dom.map(|d| (1..=31).contains(&d)).unwrap_or(false) {
-        return Err(AppError::BadRequest("dayOfMonth (1-31) is required for monthly".into()));
+        return Err(AppError::BadRequest(
+            "dayOfMonth (1-31) is required for monthly".into(),
+        ));
     }
     Ok((frequency.to_string(), time.to_string(), dow, dom))
 }
@@ -753,7 +877,9 @@ pub fn next_run(frequency: &str) -> String {
 fn validate_scheduled(body: &ScheduledBody) -> Result<(String, String, String, String)> {
     let name = sanitize(body.name.as_deref().unwrap_or(""));
     if name.is_empty() || name.chars().count() > 200 {
-        return Err(AppError::BadRequest("name is required (max 200 characters)".into()));
+        return Err(AppError::BadRequest(
+            "name is required (max 200 characters)".into(),
+        ));
     }
     let kind = body.kind.as_deref().unwrap_or("");
     if !CATALOG.contains(&kind) {
@@ -763,7 +889,10 @@ fn validate_scheduled(body: &ScheduledBody) -> Result<(String, String, String, S
     if !FORMATS.contains(&format) {
         return Err(AppError::BadRequest("Invalid format".into()));
     }
-    let schedule = body.schedule.as_ref().ok_or_else(|| AppError::BadRequest("schedule is required".into()))?;
+    let schedule = body
+        .schedule
+        .as_ref()
+        .ok_or_else(|| AppError::BadRequest("schedule is required".into()))?;
     let (frequency, _, _, _) = validate_schedule(schedule)?;
     if let Some(recipients) = &body.recipients {
         if recipients.len() > 20 {
@@ -773,7 +902,9 @@ fn validate_scheduled(body: &ScheduledBody) -> Result<(String, String, String, S
             let email = r.get("email").and_then(Value::as_str).unwrap_or("");
             let rname = r.get("name").and_then(Value::as_str).unwrap_or("");
             if !email.contains('@') || rname.is_empty() {
-                return Err(AppError::BadRequest("Each recipient needs a valid email and name".into()));
+                return Err(AppError::BadRequest(
+                    "Each recipient needs a valid email and name".into(),
+                ));
             }
         }
     }
@@ -826,7 +957,18 @@ pub async fn list_scheduled(
 ) -> Result {
     // Admins see all; others only their own (CRD 4636).
     let creator = (!user.is_admin()).then_some(user.id.clone());
-    type SchedRow = (String, String, Option<String>, Option<String>, Option<String>, Option<String>, i64, String, Option<String>, Option<String>);
+    type SchedRow = (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+    );
     let rows: Vec<SchedRow> = sqlx::query_as(
         "SELECT id, name, report_type, format, schedule_type, schedule_config, is_active,
                 created_by, next_run_at, last_run_at
@@ -849,7 +991,9 @@ pub async fn list_scheduled(
             })
         })
         .collect();
-    Ok(envelope::ok(json!({ "scheduled": items, "count": items.len() })))
+    Ok(envelope::ok(
+        json!({ "scheduled": items, "count": items.len() }),
+    ))
 }
 
 pub async fn update_scheduled(
@@ -859,7 +1003,9 @@ pub async fn update_scheduled(
     Json(body): Json<ScheduledBody>,
 ) -> Result {
     if uuid::Uuid::parse_str(&id).is_err() {
-        return Err(AppError::BadRequest("Invalid scheduled-report identifier".into()));
+        return Err(AppError::BadRequest(
+            "Invalid scheduled-report identifier".into(),
+        ));
     }
     let creator: Option<String> = sqlx::query_scalar(
         "SELECT created_by FROM scheduled_reports WHERE id = $1 AND deleted_at IS NULL",
@@ -871,7 +1017,9 @@ pub async fn update_scheduled(
         return Err(AppError::NotFound("Scheduled report not found".into()));
     };
     if creator != user.id {
-        return Err(AppError::Forbidden("Only the creator may update this schedule".into()));
+        return Err(AppError::Forbidden(
+            "Only the creator may update this schedule".into(),
+        ));
     }
     let (name, kind, format, frequency) = validate_scheduled(&body)?;
     sqlx::query(
@@ -890,7 +1038,10 @@ pub async fn update_scheduled(
     .bind(&id)
     .execute(&state.db)
     .await?;
-    Ok(envelope::ok_msg(json!({"id": id, "name": name}), "Scheduled report updated"))
+    Ok(envelope::ok_msg(
+        json!({"id": id, "name": name}),
+        "Scheduled report updated",
+    ))
 }
 
 pub async fn delete_scheduled(
@@ -899,7 +1050,9 @@ pub async fn delete_scheduled(
     Path(id): Path<String>,
 ) -> Result {
     if uuid::Uuid::parse_str(&id).is_err() {
-        return Err(AppError::BadRequest("Invalid scheduled-report identifier".into()));
+        return Err(AppError::BadRequest(
+            "Invalid scheduled-report identifier".into(),
+        ));
     }
     let creator: Option<String> = sqlx::query_scalar(
         "SELECT created_by FROM scheduled_reports WHERE id = $1 AND deleted_at IS NULL",
@@ -911,7 +1064,9 @@ pub async fn delete_scheduled(
         return Err(AppError::NotFound("Scheduled report not found".into()));
     };
     if creator != user.id {
-        return Err(AppError::Forbidden("Only the creator may delete this schedule".into()));
+        return Err(AppError::Forbidden(
+            "Only the creator may delete this schedule".into(),
+        ));
     }
     sqlx::query(
         "UPDATE scheduled_reports SET deleted_at = $1, is_active = 0, updated_at = $2 WHERE id = $3",

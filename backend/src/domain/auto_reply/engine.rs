@@ -123,7 +123,10 @@ async fn load_scope(db: &PgPool, scope: Option<i64>) -> Result<Vec<CachedRule>, 
                 .collect(),
             actions: actions
                 .into_iter()
-                .map(|(t, c)| CachedAction { action_type: t, content: c.unwrap_or_default() })
+                .map(|(t, c)| CachedAction {
+                    action_type: t,
+                    content: c.unwrap_or_default(),
+                })
                 .collect(),
         });
     }
@@ -190,7 +193,11 @@ pub async fn within_business_hours(db: &PgPool, team_id: Option<i64>) -> bool {
             continue;
         }
         let crosses_midnight = end <= start;
-        let inside = if crosses_midnight { hm >= *start || hm < *end } else { hm >= *start && hm < *end };
+        let inside = if crosses_midnight {
+            hm >= *start || hm < *end
+        } else {
+            hm >= *start && hm < *end
+        };
         if inside {
             return true;
         }
@@ -234,9 +241,13 @@ fn keyword_rule_matches(rule: &CachedRule, text: &str, message_type: &str) -> bo
     }
     let all_mode = rule.conditions.iter().any(|c| c.match_mode == "all");
     if all_mode {
-        rule.conditions.iter().all(|c| condition_matches(c, text, message_type))
+        rule.conditions
+            .iter()
+            .all(|c| condition_matches(c, text, message_type))
     } else {
-        rule.conditions.iter().any(|c| condition_matches(c, text, message_type))
+        rule.conditions
+            .iter()
+            .any(|c| condition_matches(c, text, message_type))
     }
 }
 
@@ -248,6 +259,44 @@ pub struct EvalResult {
     pub rule_id: Option<i64>,
     pub sent: bool,
     pub error: Option<String>,
+}
+
+enum DeliveryUpdateOutcome {
+    Updated,
+    Missing,
+    Failed(String),
+}
+
+fn apply_delivery_update_outcome(
+    mut result: EvalResult,
+    platform: &str,
+    platform_message_id: &str,
+    outcome: DeliveryUpdateOutcome,
+) -> EvalResult {
+    match outcome {
+        DeliveryUpdateOutcome::Updated => {}
+        DeliveryUpdateOutcome::Missing => {
+            let error = "auto-reply delivery ledger update affected no rows".to_string();
+            tracing::warn!(
+                platform,
+                platform_message_id,
+                "auto-reply delivery ledger update missed"
+            );
+            result.error.get_or_insert(error);
+        }
+        DeliveryUpdateOutcome::Failed(error) => {
+            tracing::warn!(
+                error = %error,
+                platform,
+                platform_message_id,
+                "auto-reply delivery ledger update failed"
+            );
+            result.error.get_or_insert_with(|| {
+                format!("auto-reply delivery ledger update failed: {error}")
+            });
+        }
+    }
+    result
 }
 
 /// Build the outbound items + a response summary from the rule's actions.
@@ -326,12 +375,15 @@ async fn dispatch(state: &AppState, rule: &CachedRule, ctx: &DispatchContext<'_>
         "reply"
     };
     let gateway = OutboundGateway::from_state(state);
-    if let Err(e) = gateway.send_batch(ctx.platform, ctx.platform_user_id, &items).await {
+    if let Err(e) = gateway
+        .send_batch(ctx.platform, ctx.platform_user_id, &items)
+        .await
+    {
         return EvalResult {
             matched: true,
             rule_id: Some(rule.id),
             sent: false,
-            error: Some(e),
+            error: Some(e.to_string()),
         };
     }
     let now = now_iso();
@@ -352,19 +404,37 @@ async fn dispatch(state: &AppState, rule: &CachedRule, ctx: &DispatchContext<'_>
     .bind(&now)
     .execute(&state.db)
     .await;
-    if stored.is_ok() {
-        let _ = sqlx::query(
-            "UPDATE conversations SET last_message_at = $1, updated_at = $2 WHERE id = $3",
-        )
-        .bind(&now)
-        .bind(&now)
-        .bind(ctx.conversation_id)
-        .execute(&state.db)
-        .await;
+    match stored {
+        Ok(_) => {
+            if let Err(error) = sqlx::query(
+                "UPDATE conversations SET last_message_at = $1, updated_at = $2 WHERE id = $3",
+            )
+            .bind(&now)
+            .bind(&now)
+            .bind(ctx.conversation_id)
+            .execute(&state.db)
+            .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    conversation_id = ctx.conversation_id,
+                    message_id,
+                    "auto-reply conversation timestamp update failed"
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                conversation_id = ctx.conversation_id,
+                message_id,
+                "auto-reply conversation message insert failed"
+            );
+        }
     }
 
     // Audit log entry (non-fatal, append-only).
-    let _ = sqlx::query(
+    if let Err(error) = sqlx::query(
         "INSERT INTO auto_reply_logs
             (rule_id, conversation_id, customer_id, trigger_content, response_content,
              matched_condition, platform, delivery_method, created_at)
@@ -380,7 +450,15 @@ async fn dispatch(state: &AppState, rule: &CachedRule, ctx: &DispatchContext<'_>
     .bind(method)
     .bind(&now)
     .execute(&state.db)
-    .await;
+    .await
+    {
+        tracing::warn!(
+            error = %error,
+            rule_id = rule.id,
+            conversation_id = ctx.conversation_id,
+            "auto-reply audit log insert failed"
+        );
+    }
 
     // Real-time broadcast: the reply presented as a delivered auto-reply
     // message (agent-type sender for client compatibility, CRD 1449).
@@ -404,7 +482,12 @@ async fn dispatch(state: &AppState, rule: &CachedRule, ctx: &DispatchContext<'_>
         }),
     );
 
-    EvalResult { matched: true, rule_id: Some(rule.id), sent: true, error: None }
+    EvalResult {
+        matched: true,
+        rule_id: Some(rule.id),
+        sent: true,
+        error: None,
+    }
 }
 
 // ------------------------------------------------------------ entry points
@@ -426,7 +509,12 @@ pub async fn evaluate_message(state: &AppState, input: MessageEvalInput<'_>) -> 
     let rules = match applicable_rules(state, input.team_id).await {
         Ok(r) => r,
         Err(e) => {
-            return EvalResult { matched: false, rule_id: None, sent: false, error: Some(e.to_string()) }
+            return EvalResult {
+                matched: false,
+                rule_id: None,
+                sent: false,
+                error: Some(e.to_string()),
+            }
         }
     };
 
@@ -459,9 +547,23 @@ pub async fn evaluate_message(state: &AppState, input: MessageEvalInput<'_>) -> 
     // Duplicate-send protection keyed by channel + platform message id
     // (CRD 1422); bypassed when no platform message identifier is supplied.
     if let Some(mid) = input.platform_message_id {
-        match reserve_attempt(&state.db, input.platform, mid, rule.id, input.conversation_id, input.customer_id).await {
+        match reserve_attempt(
+            &state.db,
+            input.platform,
+            mid,
+            rule.id,
+            input.conversation_id,
+            input.customer_id,
+        )
+        .await
+        {
             Reservation::AlreadySucceeded => {
-                return EvalResult { matched: true, rule_id: Some(rule.id), sent: false, error: None }
+                return EvalResult {
+                    matched: true,
+                    rule_id: Some(rule.id),
+                    sent: false,
+                    error: None,
+                }
             }
             Reservation::Pending => {
                 return EvalResult {
@@ -473,7 +575,12 @@ pub async fn evaluate_message(state: &AppState, input: MessageEvalInput<'_>) -> 
             }
             Reservation::Reserved => {}
             Reservation::Error(e) => {
-                return EvalResult { matched: false, rule_id: Some(rule.id), sent: false, error: Some(e) }
+                return EvalResult {
+                    matched: false,
+                    rule_id: Some(rule.id),
+                    sent: false,
+                    error: Some(e),
+                }
             }
         }
     }
@@ -504,21 +611,35 @@ pub async fn evaluate_message(state: &AppState, input: MessageEvalInput<'_>) -> 
     .await;
 
     if let Some(mid) = input.platform_message_id {
-        let (status, err) = if result.sent { ("success", None) } else { ("failed", result.error.clone()) };
-        let _ = sqlx::query(
+        let (status, err) = if result.sent {
+            ("success", None)
+        } else {
+            ("failed", result.error.clone())
+        };
+        let delivery_update = sqlx::query(
             "UPDATE auto_reply_deliveries
              SET status = $1, rule_id = $2, delivery_method = $3, last_error = $4, sent_at = $5
              WHERE platform = $6 AND platform_message_id = $7",
         )
         .bind(status)
         .bind(rule.id)
-        .bind(if input.reply_token.is_some() { "reply" } else { "push" })
+        .bind(if input.reply_token.is_some() {
+            "reply"
+        } else {
+            "push"
+        })
         .bind(err)
         .bind(result.sent.then(now_iso))
         .bind(input.platform)
         .bind(mid)
         .execute(&state.db)
         .await;
+        let outcome = match delivery_update {
+            Ok(done) if done.rows_affected() > 0 => DeliveryUpdateOutcome::Updated,
+            Ok(_) => DeliveryUpdateOutcome::Missing,
+            Err(error) => DeliveryUpdateOutcome::Failed(error.to_string()),
+        };
+        return apply_delivery_update_outcome(result, input.platform, mid, outcome);
     }
     result
 }
@@ -607,7 +728,12 @@ pub async fn evaluate_welcome(
     let rules = match applicable_rules(state, team_id).await {
         Ok(r) => r,
         Err(e) => {
-            return EvalResult { matched: false, rule_id: None, sent: false, error: Some(e.to_string()) }
+            return EvalResult {
+                matched: false,
+                rule_id: None,
+                sent: false,
+                error: Some(e.to_string()),
+            }
         }
     };
     let Some(rule) = rules
@@ -674,4 +800,48 @@ pub async fn retry_redelivered(
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_delivery_update_outcome, DeliveryUpdateOutcome, EvalResult};
+
+    #[test]
+    fn delivery_update_failure_marks_successful_result_with_error() {
+        let result = apply_delivery_update_outcome(
+            EvalResult {
+                matched: true,
+                rule_id: Some(42),
+                sent: true,
+                error: None,
+            },
+            "line",
+            "mid-1",
+            DeliveryUpdateOutcome::Failed("database unavailable".to_string()),
+        );
+
+        assert!(result.sent, "outbound delivery already happened");
+        assert_eq!(result.rule_id, Some(42));
+        assert_eq!(
+            result.error.as_deref(),
+            Some("auto-reply delivery ledger update failed: database unavailable")
+        );
+    }
+
+    #[test]
+    fn delivery_update_failure_preserves_delivery_error() {
+        let result = apply_delivery_update_outcome(
+            EvalResult {
+                matched: true,
+                rule_id: Some(7),
+                sent: false,
+                error: Some("channel rejected send".to_string()),
+            },
+            "line",
+            "mid-2",
+            DeliveryUpdateOutcome::Failed("database unavailable".to_string()),
+        );
+
+        assert_eq!(result.error.as_deref(), Some("channel rejected send"));
+    }
 }

@@ -7,15 +7,26 @@ use common::{spawn_app, TestApp};
 use serde_json::json;
 
 async fn admin_token(app: &TestApp) -> String {
-    app.seed_agent("admin@test.dev", "Secret123!", "admin").await;
+    app.seed_agent("admin@test.dev", "Secret123!", "admin")
+        .await;
     app.login("admin@test.dev", "Secret123!").await.0
 }
 
 async fn agent_token(app: &TestApp, email: &str, team_id: Option<i64>) -> String {
     let id = app.seed_agent(email, "Secret123!", "agent").await;
+    sqlx::query("UPDATE agents SET position = 'supervisor' WHERE id = $1")
+        .bind(&id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
     if let Some(t) = team_id {
         app.add_membership(&id, t, "member", true).await;
     }
+    app.login(email, "Secret123!").await.0
+}
+
+async fn plain_agent_token(app: &TestApp, email: &str) -> String {
+    app.seed_agent(email, "Secret123!", "agent").await;
     app.login(email, "Secret123!").await.0
 }
 
@@ -53,6 +64,16 @@ async fn protected_routes_require_bearer_token() {
     let app = spawn_app().await;
     let (status, _, _) = app.request("GET", "/api/sessions", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn protected_routes_require_ops_position() {
+    let app = spawn_app().await;
+    let token = plain_agent_token(&app, "plain@test.dev").await;
+    let (status, _, _) = app
+        .request("GET", "/api/sessions", Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 // ----------------------------------------------------------------------- create
@@ -118,14 +139,23 @@ async fn create_session_validation_errors() {
     let conv = seed_conv(&app, None).await;
 
     // Missing / non-UUID conversationId.
-    for body in [json!({"senderType": "customer"}), json!({"conversationId": "x", "senderType": "customer"})]
-    {
-        let (status, _, _) = app.request("POST", "/api/sessions", Some(&token), Some(body)).await;
+    for body in [
+        json!({"senderType": "customer"}),
+        json!({"conversationId": "x", "senderType": "customer"}),
+    ] {
+        let (status, _, _) = app
+            .request("POST", "/api/sessions", Some(&token), Some(body))
+            .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
     // Invalid senderType.
     let (status, _, _) = app
-        .request("POST", "/api/sessions", Some(&token), Some(json!({"conversationId": conv, "senderType": "robot"})))
+        .request(
+            "POST",
+            "/api/sessions",
+            Some(&token),
+            Some(json!({"conversationId": conv, "senderType": "robot"})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Invalid sessionType / priority.
@@ -153,7 +183,9 @@ async fn create_session_validation_errors() {
             "POST",
             "/api/sessions",
             Some(&token),
-            Some(json!({"conversationId": conv, "senderType": "customer", "topic": "x".repeat(201)})),
+            Some(
+                json!({"conversationId": conv, "senderType": "customer", "topic": "x".repeat(201)}),
+            ),
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -181,7 +213,9 @@ async fn create_session_validation_errors() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Unparseable JSON.
-    let (status, _) = app.request_raw("POST", "/api/sessions", Some(&token), "{nope").await;
+    let (status, _) = app
+        .request_raw("POST", "/api/sessions", Some(&token), "{nope")
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -211,13 +245,21 @@ async fn list_sessions_filters_paginates_and_summarizes() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
     let conv = seed_conv(&app, None).await;
-    app.seed_session(&conv, true, Some("Billing"), None, None, 3).await;
-    app.seed_session(&conv, false, Some("Other"), None, None, 5).await;
+    app.seed_session(&conv, true, Some("Billing"), None, None, 3)
+        .await;
+    app.seed_session(&conv, false, Some("Other"), None, None, 5)
+        .await;
     let other_conv = seed_conv(&app, None).await;
-    app.seed_session(&other_conv, true, Some("Misc"), None, None, 0).await;
+    app.seed_session(&other_conv, true, Some("Misc"), None, None, 0)
+        .await;
 
     let (status, body, _) = app
-        .request("GET", &format!("/api/sessions?conversationId={conv}&pageSize=1"), Some(&token), None)
+        .request(
+            "GET",
+            &format!("/api/sessions?conversationId={conv}&pageSize=1"),
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let data = &body["data"];
@@ -232,13 +274,16 @@ async fn list_sessions_filters_paginates_and_summarizes() {
     assert!(data["summary"]["byPriority"].is_object());
 
     // isActive filter.
-    let (_, body, _) =
-        app.request("GET", "/api/sessions?isActive=false", Some(&token), None).await;
+    let (_, body, _) = app
+        .request("GET", "/api/sessions?isActive=false", Some(&token), None)
+        .await;
     assert_eq!(body["data"]["sessions"].as_array().unwrap().len(), 1);
     assert_eq!(body["data"]["sessions"][0]["topic"], json!("Other"));
 
     // topic substring filter.
-    let (_, body, _) = app.request("GET", "/api/sessions?topic=Bill", Some(&token), None).await;
+    let (_, body, _) = app
+        .request("GET", "/api/sessions?topic=Bill", Some(&token), None)
+        .await;
     assert_eq!(body["data"]["sessions"].as_array().unwrap().len(), 1);
 }
 
@@ -258,9 +303,14 @@ async fn list_sessions_rejects_invalid_filters() {
         "pageSize=101",
         "pageSize=abc",
     ] {
-        let (status, body, _) =
-            app.request("GET", &format!("/api/sessions?{q}"), Some(&token), None).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "filter {q} accepted: {body}");
+        let (status, body, _) = app
+            .request("GET", &format!("/api/sessions?{q}"), Some(&token), None)
+            .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "filter {q} accepted: {body}"
+        );
     }
 }
 
@@ -271,11 +321,19 @@ async fn search_sessions_matches_topic_with_count() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
     let conv = seed_conv(&app, None).await;
-    app.seed_session(&conv, true, Some("Billing question"), None, None, 0).await;
-    app.seed_session(&conv, true, Some("Shipping"), None, None, 0).await;
+    app.seed_session(&conv, true, Some("Billing question"), None, None, 0)
+        .await;
+    app.seed_session(&conv, true, Some("Shipping"), None, None, 0)
+        .await;
 
-    let (status, body, _) =
-        app.request("GET", "/api/sessions/search?query=billing", Some(&token), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            "/api/sessions/search?query=billing",
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["count"], json!(1));
     assert_eq!(body["data"][0]["topic"], json!("Billing question"));
@@ -286,12 +344,24 @@ async fn search_sessions_requires_min_two_chars() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
     for q in ["", "query=a"] {
-        let (status, _, _) =
-            app.request("GET", &format!("/api/sessions/search?{q}"), Some(&token), None).await;
+        let (status, _, _) = app
+            .request(
+                "GET",
+                &format!("/api/sessions/search?{q}"),
+                Some(&token),
+                None,
+            )
+            .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
-    let (status, _, _) =
-        app.request("GET", "/api/sessions/search?query=ab&limit=0", Some(&token), None).await;
+    let (status, _, _) = app
+        .request(
+            "GET",
+            "/api/sessions/search?query=ab&limit=0",
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -309,29 +379,47 @@ async fn get_session_scopes_agents_by_conversation_team() {
     let unassigned = seed_conv(&app, None).await;
     let s_mine = app.seed_session(&mine, true, None, None, None, 0).await;
     let s_other = app.seed_session(&other, true, None, None, None, 0).await;
-    let s_unassigned = app.seed_session(&unassigned, true, None, None, None, 0).await;
+    let s_unassigned = app
+        .seed_session(&unassigned, true, None, None, None, 0)
+        .await;
 
     // Admin sees any.
-    let (status, _, _) =
-        app.request("GET", &format!("/api/sessions/{s_other}"), Some(&admin), None).await;
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &format!("/api/sessions/{s_other}"),
+            Some(&admin),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     // Agent sees own-team sessions.
-    let (status, body, _) =
-        app.request("GET", &format!("/api/sessions/{s_mine}"), Some(&agent), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/sessions/{s_mine}"),
+            Some(&agent),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["id"], json!(s_mine));
     // Access denied is indistinguishable from not-found: 404 (CRD 369).
     for sid in [&s_other, &s_unassigned] {
-        let (status, _, _) =
-            app.request("GET", &format!("/api/sessions/{sid}"), Some(&agent), None).await;
+        let (status, _, _) = app
+            .request("GET", &format!("/api/sessions/{sid}"), Some(&agent), None)
+            .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
     // Truly missing session, and malformed id.
     let ghost = uuid::Uuid::new_v4();
-    let (status, _, _) =
-        app.request("GET", &format!("/api/sessions/{ghost}"), Some(&admin), None).await;
+    let (status, _, _) = app
+        .request("GET", &format!("/api/sessions/{ghost}"), Some(&admin), None)
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _, _) = app.request("GET", "/api/sessions/not-a-uuid", Some(&admin), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/sessions/not-a-uuid", Some(&admin), None)
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -342,7 +430,9 @@ async fn update_session_applies_fields() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
     let conv = seed_conv(&app, None).await;
-    let sid = app.seed_session(&conv, true, Some("Old"), None, None, 0).await;
+    let sid = app
+        .seed_session(&conv, true, Some("Old"), None, None, 0)
+        .await;
     let (status, body, _) = app
         .request(
             "PUT",
@@ -377,8 +467,14 @@ async fn update_session_error_conditions() {
     let sid = app.seed_session(&conv, true, None, None, None, 0).await;
 
     // Empty body.
-    let (status, _, _) =
-        app.request("PUT", &format!("/api/sessions/{sid}"), Some(&admin), Some(json!({}))).await;
+    let (status, _, _) = app
+        .request(
+            "PUT",
+            &format!("/api/sessions/{sid}"),
+            Some(&admin),
+            Some(json!({})),
+        )
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Invalid enum / boolean / date.
     for body in [
@@ -387,19 +483,35 @@ async fn update_session_error_conditions() {
         json!({"endTime": "tomorrow"}),
         json!({"tags": (0..11).collect::<Vec<_>>().iter().map(|i| i.to_string()).collect::<Vec<_>>()}),
     ] {
-        let (status, _, _) =
-            app.request("PUT", &format!("/api/sessions/{sid}"), Some(&admin), Some(body)).await;
+        let (status, _, _) = app
+            .request(
+                "PUT",
+                &format!("/api/sessions/{sid}"),
+                Some(&admin),
+                Some(body),
+            )
+            .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
     // Agent without team access -> 403 (CRD 372).
     let (status, _, _) = app
-        .request("PUT", &format!("/api/sessions/{sid}"), Some(&agent), Some(json!({"topic": "t"})))
+        .request(
+            "PUT",
+            &format!("/api/sessions/{sid}"),
+            Some(&agent),
+            Some(json!({"topic": "t"})),
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     // Missing session -> not-found semantics.
     let ghost = uuid::Uuid::new_v4();
     let (status, _, _) = app
-        .request("PUT", &format!("/api/sessions/{ghost}"), Some(&admin), Some(json!({"topic": "t"})))
+        .request(
+            "PUT",
+            &format!("/api/sessions/{ghost}"),
+            Some(&admin),
+            Some(json!({"topic": "t"})),
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -414,13 +526,25 @@ async fn delete_session_is_admin_only_hard_delete() {
     let conv = seed_conv(&app, None).await;
     let sid = app.seed_session(&conv, true, None, None, None, 0).await;
 
-    let (status, body, _) =
-        app.request("DELETE", &format!("/api/sessions/{sid}"), Some(&agent), None).await;
+    let (status, body, _) = app
+        .request(
+            "DELETE",
+            &format!("/api/sessions/{sid}"),
+            Some(&agent),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(body["error"].as_str().unwrap().contains("administrator"));
 
-    let (status, body, _) =
-        app.request("DELETE", &format!("/api/sessions/{sid}"), Some(&admin), None).await;
+    let (status, body, _) = app
+        .request(
+            "DELETE",
+            &format!("/api/sessions/{sid}"),
+            Some(&admin),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["deleted"], json!(true));
     assert_eq!(body["data"]["sessionId"], json!(sid));
@@ -433,10 +557,18 @@ async fn delete_session_is_admin_only_hard_delete() {
     assert_eq!(remaining, 0);
 
     // Already gone -> 404; malformed id -> 400.
-    let (status, _, _) =
-        app.request("DELETE", &format!("/api/sessions/{sid}"), Some(&admin), None).await;
+    let (status, _, _) = app
+        .request(
+            "DELETE",
+            &format!("/api/sessions/{sid}"),
+            Some(&admin),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _, _) = app.request("DELETE", "/api/sessions/zzz", Some(&admin), None).await;
+    let (status, _, _) = app
+        .request("DELETE", "/api/sessions/zzz", Some(&admin), None)
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -449,8 +581,14 @@ async fn close_then_reopen_session() {
     let conv = seed_conv(&app, None).await;
     let sid = app.seed_session(&conv, true, None, None, None, 0).await;
 
-    let (status, body, _) =
-        app.request("POST", &format!("/api/sessions/{sid}/close"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request(
+            "POST",
+            &format!("/api/sessions/{sid}/close"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["closed"], json!(true));
     let (active, ended): (i64, Option<String>) =
@@ -463,12 +601,24 @@ async fn close_then_reopen_session() {
     assert!(ended.is_some());
 
     // Closing again is 404 ("not closable").
-    let (status, _, _) =
-        app.request("POST", &format!("/api/sessions/{sid}/close"), Some(&token), None).await;
+    let (status, _, _) = app
+        .request(
+            "POST",
+            &format!("/api/sessions/{sid}/close"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    let (status, body, _) =
-        app.request("POST", &format!("/api/sessions/{sid}/reopen"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request(
+            "POST",
+            &format!("/api/sessions/{sid}/reopen"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["reopened"], json!(true));
     let (active, ended): (i64, Option<String>) =
@@ -481,8 +631,14 @@ async fn close_then_reopen_session() {
     assert!(ended.is_none());
 
     // Reopening an active session is 404 ("not reopenable").
-    let (status, _, _) =
-        app.request("POST", &format!("/api/sessions/{sid}/reopen"), Some(&token), None).await;
+    let (status, _, _) = app
+        .request(
+            "POST",
+            &format!("/api/sessions/{sid}/reopen"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -494,8 +650,14 @@ async fn close_denied_for_agent_without_team_access() {
     let agent = agent_token(&app, "agent@test.dev", Some(team_a)).await;
     let conv = seed_conv(&app, Some(team_b)).await;
     let sid = app.seed_session(&conv, true, None, None, None, 0).await;
-    let (status, _, _) =
-        app.request("POST", &format!("/api/sessions/{sid}/close"), Some(&agent), None).await;
+    let (status, _, _) = app
+        .request(
+            "POST",
+            &format!("/api/sessions/{sid}/close"),
+            Some(&agent),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
@@ -507,11 +669,18 @@ async fn session_messages_paginated() {
     let token = admin_token(&app).await;
     let conv = seed_conv(&app, None).await;
     let sid = app.seed_session(&conv, true, None, None, None, 2).await;
-    app.seed_message_full(&conv, "customer", "one", None, Some(&sid), Some(1)).await;
-    app.seed_message_full(&conv, "agent", "two", None, Some(&sid), Some(2)).await;
+    app.seed_message_full(&conv, "customer", "one", None, Some(&sid), Some(1))
+        .await;
+    app.seed_message_full(&conv, "agent", "two", None, Some(&sid), Some(2))
+        .await;
 
     let (status, body, _) = app
-        .request("GET", &format!("/api/sessions/{sid}/messages?pageSize=1"), Some(&token), None)
+        .request(
+            "GET",
+            &format!("/api/sessions/{sid}/messages?pageSize=1"),
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let data = &body["data"];
@@ -522,8 +691,9 @@ async fn session_messages_paginated() {
     assert_eq!(data["messages"][0]["sessionSeq"], json!(1));
     assert_eq!(data["pagination"]["totalPages"], json!(2));
 
-    let (status, _, _) =
-        app.request("GET", "/api/sessions/bogus/messages", Some(&token), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/sessions/bogus/messages", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -535,10 +705,16 @@ async fn session_messages_denies_agent_without_team_access() {
     let agent = agent_token(&app, "agent@test.dev", Some(team_a)).await;
     let conv = seed_conv(&app, Some(team_b)).await;
     let sid = app.seed_session(&conv, true, None, None, None, 1).await;
-    app.seed_message_full(&conv, "customer", "secret", None, Some(&sid), Some(1)).await;
+    app.seed_message_full(&conv, "customer", "secret", None, Some(&sid), Some(1))
+        .await;
 
     let (status, _, _) = app
-        .request("GET", &format!("/api/sessions/{sid}/messages"), Some(&agent), None)
+        .request(
+            "GET",
+            &format!("/api/sessions/{sid}/messages"),
+            Some(&agent),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
@@ -552,8 +728,14 @@ async fn session_health_reports_issues_and_suggestions() {
     let conv = seed_conv(&app, None).await;
     // Healthy: fresh session.
     let healthy = app.seed_session(&conv, true, None, None, None, 1).await;
-    let (status, body, _) =
-        app.request("GET", &format!("/api/sessions/{healthy}/health"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/sessions/{healthy}/health"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["healthy"], json!(true));
     assert_eq!(body["data"]["issues"].as_array().unwrap().len(), 0);
@@ -561,10 +743,17 @@ async fn session_health_reports_issues_and_suggestions() {
     // Unhealthy: long-running, inactive, and message-heavy (CRD 409).
     let old_start = iso_minutes_ago(49 * 60);
     let stale = iso_minutes_ago(120);
-    let sick =
-        app.seed_session(&conv, true, None, Some(&old_start), Some(&stale), 150).await;
-    let (status, body, _) =
-        app.request("GET", &format!("/api/sessions/{sick}/health"), Some(&token), None).await;
+    let sick = app
+        .seed_session(&conv, true, None, Some(&old_start), Some(&stale), 150)
+        .await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/sessions/{sick}/health"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["healthy"], json!(false));
     assert_eq!(body["data"]["issues"].as_array().unwrap().len(), 3);
@@ -572,11 +761,39 @@ async fn session_health_reports_issues_and_suggestions() {
 
     // Missing session -> not-found; malformed id -> 400.
     let ghost = uuid::Uuid::new_v4();
-    let (status, _, _) =
-        app.request("GET", &format!("/api/sessions/{ghost}/health"), Some(&token), None).await;
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &format!("/api/sessions/{ghost}/health"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _, _) = app.request("GET", "/api/sessions/zzz/health", Some(&token), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/sessions/zzz/health", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn session_health_hides_sessions_from_other_teams() {
+    let app = spawn_app().await;
+    let team_a = app.seed_team("A").await;
+    let team_b = app.seed_team("B").await;
+    let agent = agent_token(&app, "ops@test.dev", Some(team_a)).await;
+    let conv = seed_conv(&app, Some(team_b)).await;
+    let sid = app.seed_session(&conv, true, None, None, None, 1).await;
+
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &format!("/api/sessions/{sid}/health"),
+            Some(&agent),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 // ------------------------------------------------------------------ topic update
@@ -586,9 +803,16 @@ async fn update_topic_sets_topic() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
     let conv = seed_conv(&app, None).await;
-    let sid = app.seed_session(&conv, true, Some("Old"), None, None, 0).await;
+    let sid = app
+        .seed_session(&conv, true, Some("Old"), None, None, 0)
+        .await;
     let (status, body, _) = app
-        .request("PUT", &format!("/api/sessions/{sid}/topic"), Some(&token), Some(json!({"topic": "Fresh"})))
+        .request(
+            "PUT",
+            &format!("/api/sessions/{sid}/topic"),
+            Some(&token),
+            Some(json!({"topic": "Fresh"})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let topic: Option<String> =
@@ -602,7 +826,12 @@ async fn update_topic_sets_topic() {
     // Missing session -> 404 (CRD 418).
     let ghost = uuid::Uuid::new_v4();
     let (status, _, _) = app
-        .request("PUT", &format!("/api/sessions/{ghost}/topic"), Some(&token), Some(json!({"topic": "x"})))
+        .request(
+            "PUT",
+            &format!("/api/sessions/{ghost}/topic"),
+            Some(&token),
+            Some(json!({"topic": "x"})),
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -615,10 +844,14 @@ async fn stats_are_admin_only_with_breakdowns() {
     let admin = admin_token(&app).await;
     let agent = agent_token(&app, "agent@test.dev", None).await;
     let conv = seed_conv(&app, None).await;
-    app.seed_session(&conv, true, Some("Billing"), None, None, 4).await;
-    app.seed_session(&conv, false, Some("Billing"), None, None, 2).await;
+    app.seed_session(&conv, true, Some("Billing"), None, None, 4)
+        .await;
+    app.seed_session(&conv, false, Some("Billing"), None, None, 2)
+        .await;
 
-    let (status, body, _) = app.request("GET", "/api/sessions/stats", Some(&admin), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/sessions/stats", Some(&admin), None)
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let d = &body["data"];
     assert_eq!(d["total"], json!(2));
@@ -631,7 +864,9 @@ async fn stats_are_admin_only_with_breakdowns() {
     assert_eq!(d["topicDistribution"][0]["percentage"], json!(100.0));
     assert!(d["perDay"].is_array());
 
-    let (status, _, _) = app.request("GET", "/api/sessions/stats", Some(&agent), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/sessions/stats", Some(&agent), None)
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
@@ -644,14 +879,21 @@ async fn per_conversation_stats_include_conversation_id() {
     app.seed_session(&conv, true, None, None, None, 0).await;
     app.seed_session(&other, true, None, None, None, 0).await;
 
-    let (status, body, _) =
-        app.request("GET", &format!("/api/sessions/stats/{conv}"), Some(&admin), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/sessions/stats/{conv}"),
+            Some(&admin),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["conversationId"], json!(conv));
     assert_eq!(body["data"]["total"], json!(1));
 
-    let (status, _, _) =
-        app.request("GET", "/api/sessions/stats/not-a-uuid", Some(&admin), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/sessions/stats/not-a-uuid", Some(&admin), None)
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -664,10 +906,17 @@ async fn activity_stats_bucketed_with_summary() {
     let agent = agent_token(&app, "agent@test.dev", None).await;
     let conv = seed_conv(&app, None).await;
     let sid = app.seed_session(&conv, true, None, None, None, 0).await;
-    app.seed_message_full(&conv, "customer", "hi", None, Some(&sid), Some(1)).await;
+    app.seed_message_full(&conv, "customer", "hi", None, Some(&sid), Some(1))
+        .await;
 
-    let (status, body, _) =
-        app.request("GET", "/api/sessions/activity?timeRange=day", Some(&admin), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            "/api/sessions/activity?timeRange=day",
+            Some(&admin),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let d = &body["data"];
     assert_eq!(d["timeRange"], json!("day"));
@@ -677,14 +926,23 @@ async fn activity_stats_bucketed_with_summary() {
     assert!(d["summary"]["peakActivityHour"].is_string());
 
     // Default range is week; bad range is 400; agents are forbidden.
-    let (status, body, _) =
-        app.request("GET", "/api/sessions/activity", Some(&admin), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/sessions/activity", Some(&admin), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["timeRange"], json!("week"));
-    let (status, _, _) =
-        app.request("GET", "/api/sessions/activity?timeRange=decade", Some(&admin), None).await;
+    let (status, _, _) = app
+        .request(
+            "GET",
+            "/api/sessions/activity?timeRange=decade",
+            Some(&admin),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    let (status, _, _) = app.request("GET", "/api/sessions/activity", Some(&agent), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/sessions/activity", Some(&agent), None)
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
@@ -777,7 +1035,12 @@ async fn batch_validation_and_authorization_errors() {
 
     // Admin only.
     let (status, _, _) = app
-        .request("POST", "/api/sessions/batch", Some(&agent), Some(json!({"sessionIds": [sid], "action": "close"})))
+        .request(
+            "POST",
+            "/api/sessions/batch",
+            Some(&agent),
+            Some(json!({"sessionIds": [sid], "action": "close"})),
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     // Empty list, oversized list, malformed id, invalid action, missing data.
@@ -790,8 +1053,9 @@ async fn batch_validation_and_authorization_errors() {
         json!({"sessionIds": [sid], "action": "update_priority"}),
         json!({"sessionIds": [sid], "action": "add_tags"}),
     ] {
-        let (status, resp, _) =
-            app.request("POST", "/api/sessions/batch", Some(&admin), Some(body)).await;
+        let (status, resp, _) = app
+            .request("POST", "/api/sessions/batch", Some(&admin), Some(body))
+            .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{resp}");
     }
 }
@@ -835,7 +1099,9 @@ async fn get_or_create_closes_stale_session_and_opens_new_segment() {
     let token = admin_token(&app).await;
     let conv = seed_conv(&app, None).await;
     let stale_activity = iso_minutes_ago(45); // beyond the 30-minute gap (CRD 480)
-    let stale = app.seed_session(&conv, true, None, None, Some(&stale_activity), 1).await;
+    let stale = app
+        .seed_session(&conv, true, None, None, Some(&stale_activity), 1)
+        .await;
 
     let (status, body, _) = app
         .request(
@@ -871,8 +1137,14 @@ async fn get_or_create_requires_all_three_fields() {
         json!({"conversation_id": conv, "senderType": "customer"}),
         json!({"conversation_id": conv, "messageContent": "x"}),
     ] {
-        let (status, _, _) =
-            app.request("POST", "/api/sessions/get-or-create", Some(&token), Some(body)).await;
+        let (status, _, _) = app
+            .request(
+                "POST",
+                "/api/sessions/get-or-create",
+                Some(&token),
+                Some(body),
+            )
+            .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 }
@@ -950,15 +1222,26 @@ async fn detect_boundary_reports_reasons_without_state_changes() {
             "POST",
             "/api/sessions/detect-boundary",
             Some(&token),
-            Some(json!({"currentSessionId": full, "messageContent": "ok", "senderType": "customer"})),
+            Some(
+                json!({"currentSessionId": full, "messageContent": "ok", "senderType": "customer"}),
+            ),
         )
         .await;
     assert_eq!(body["data"]["reason"], json!("message_limit"));
 
     // Missing fields -> 400.
-    for body in [json!({"senderType": "customer"}), json!({"messageContent": "x"})] {
-        let (status, _, _) =
-            app.request("POST", "/api/sessions/detect-boundary", Some(&token), Some(body)).await;
+    for body in [
+        json!({"senderType": "customer"}),
+        json!({"messageContent": "x"}),
+    ] {
+        let (status, _, _) = app
+            .request(
+                "POST",
+                "/api/sessions/detect-boundary",
+                Some(&token),
+                Some(body),
+            )
+            .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 }
@@ -970,10 +1253,12 @@ async fn topic_stats_analyze_and_suggest() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
     let conv = seed_conv(&app, None).await;
-    app.seed_session(&conv, true, Some("Billing"), None, None, 0).await;
+    app.seed_session(&conv, true, Some("Billing"), None, None, 0)
+        .await;
 
-    let (status, body, _) =
-        app.request("GET", "/api/sessions/topics/stats", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/sessions/topics/stats", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["total"], json!(1));
     assert_eq!(body["data"]["topics"][0]["topic"], json!("Billing"));
@@ -1003,8 +1288,13 @@ async fn topic_stats_analyze_and_suggest() {
     assert_eq!(body["data"].as_array().unwrap().len(), 2);
 
     // Missing content -> 400 on both analyze and suggest.
-    for path in ["/api/sessions/topics/analyze", "/api/sessions/topics/suggest"] {
-        let (status, _, _) = app.request("POST", path, Some(&token), Some(json!({}))).await;
+    for path in [
+        "/api/sessions/topics/analyze",
+        "/api/sessions/topics/suggest",
+    ] {
+        let (status, _, _) = app
+            .request("POST", path, Some(&token), Some(json!({})))
+            .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 }
@@ -1014,8 +1304,9 @@ async fn topic_stats_analyze_and_suggest() {
 #[tokio::test]
 async fn unknown_module_path_lists_available_endpoints() {
     let app = spawn_app().await;
-    let (status, body, _) =
-        app.request("GET", "/api/sessions/foo/definitely-not-real", None, None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/sessions/foo/definitely-not-real", None, None)
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["success"], json!(false));
     assert!(body["availableEndpoints"].as_array().unwrap().len() > 10);
@@ -1026,7 +1317,9 @@ async fn oversized_body_returns_413() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
     let huge = "x".repeat(1024 * 1024 + 1);
-    let (status, body) = app.request_raw("POST", "/api/sessions", Some(&token), &huge).await;
+    let (status, body) = app
+        .request_raw("POST", "/api/sessions", Some(&token), &huge)
+        .await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
     assert_eq!(body["success"], json!(false));
 }
@@ -1037,17 +1330,21 @@ async fn mutating_endpoints_are_rate_limited_per_client() {
     let token = admin_token(&app).await;
     // 60 requests pass the limiter (handler then rejects the body); the 61st is 429.
     for _ in 0..60 {
-        let (status, _, _) =
-            app.request("POST", "/api/sessions", Some(&token), Some(json!({}))).await;
+        let (status, _, _) = app
+            .request("POST", "/api/sessions", Some(&token), Some(json!({})))
+            .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
-    let (status, _, headers) =
-        app.request("POST", "/api/sessions", Some(&token), Some(json!({}))).await;
+    let (status, _, headers) = app
+        .request("POST", "/api/sessions", Some(&token), Some(json!({})))
+        .await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert!(headers.get("Retry-After").is_some());
     assert!(headers.get("X-RateLimit-Limit").is_some());
 
     // Read endpoints stay unaffected.
-    let (status, _, _) = app.request("GET", "/api/sessions", Some(&token), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/sessions", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
 }

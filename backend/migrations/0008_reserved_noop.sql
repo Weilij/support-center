@@ -1,0 +1,7 @@
+-- Reserved no-op migration.
+--
+-- The sequence originally jumped from 0007_realtime2.sql to
+-- 0009_channels.sql. Keeping this placeholder makes fresh installs and
+-- sqlx::migrate! manifests carry a contiguous 0008 version without changing
+-- schema. For already-deployed databases that reached 0009 before this file
+-- existed, verify the _sqlx_migrations ledger during rollout.

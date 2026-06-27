@@ -11,7 +11,7 @@ use axum::routing::{get, post, put};
 use axum::Router;
 use std::sync::Arc;
 
-use crate::middleware::auth::require_ops_area;
+use crate::middleware::auth::require_auth;
 use crate::state::AppState;
 
 pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
@@ -20,7 +20,10 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/agents/batch", put(handlers::batch_update))
         .route("/api/agents/batch/transfer", put(handlers::batch_transfer))
         .route("/api/agents/search", post(handlers::search_agents))
-        .route("/api/agents/status/statistics", get(handlers::status_statistics))
+        .route(
+            "/api/agents/status/statistics",
+            get(handlers::status_statistics),
+        )
         .route(
             "/api/agents/{agentId}",
             get(handlers::get_agent)
@@ -43,6 +46,9 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/api/agents/{agentId}/status",
             get(handlers::get_status).put(handlers::update_status),
         )
-        .route("/api/agents/{agentId}/status/history", get(handlers::status_history))
-        .layer(from_fn_with_state(state.clone(), require_ops_area))
+        .route(
+            "/api/agents/{agentId}/status/history",
+            get(handlers::status_history),
+        )
+        .layer(from_fn_with_state(state.clone(), require_auth))
 }

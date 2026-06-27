@@ -13,13 +13,10 @@ use sqlx::Postgres;
 use sqlx::Transaction;
 use std::sync::Arc;
 
-use crate::error::AppError;
-use crate::middleware::auth::Area;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::state::AppState;
 
 use super::store;
-
-type Result<T = Response> = std::result::Result<T, AppError>;
 
 /// Default restore window when the capture site did not specify one (CRD 2577).
 const DEFAULT_WINDOW_HOURS: i64 = 24;
@@ -54,7 +51,6 @@ struct Caller {
     id: String,
     name: String,
     role: String,
-    analytics_allowed: bool,
 }
 
 /// Reads the caller from the session, or — outside production — from the test-only
@@ -64,35 +60,27 @@ async fn resolve_caller(state: &Arc<AppState>, headers: &HeaderMap) -> Option<Ca
         if let Some(raw) = headers.get("x-test-user").and_then(|v| v.to_str().ok()) {
             let v: Value = serde_json::from_str(raw).ok()?;
             let id = v.get("id").and_then(Value::as_str)?.to_string();
-            let agent =
-                crate::domain::auth::store::find_agent_by_id(&state.db, &id).await.ok().flatten();
-            let name =
-                agent.as_ref().map(|a| a.display_name.clone()).unwrap_or_else(|| id.clone());
+            let agent = crate::domain::auth::store::find_agent_by_id(&state.db, &id)
+                .await
+                .ok()
+                .flatten();
+            let name = agent
+                .as_ref()
+                .map(|a| a.display_name.clone())
+                .unwrap_or_else(|| id.clone());
             let role = v
                 .get("role")
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .or_else(|| agent.as_ref().map(|a| a.role.clone()))
                 .unwrap_or_else(|| "agent".into());
-            let position = v
-                .get("position")
-                .and_then(Value::as_str)
-                .or_else(|| agent.as_ref().and_then(|a| a.position.as_deref()));
-            let analytics_allowed =
-                role == "admin" || matches!(position, Some("supervisor" | "system_admin"));
-            return Some(Caller {
-                id,
-                name,
-                role,
-                analytics_allowed,
-            });
+            return Some(Caller { id, name, role });
         }
     }
     crate::middleware::auth::authenticate(state, headers)
         .await
         .ok()
         .map(|u| Caller {
-            analytics_allowed: u.can_access_area(Area::Analytics),
             id: u.id,
             name: u.display_name,
             role: u.role,
@@ -125,8 +113,11 @@ fn strategy_for(action: &str) -> Option<Strategy> {
         "team remove member" => Some(Strategy::ReinstateMembership),
         "create_user" => Some(Strategy::SoftDelete),
         "update_profile" => Some(Strategy::RevertFields),
-        "conversation transfer" | "conversation assign" | "conversation unassign"
-        | "conversation close" | "conversation reopen" => Some(Strategy::RevertFields),
+        "conversation transfer"
+        | "conversation assign"
+        | "conversation unassign"
+        | "conversation close"
+        | "conversation reopen" => Some(Strategy::RevertFields),
         a if a.ends_with(" create") => Some(Strategy::SoftDelete),
         a if a.ends_with(" update") || a.ends_with(" delete") => Some(Strategy::RevertFields),
         _ => None,
@@ -164,11 +155,31 @@ static TAGS: TableSpec = TableSpec {
     table: "tags",
     text_id: false,
     fields: &[
-        FieldSpec { key: "name", column: "name", kind: Kind::Text },
-        FieldSpec { key: "color", column: "color", kind: Kind::Text },
-        FieldSpec { key: "description", column: "description", kind: Kind::Text },
-        FieldSpec { key: "isActive", column: "is_active", kind: Kind::Bool },
-        FieldSpec { key: "deletedAt", column: "deleted_at", kind: Kind::Text },
+        FieldSpec {
+            key: "name",
+            column: "name",
+            kind: Kind::Text,
+        },
+        FieldSpec {
+            key: "color",
+            column: "color",
+            kind: Kind::Text,
+        },
+        FieldSpec {
+            key: "description",
+            column: "description",
+            kind: Kind::Text,
+        },
+        FieldSpec {
+            key: "isActive",
+            column: "is_active",
+            kind: Kind::Bool,
+        },
+        FieldSpec {
+            key: "deletedAt",
+            column: "deleted_at",
+            kind: Kind::Text,
+        },
     ],
 };
 
@@ -176,11 +187,31 @@ static TEAMS: TableSpec = TableSpec {
     table: "teams",
     text_id: false,
     fields: &[
-        FieldSpec { key: "name", column: "name", kind: Kind::Text },
-        FieldSpec { key: "description", column: "description", kind: Kind::Text },
-        FieldSpec { key: "isActive", column: "is_active", kind: Kind::Bool },
-        FieldSpec { key: "qrCode", column: "qr_code", kind: Kind::Text },
-        FieldSpec { key: "deletedAt", column: "deleted_at", kind: Kind::Text },
+        FieldSpec {
+            key: "name",
+            column: "name",
+            kind: Kind::Text,
+        },
+        FieldSpec {
+            key: "description",
+            column: "description",
+            kind: Kind::Text,
+        },
+        FieldSpec {
+            key: "isActive",
+            column: "is_active",
+            kind: Kind::Bool,
+        },
+        FieldSpec {
+            key: "qrCode",
+            column: "qr_code",
+            kind: Kind::Text,
+        },
+        FieldSpec {
+            key: "deletedAt",
+            column: "deleted_at",
+            kind: Kind::Text,
+        },
     ],
 };
 
@@ -188,11 +219,31 @@ static CUSTOMERS: TableSpec = TableSpec {
     table: "customers",
     text_id: false,
     fields: &[
-        FieldSpec { key: "displayName", column: "display_name", kind: Kind::Text },
-        FieldSpec { key: "email", column: "email", kind: Kind::Text },
-        FieldSpec { key: "phone", column: "phone", kind: Kind::Text },
-        FieldSpec { key: "avatarUrl", column: "avatar_url", kind: Kind::Text },
-        FieldSpec { key: "deletedAt", column: "deleted_at", kind: Kind::Text },
+        FieldSpec {
+            key: "displayName",
+            column: "display_name",
+            kind: Kind::Text,
+        },
+        FieldSpec {
+            key: "email",
+            column: "email",
+            kind: Kind::Text,
+        },
+        FieldSpec {
+            key: "phone",
+            column: "phone",
+            kind: Kind::Text,
+        },
+        FieldSpec {
+            key: "avatarUrl",
+            column: "avatar_url",
+            kind: Kind::Text,
+        },
+        FieldSpec {
+            key: "deletedAt",
+            column: "deleted_at",
+            kind: Kind::Text,
+        },
     ],
 };
 
@@ -200,10 +251,26 @@ static CONVERSATIONS: TableSpec = TableSpec {
     table: "conversations",
     text_id: true,
     fields: &[
-        FieldSpec { key: "teamId", column: "team_id", kind: Kind::Int },
-        FieldSpec { key: "status", column: "status", kind: Kind::Text },
-        FieldSpec { key: "priority", column: "priority", kind: Kind::Text },
-        FieldSpec { key: "deletedAt", column: "deleted_at", kind: Kind::Text },
+        FieldSpec {
+            key: "teamId",
+            column: "team_id",
+            kind: Kind::Int,
+        },
+        FieldSpec {
+            key: "status",
+            column: "status",
+            kind: Kind::Text,
+        },
+        FieldSpec {
+            key: "priority",
+            column: "priority",
+            kind: Kind::Text,
+        },
+        FieldSpec {
+            key: "deletedAt",
+            column: "deleted_at",
+            kind: Kind::Text,
+        },
     ],
 };
 
@@ -211,10 +278,26 @@ static AGENTS: TableSpec = TableSpec {
     table: "agents",
     text_id: true,
     fields: &[
-        FieldSpec { key: "displayName", column: "display_name", kind: Kind::Text },
-        FieldSpec { key: "role", column: "role", kind: Kind::Text },
-        FieldSpec { key: "isActive", column: "is_active", kind: Kind::Bool },
-        FieldSpec { key: "deletedAt", column: "deleted_at", kind: Kind::Text },
+        FieldSpec {
+            key: "displayName",
+            column: "display_name",
+            kind: Kind::Text,
+        },
+        FieldSpec {
+            key: "role",
+            column: "role",
+            kind: Kind::Text,
+        },
+        FieldSpec {
+            key: "isActive",
+            column: "is_active",
+            kind: Kind::Bool,
+        },
+        FieldSpec {
+            key: "deletedAt",
+            column: "deleted_at",
+            kind: Kind::Text,
+        },
     ],
 };
 
@@ -252,10 +335,31 @@ enum IdBind {
 }
 
 enum PlanKind {
-    Fields { spec: &'static TableSpec, id: IdBind, old: Value, soft_delete: bool },
-    RemoveAssoc { customer_id: i64, tag_id: i64 },
-    AddAssoc { customer_id: i64, tag_id: i64, assigned_by: Option<String>, assigned_at: Option<String>, exists: bool },
-    Membership { agent_id: String, team_id: i64, role: String, is_primary: bool, joined_at: Option<String>, exists: bool },
+    Fields {
+        spec: &'static TableSpec,
+        id: IdBind,
+        old: Value,
+        soft_delete: bool,
+    },
+    RemoveAssoc {
+        customer_id: i64,
+        tag_id: i64,
+    },
+    AddAssoc {
+        customer_id: i64,
+        tag_id: i64,
+        assigned_by: Option<String>,
+        assigned_at: Option<String>,
+        exists: bool,
+    },
+    Membership {
+        agent_id: String,
+        team_id: i64,
+        role: String,
+        is_primary: bool,
+        joined_at: Option<String>,
+        exists: bool,
+    },
 }
 
 struct Plan {
@@ -284,7 +388,10 @@ async fn current_state(
         .map(|f| format!("'{}', {}", f.key, f.column))
         .collect::<Vec<_>>()
         .join(", ");
-    let sql = format!("SELECT jsonb_build_object({cols})::text FROM {} WHERE id = $1", spec.table);
+    let sql = format!(
+        "SELECT jsonb_build_object({cols})::text FROM {} WHERE id = $1",
+        spec.table
+    );
     let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query_scalar::<_, String>(&sql);
     q = match id {
@@ -314,7 +421,9 @@ fn detect_field_conflicts(
     old: &Value,
     new: &Value,
 ) -> Vec<Value> {
-    let Some(new_obj) = new.as_object() else { return Vec::new() };
+    let Some(new_obj) = new.as_object() else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     for (key, recorded) in new_obj {
         if spec.field(key).is_none() {
@@ -418,7 +527,10 @@ async fn build_plan(
                     return Ok(Err(missing_resource()));
                 }
                 Ok(Ok(Plan {
-                    kind: PlanKind::RemoveAssoc { customer_id, tag_id },
+                    kind: PlanKind::RemoveAssoc {
+                        customer_id,
+                        tag_id,
+                    },
                     conflicts: Vec::new(),
                 }))
             } else {
@@ -492,8 +604,14 @@ async fn build_plan(
                     agent_id,
                     team_id,
                     role: role.to_string(),
-                    is_primary: old.get("isPrimary").and_then(Value::as_bool).unwrap_or(false),
-                    joined_at: old.get("joinedAt").and_then(Value::as_str).map(str::to_string),
+                    is_primary: old
+                        .get("isPrimary")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    joined_at: old
+                        .get("joinedAt")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                     exists: existing.is_some(),
                 },
                 conflicts,
@@ -537,7 +655,12 @@ async fn apply_plan(
     now: &str,
 ) -> sqlx::Result<()> {
     match &plan.kind {
-        PlanKind::Fields { spec, id, old, soft_delete } => {
+        PlanKind::Fields {
+            spec,
+            id,
+            old,
+            soft_delete,
+        } => {
             let (mut sets, mut binds): (Vec<String>, Vec<BindVal>) = (Vec::new(), Vec::new());
             if *soft_delete {
                 sets.push("deleted_at = ?".into());
@@ -559,8 +682,11 @@ async fn apply_plan(
                 }
             }
             sets.push("updated_at = ?".into());
-            let sql =
-                format!("UPDATE {} SET {} WHERE id = $1", spec.table, sets.join(", "));
+            let sql = format!(
+                "UPDATE {} SET {} WHERE id = $1",
+                spec.table,
+                sets.join(", ")
+            );
             let sql = crate::db::pg_params(&sql);
             let mut q = sqlx::query(&sql);
             for b in &binds {
@@ -581,7 +707,10 @@ async fn apply_plan(
                 return Err(proto_err("target resource vanished during restore"));
             }
         }
-        PlanKind::RemoveAssoc { customer_id, tag_id } => {
+        PlanKind::RemoveAssoc {
+            customer_id,
+            tag_id,
+        } => {
             let affected =
                 sqlx::query("DELETE FROM customer_tags WHERE customer_id = $1 AND tag_id = $2")
                     .bind(customer_id)
@@ -593,7 +722,13 @@ async fn apply_plan(
                 return Err(proto_err("tag association vanished during restore"));
             }
         }
-        PlanKind::AddAssoc { customer_id, tag_id, assigned_by, assigned_at, exists } => {
+        PlanKind::AddAssoc {
+            customer_id,
+            tag_id,
+            assigned_by,
+            assigned_at,
+            exists,
+        } => {
             if !exists {
                 sqlx::query(
                     "INSERT INTO customer_tags (customer_id, tag_id, assigned_by, created_at)
@@ -607,7 +742,14 @@ async fn apply_plan(
                 .await?;
             }
         }
-        PlanKind::Membership { agent_id, team_id, role, is_primary, joined_at, exists } => {
+        PlanKind::Membership {
+            agent_id,
+            team_id,
+            role,
+            is_primary,
+            joined_at,
+            exists,
+        } => {
             if *is_primary {
                 sqlx::query("UPDATE team_members SET is_primary = 0 WHERE agent_id = $1")
                     .bind(agent_id)
@@ -700,13 +842,11 @@ pub async fn restore_activity(
     let caller = resolve_caller(&state, &headers)
         .await
         .ok_or_else(|| AppError::Unauthorized("Unauthenticated".into()))?;
-    if !caller.analytics_allowed {
-        return Err(AppError::Forbidden(
-            "Insufficient position for this area".into(),
-        ));
-    }
     let policy = details.get("restorePolicy").cloned().unwrap_or(Value::Null);
-    let requires_admin = policy.get("requiresAdmin").and_then(Value::as_bool).unwrap_or(false);
+    let requires_admin = policy
+        .get("requiresAdmin")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let is_admin = caller.role == "admin";
     if !(is_admin || (caller.id == entry.agent_id && !requires_admin)) {
         return Err(AppError::Forbidden("Forbidden".into()));
@@ -745,7 +885,10 @@ pub async fn restore_activity(
         return Ok(coded(
             StatusCode::UNPROCESSABLE_ENTITY,
             "RESTORE_HANDLER_NOT_FOUND",
-            &format!("No restore handler registered for action '{}'", entry.action),
+            &format!(
+                "No restore handler registered for action '{}'",
+                entry.action
+            ),
             None,
         ));
     };
@@ -776,20 +919,22 @@ pub async fn restore_activity(
     .rows_affected();
     if claimed == 0 {
         let winner = store::find(&state.db, id).await?;
-        return Ok(match winner.as_ref().and_then(|w| w.restore_state.as_deref()) {
-            Some("restored") => coded(
-                StatusCode::CONFLICT,
-                "ALREADY_RESTORED",
-                "Activity has already been restored",
-                Some(json!({ "restoredBy": winner.and_then(|w| w.restored_by_log_id) })),
-            ),
-            _ => coded(
-                StatusCode::CONFLICT,
-                "RESTORE_IN_PROGRESS",
-                "A restore is already in progress for this activity",
-                Some(json!({ "retryAfter": 5 })),
-            ),
-        });
+        return Ok(
+            match winner.as_ref().and_then(|w| w.restore_state.as_deref()) {
+                Some("restored") => coded(
+                    StatusCode::CONFLICT,
+                    "ALREADY_RESTORED",
+                    "Activity has already been restored",
+                    Some(json!({ "restoredBy": winner.and_then(|w| w.restored_by_log_id) })),
+                ),
+                _ => coded(
+                    StatusCode::CONFLICT,
+                    "RESTORE_IN_PROGRESS",
+                    "A restore is already in progress for this activity",
+                    Some(json!({ "retryAfter": 5 })),
+                ),
+            },
+        );
     }
 
     // 7-8. Apply the reversal and append the restore audit entry in one atomic batch,
@@ -842,12 +987,15 @@ pub async fn restore_activity(
         Err(e) => {
             tracing::error!(error = %e, activity = id, "restore batch failed");
             // Release the claim so a later retry is possible (CRD 2573).
-            let _ = sqlx::query(
+            if let Err(error) = sqlx::query(
                 "UPDATE activity_logs SET restore_state = NULL WHERE id = $1 AND restore_state = 'in_progress'",
             )
             .bind(id)
             .execute(&state.db)
-            .await;
+            .await
+            {
+                tracing::warn!(error = %error, activity = id, "restore claim release failed");
+            }
             return Ok(batch_failed());
         }
     };

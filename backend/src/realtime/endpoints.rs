@@ -10,14 +10,12 @@ use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::{authenticate, AuthUser};
 use crate::state::AppState;
 
 use super::gate;
 use super::hub::GatewayConfig;
-
-type Result<T = Response> = std::result::Result<T, AppError>;
 
 async fn require_user(state: &Arc<AppState>, headers: &HeaderMap) -> Result<AuthUser> {
     authenticate(state, headers).await
@@ -436,8 +434,8 @@ pub async fn dashboard_history(
 ) -> Result {
     require_admin(&state, &headers).await?;
     let period = q.period.unwrap_or_else(|| "24h".into());
-    // TODO(scale-out): persist periodic samples; a single live point is the
-    // single-process observable equivalent.
+    // NOTE(scale-out): periodic samples can be persisted later; this endpoint
+    // intentionally returns a live point for the current process.
     let (total, _, _) = state.realtime.connection_breakdown();
     Ok(envelope::ok(json!({
         "period": period,

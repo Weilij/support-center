@@ -1,10 +1,11 @@
 //! Conversation-Session Management (CRD §1.2B, lines 329-483), mounted at
 //! `/api/sessions`.
 //!
-//! Module-wide gates per the section preamble (CRD 331): bearer auth on everything
-//! except health/info, a 60 req / 60 s "session"-scoped rate limit on mutating and
-//! creating endpoints, a 1 MB declared-content-length cap (413), and an
-//! endpoint-catalog 404 for unknown paths under the module.
+//! Module-wide gates: health/info are open; all other routes require ops-area
+//! authorization (supervisor/system_admin). Mutating and creating endpoints also
+//! carry a 60 req / 60 s "session"-scoped rate limit, a 1 MB
+//! declared-content-length cap (413), and an endpoint-catalog 404 for unknown
+//! paths under the module.
 
 pub mod handlers;
 pub mod store;
@@ -25,8 +26,11 @@ use crate::middleware::rate_limit::{self, RatePolicy};
 use crate::state::AppState;
 
 /// Per-client mutation budget under the "session" namespace (CRD 331).
-const SESSION_RATE: RatePolicy =
-    RatePolicy { scope: "session", max_requests: 60, window: Duration::from_secs(60) };
+const SESSION_RATE: RatePolicy = RatePolicy {
+    scope: "session",
+    max_requests: 60,
+    window: Duration::from_secs(60),
+};
 
 const MAX_BODY_BYTES: u64 = 1024 * 1024;
 
@@ -74,7 +78,10 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/", get(handlers::list_sessions))
         .route("/search", get(handlers::search_sessions))
         .route("/stats", get(handlers::stats))
-        .route("/stats/{conversationId}", get(handlers::stats_for_conversation))
+        .route(
+            "/stats/{conversationId}",
+            get(handlers::stats_for_conversation),
+        )
         .route("/activity", get(handlers::activity_stats))
         .route("/detect-boundary", post(handlers::detect_boundary))
         .route("/topics/stats", get(handlers::topic_stats))

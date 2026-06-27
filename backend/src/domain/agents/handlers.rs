@@ -3,7 +3,6 @@
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::Response;
 use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -13,19 +12,17 @@ use crate::db::now_iso;
 use crate::domain::auth::store::find_active_agent_by_email;
 use crate::domain::teams::store as teams_store;
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
 
-use super::store::{
-    self, OperatorRow, PRESENCE_STATES, SKILL_CATEGORIES, SKILL_LEVELS,
-};
+use super::store::{self, OperatorRow, PRESENCE_STATES, SKILL_CATEGORIES, SKILL_LEVELS};
 
-type Result<T = Response> = std::result::Result<T, AppError>;
 type JsonBody<T> = std::result::Result<Json<T>, JsonRejection>;
 
 fn parse_json<T>(body: JsonBody<T>) -> Result<T> {
-    body.map(|Json(b)| b).map_err(|_| AppError::BadRequest("Invalid JSON".into()))
+    body.map(|Json(b)| b)
+        .map_err(|_| AppError::BadRequest("Invalid JSON".into()))
 }
 
 // ----------------------------------------------------------------------------- helpers
@@ -39,7 +36,9 @@ fn require_privileged(user: &AuthUser) -> Result<()> {
     if user.is_admin() || is_team_leader(user) {
         Ok(())
     } else {
-        Err(AppError::Forbidden("Administrator or team leader role required".into()))
+        Err(AppError::Forbidden(
+            "Administrator or team leader role required".into(),
+        ))
     }
 }
 
@@ -57,7 +56,9 @@ fn validate_agent_id(id: &str) -> Result<()> {
     if (10..=50).contains(&len) {
         Ok(())
     } else {
-        Err(AppError::BadRequest("Agent ID must be between 10 and 50 characters".into()))
+        Err(AppError::BadRequest(
+            "Agent ID must be between 10 and 50 characters".into(),
+        ))
     }
 }
 
@@ -67,8 +68,92 @@ fn require_scope(user: &AuthUser, agent_id: &str) -> Result<()> {
     if user.is_admin() || is_team_leader(user) || user.id == agent_id {
         Ok(())
     } else {
-        Err(AppError::Forbidden("You may only access your own agent record".into()))
+        Err(AppError::Forbidden(
+            "You may only access your own agent record".into(),
+        ))
     }
+}
+
+fn agent_event_payload(agent: &OperatorRow, actor: &AuthUser) -> Value {
+    json!({
+        "agentId": agent.id,
+        "agent": realtime_operator_view(agent),
+        "actor": { "id": actor.id, "name": actor.display_name },
+        "timestamp": now_iso(),
+    })
+}
+
+fn realtime_operator_view(o: &OperatorRow) -> Value {
+    json!({
+        "id": o.id,
+        "displayName": o.display_name,
+        "role": o.role,
+        "isActive": o.is_active != 0,
+        "teamId": o.primary_team_id,
+        "teamName": o.team_name,
+        "updatedAt": o.updated_at,
+        "position": o.position,
+    })
+}
+
+fn skill_event_payload(skill: &store::SkillRow, actor: &AuthUser) -> Value {
+    json!({
+        "agentId": skill.agent_id,
+        "skillId": skill.id,
+        "skill": store::skill_view(skill),
+        "actor": { "id": actor.id, "name": actor.display_name },
+        "timestamp": now_iso(),
+    })
+}
+
+fn deleted_agent_event_payload(agent_id: &str, actor: &AuthUser) -> Value {
+    json!({
+        "agentId": agent_id,
+        "actor": { "id": actor.id, "name": actor.display_name },
+        "timestamp": now_iso(),
+    })
+}
+
+fn emit_agent_event(state: &AppState, event: &str, agent: &OperatorRow, actor: &AuthUser) {
+    let payload = agent_event_payload(agent, actor);
+    match agent.primary_team_id {
+        Some(team_id) => {
+            state
+                .realtime
+                .to_teams_and_admins(&[team_id], event, payload);
+        }
+        None => {
+            state.realtime.global_role("admin", event, payload);
+        }
+    };
+}
+
+async fn emit_skill_event(
+    state: &AppState,
+    event: &str,
+    skill: &store::SkillRow,
+    actor: &AuthUser,
+) {
+    let payload = skill_event_payload(skill, actor);
+    match store::find_operator(&state.db, &skill.agent_id).await {
+        Ok(Some(agent)) => match agent.primary_team_id {
+            Some(team_id) => {
+                state
+                    .realtime
+                    .to_teams_and_admins(&[team_id], event, payload);
+            }
+            None => {
+                state.realtime.global_role("admin", event, payload);
+            }
+        },
+        Ok(None) => {
+            state.realtime.global_role("admin", event, payload);
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, agent_id = %skill.agent_id, event, "agent skill event scope lookup failed");
+            state.realtime.global_role("admin", event, payload);
+        }
+    };
 }
 
 /// Privilege levels for the role-elevation guard (CRD 2284, 2313).
@@ -81,7 +166,9 @@ fn role_level(role: &str) -> u8 {
 }
 
 fn valid_email(email: &str) -> bool {
-    let Some((local, domain)) = email.split_once('@') else { return false };
+    let Some((local, domain)) = email.split_once('@') else {
+        return false;
+    };
     !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
 }
 
@@ -92,7 +179,9 @@ fn validate_agent_ids(v: Option<&Value>) -> Result<Vec<String>> {
         .filter(|a| !a.is_empty())
         .ok_or_else(|| AppError::BadRequest("agentIds must be a non-empty array".into()))?;
     if arr.len() > 50 {
-        return Err(AppError::BadRequest("agentIds cannot contain more than 50 entries".into()));
+        return Err(AppError::BadRequest(
+            "agentIds cannot contain more than 50 entries".into(),
+        ));
     }
     let mut out = Vec::with_capacity(arr.len());
     for e in arr {
@@ -137,7 +226,9 @@ pub async fn list_agents(
             .parse::<i64>()
             .ok()
             .filter(|p| (1..=1000).contains(p))
-            .ok_or_else(|| AppError::BadRequest("page must be an integer between 1 and 1000".into()))?,
+            .ok_or_else(|| {
+                AppError::BadRequest("page must be an integer between 1 and 1000".into())
+            })?,
     };
     let limit = match &q.limit {
         None => 20,
@@ -146,7 +237,9 @@ pub async fn list_agents(
             .parse::<i64>()
             .ok()
             .filter(|l| (1..=100).contains(l))
-            .ok_or_else(|| AppError::BadRequest("limit must be an integer between 1 and 100".into()))?,
+            .ok_or_else(|| {
+                AppError::BadRequest("limit must be an integer between 1 and 100".into())
+            })?,
     };
 
     let mut filter = String::new();
@@ -161,7 +254,11 @@ pub async fn list_agents(
         binds.push(p.clone());
         binds.push(p);
     }
-    if let Some(team_id) = q.team_id.as_deref().and_then(|t| t.trim().parse::<i64>().ok()) {
+    if let Some(team_id) = q
+        .team_id
+        .as_deref()
+        .and_then(|t| t.trim().parse::<i64>().ok())
+    {
         filter.push_str(
             " AND EXISTS (SELECT 1 FROM team_members f WHERE f.agent_id = a.id AND f.team_id = $1::bigint)",
         );
@@ -175,8 +272,7 @@ pub async fn list_agents(
     // values outside the presence-state set are ignored.
     let _ = q.status.as_deref().filter(|s| PRESENCE_STATES.contains(s));
 
-    let count_sql =
-        format!("SELECT COUNT(*) FROM agents a WHERE a.deleted_at IS NULL {filter}");
+    let count_sql = format!("SELECT COUNT(*) FROM agents a WHERE a.deleted_at IS NULL {filter}");
     let count_sql = crate::db::pg_params(&count_sql);
     let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
     for b in &binds {
@@ -193,7 +289,11 @@ pub async fn list_agents(
     for b in &binds {
         list_q = list_q.bind(b.clone());
     }
-    let rows = list_q.bind(limit).bind((page - 1) * limit).fetch_all(&state.db).await?;
+    let rows = list_q
+        .bind(limit)
+        .bind((page - 1) * limit)
+        .fetch_all(&state.db)
+        .await?;
     let items: Vec<Value> = rows.iter().map(store::operator_view).collect();
     Ok(envelope::ok_with_pagination(items, page, limit, total))
 }
@@ -244,7 +344,9 @@ fn validate_profile_body(body: &Value) -> Result<ProfileUpdates> {
         Some(v) => {
             let s = v.as_str().unwrap_or("");
             if s != "admin" && s != "agent" {
-                return Err(AppError::BadRequest("role must be one of: admin, agent".into()));
+                return Err(AppError::BadRequest(
+                    "role must be one of: admin, agent".into(),
+                ));
             }
             Some(s.to_string())
         }
@@ -293,8 +395,15 @@ fn validate_profile_body(body: &Value) -> Result<ProfileUpdates> {
             Some(s.to_string())
         }
     };
-    let updates =
-        ProfileUpdates { display_name, email, role, team_id, is_active, password_policy, position };
+    let updates = ProfileUpdates {
+        display_name,
+        email,
+        role,
+        team_id,
+        is_active,
+        password_policy,
+        position,
+    };
     if updates.display_name.is_none()
         && updates.email.is_none()
         && updates.role.is_none()
@@ -318,9 +427,13 @@ async fn apply_profile_updates(
     let now = now_iso();
     if let Some(email) = &updates.email {
         if *email != operator.email
-            && find_active_agent_by_email(&state.db, email).await?.is_some()
+            && find_active_agent_by_email(&state.db, email)
+                .await?
+                .is_some()
         {
-            return Err(AppError::Internal("Email already in use by another agent".into()));
+            return Err(AppError::Internal(
+                "Email already in use by another agent".into(),
+            ));
         }
         sqlx::query("UPDATE agents SET email = $1, updated_at = $2 WHERE id = $3")
             .bind(email)
@@ -416,11 +529,14 @@ pub async fn update_agent(
         .ok_or_else(|| AppError::NotFound("Agent not found".into()))?;
     apply_profile_updates(&state, &operator, &updates).await?;
 
-    // TODO(realtime): emit operator-updated domain event (CRD 2319).
     let updated = store::find_operator(&state.db, &agent_id)
         .await?
         .ok_or_else(|| AppError::Internal("Failed to reload agent after update".into()))?;
-    Ok(envelope::ok_msg(store::operator_view(&updated), "Agent updated successfully"))
+    emit_agent_event(&state, "operator_updated", &updated, &user);
+    Ok(envelope::ok_msg(
+        store::operator_view(&updated),
+        "Agent updated successfully",
+    ))
 }
 
 // --------------------------------------------------------- Bulk update (CRD 2171-2178)
@@ -441,7 +557,10 @@ pub async fn batch_update(
         let Ok(Some(operator)) = store::find_operator(&state.db, agent_id).await else {
             continue;
         };
-        if apply_profile_updates(&state, &operator, &updates).await.is_err() {
+        if apply_profile_updates(&state, &operator, &updates)
+            .await
+            .is_err()
+        {
             continue;
         }
         if let Ok(Some(fresh)) = store::find_operator(&state.db, agent_id).await {
@@ -556,8 +675,16 @@ pub async fn search_agents(
         filter.push_str(" AND a.last_active_at <= ?");
         binds.push(before.to_string());
     }
-    let limit = body.get("limit").and_then(Value::as_i64).unwrap_or(50).max(1);
-    let offset = body.get("offset").and_then(Value::as_i64).unwrap_or(0).max(0);
+    let limit = body
+        .get("limit")
+        .and_then(Value::as_i64)
+        .unwrap_or(50)
+        .max(1);
+    let offset = body
+        .get("offset")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        .max(0);
 
     // Most recently active first (CRD 2193).
     let sql = format!(
@@ -570,7 +697,9 @@ pub async fn search_agents(
         q = q.bind(b.clone());
     }
     let rows = q.bind(limit).bind(offset).fetch_all(&state.db).await?;
-    Ok(envelope::ok(rows.iter().map(store::operator_view).collect::<Vec<_>>()))
+    Ok(envelope::ok(
+        rows.iter().map(store::operator_view).collect::<Vec<_>>(),
+    ))
 }
 
 // ----------------------------------------------------- Status statistics (CRD 2197-2204)
@@ -623,7 +752,9 @@ pub async fn get_skills(
     validate_agent_id(&agent_id)?;
     require_scope(&user, &agent_id)?;
     let skills = store::skills_of(&state.db, &agent_id).await?;
-    Ok(envelope::ok(skills.iter().map(store::skill_view).collect::<Vec<_>>()))
+    Ok(envelope::ok(
+        skills.iter().map(store::skill_view).collect::<Vec<_>>(),
+    ))
 }
 
 pub async fn add_skill(
@@ -636,10 +767,17 @@ pub async fn add_skill(
     require_scope(&user, &agent_id)?;
     let body = parse_json(body)?;
 
-    let name = body.get("name").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let name = body
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let name_len = name.chars().count();
     if !(2..=100).contains(&name_len) {
-        return Err(AppError::BadRequest("name must be between 2 and 100 characters".into()));
+        return Err(AppError::BadRequest(
+            "name must be between 2 and 100 characters".into(),
+        ));
     }
     let category = body.get("category").and_then(Value::as_str).unwrap_or("");
     if !SKILL_CATEGORIES.contains(&category) {
@@ -681,7 +819,9 @@ pub async fn add_skill(
             .fetch_optional(&state.db)
             .await?;
     if dup.is_some() {
-        return Err(AppError::Internal("A skill with this name already exists".into()));
+        return Err(AppError::Internal(
+            "A skill with this name already exists".into(),
+        ));
     }
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -704,10 +844,10 @@ pub async fn add_skill(
     .execute(&state.db)
     .await?;
 
-    // TODO(realtime): emit skill-added domain event (CRD 2319).
     let skill = store::find_skill(&state.db, &agent_id, &id)
         .await?
         .ok_or_else(|| AppError::Internal("Failed to reload skill after create".into()))?;
+    emit_skill_event(&state, "skill_added", &skill, &user).await;
     Ok(envelope::with_status(
         StatusCode::CREATED,
         Some(store::skill_view(&skill)),
@@ -747,7 +887,9 @@ pub async fn update_skill(
     if let Some(description) = body.get("description") {
         let text = description.as_str().map(String::from);
         if text.as_deref().map(|s| s.chars().count()).unwrap_or(0) > 500 {
-            return Err(AppError::BadRequest("description cannot exceed 500 characters".into()));
+            return Err(AppError::BadRequest(
+                "description cannot exceed 500 characters".into(),
+            ));
         }
         sqlx::query("UPDATE agent_skills SET description = $1, updated_at = $2 WHERE id = $3")
             .bind(text)
@@ -774,11 +916,14 @@ pub async fn update_skill(
         Some(_) => return Err(AppError::BadRequest("certified must be a boolean".into())),
     }
 
-    // TODO(realtime): emit skill-updated domain event (CRD 2319).
     let updated = store::find_skill(&state.db, &agent_id, &skill_id)
         .await?
         .ok_or_else(|| AppError::Internal("Failed to reload skill after update".into()))?;
-    Ok(envelope::ok_msg(store::skill_view(&updated), "Skill updated successfully"))
+    emit_skill_event(&state, "skill_updated", &updated, &user).await;
+    Ok(envelope::ok_msg(
+        store::skill_view(&updated),
+        "Skill updated successfully",
+    ))
 }
 
 pub async fn delete_skill(
@@ -878,9 +1023,15 @@ pub async fn update_status(
             let parsed = chrono::DateTime::parse_from_rfc3339(raw)
                 .map_err(|_| AppError::BadRequest("availableUntil must be a valid date".into()))?;
             if parsed <= chrono::Utc::now() {
-                return Err(AppError::BadRequest("availableUntil must be in the future".into()));
+                return Err(AppError::BadRequest(
+                    "availableUntil must be in the future".into(),
+                ));
             }
-            Some(parsed.to_utc().to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+            Some(
+                parsed
+                    .to_utc()
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            )
         }
     };
     let note = match body.get("note") {
@@ -888,7 +1039,9 @@ pub async fn update_status(
         Some(v) => {
             let s = v.as_str().unwrap_or("").to_string();
             if s.chars().count() > 200 {
-                return Err(AppError::BadRequest("note cannot exceed 200 characters".into()));
+                return Err(AppError::BadRequest(
+                    "note cannot exceed 200 characters".into(),
+                ));
             }
             Some(s)
         }
@@ -897,9 +1050,14 @@ pub async fn update_status(
     if store::find_operator(&state.db, &agent_id).await?.is_none() {
         return Err(AppError::NotFound("Agent not found".into()));
     }
-    let new_status =
-        store::set_status(&state.db, &agent_id, status, available_until.as_deref(), note.as_deref())
-            .await?;
+    let new_status = store::set_status(
+        &state.db,
+        &agent_id,
+        status,
+        available_until.as_deref(),
+        note.as_deref(),
+    )
+    .await?;
     // Realtime: presence change broadcast to the operator's team(s) and to
     // administrators (CRD 2319, 3446) so assignment-eligibility consumers see
     // the transition; best-effort by construction.
@@ -918,9 +1076,14 @@ pub async fn update_status(
                 .ok()
                 .flatten()
                 .unwrap_or_default();
-        state.realtime.presence(&agent_id, &display_name, status, &team_ids);
+        state
+            .realtime
+            .presence(&agent_id, &display_name, status, &team_ids);
     }
-    Ok(envelope::ok_msg(store::status_view(&new_status), "Status updated successfully"))
+    Ok(envelope::ok_msg(
+        store::status_view(&new_status),
+        "Status updated successfully",
+    ))
 }
 
 #[derive(Deserialize)]
@@ -937,7 +1100,12 @@ pub async fn status_history(
     validate_agent_id(&agent_id)?;
     require_scope(&user, &agent_id)?;
     // Default 20; caller-supplied with no enforced ceiling here (CRD 2267).
-    let limit = q.limit.as_deref().and_then(|l| l.trim().parse::<i64>().ok()).unwrap_or(20).max(0);
+    let limit = q
+        .limit
+        .as_deref()
+        .and_then(|l| l.trim().parse::<i64>().ok())
+        .unwrap_or(20)
+        .max(0);
 
     #[derive(sqlx::FromRow)]
     struct Row {
@@ -956,16 +1124,19 @@ pub async fn status_history(
     .bind(limit)
     .fetch_all(&state.db)
     .await?;
-    Ok(envelope::ok(rows
-        .iter()
-        .map(|r| json!({
-            "status": r.status,
-            "since": r.since,
-            "availableUntil": r.available_until,
-            "note": r.note,
-            "recordedAt": r.recorded_at,
-        }))
-        .collect::<Vec<_>>()))
+    Ok(envelope::ok(
+        rows.iter()
+            .map(|r| {
+                json!({
+                    "status": r.status,
+                    "since": r.since,
+                    "availableUntil": r.available_until,
+                    "note": r.note,
+                    "recordedAt": r.recorded_at,
+                })
+            })
+            .collect::<Vec<_>>(),
+    ))
 }
 
 // ----------------------------------------------- Operator details & delete (CRD 2273-2297)
@@ -1002,6 +1173,92 @@ pub async fn delete_agent(
     // Reference cleanup + anonymization to the placeholder identity (CRD 2294).
     teams_store::purge_member(&state.db, &agent_id).await?;
     state.team_cache.invalidate(&agent_id);
-    // TODO(realtime): emit operator-deleted domain event (CRD 2319).
+    state.realtime.global_role(
+        "admin",
+        "operator_deleted",
+        deleted_agent_event_payload(&agent_id, &user),
+    );
     Ok(envelope::message_only("Agent deleted successfully"))
+}
+
+#[cfg(test)]
+mod realtime_event_tests {
+    use super::{agent_event_payload, deleted_agent_event_payload, skill_event_payload};
+    use crate::middleware::auth::AuthUser;
+    use serde_json::json;
+
+    fn actor() -> AuthUser {
+        AuthUser {
+            id: "admin-1".into(),
+            email: "admin@example.com".into(),
+            display_name: "Admin".into(),
+            role: "admin".into(),
+            position: None,
+            primary_team_id: Some(7),
+            teams: Vec::new(),
+            jti: None,
+            token_type: "access".into(),
+            context_team_id: Some(7),
+        }
+    }
+
+    #[test]
+    fn operator_event_payload_contains_actor_and_redacted_operator_view() {
+        let row = crate::domain::agents::store::OperatorRow {
+            id: "agent-1".into(),
+            email: "agent@example.com".into(),
+            display_name: "Agent One".into(),
+            role: "agent".into(),
+            is_active: 1,
+            password_policy: "changeable".into(),
+            last_active_at: None,
+            last_login_at: None,
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            updated_at: None,
+            primary_team_id: Some(7),
+            team_name: Some("Support".into()),
+            position: Some("Operator".into()),
+        };
+
+        let payload = agent_event_payload(&row, &actor());
+        assert_eq!(payload["agentId"], "agent-1");
+        assert_eq!(payload["agent"]["displayName"], "Agent One");
+        assert_eq!(payload["agent"]["teamId"], 7);
+        assert!(payload["agent"].get("email").is_none());
+        assert!(payload["agent"].get("lastLoginAt").is_none());
+        assert!(payload["agent"].get("lastActiveAt").is_none());
+        assert!(payload["agent"].get("passwordPolicy").is_none());
+        assert_eq!(payload["actor"], json!({"id": "admin-1", "name": "Admin"}));
+        assert!(payload["timestamp"].is_string());
+    }
+
+    #[test]
+    fn skill_event_payload_contains_skill_and_actor_context() {
+        let row = crate::domain::agents::store::SkillRow {
+            id: "skill-1".into(),
+            agent_id: "agent-1".into(),
+            name: "LINE".into(),
+            category: "platform".into(),
+            level: "advanced".into(),
+            description: Some("Messaging".into()),
+            certified: 1,
+            certified_at: Some("2026-01-01T00:00:00.000Z".into()),
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            updated_at: None,
+        };
+
+        let payload = skill_event_payload(&row, &actor());
+        assert_eq!(payload["agentId"], "agent-1");
+        assert_eq!(payload["skillId"], "skill-1");
+        assert_eq!(payload["skill"]["name"], "LINE");
+        assert_eq!(payload["actor"]["id"], "admin-1");
+    }
+
+    #[test]
+    fn deleted_operator_event_payload_contains_deleted_id() {
+        let payload = deleted_agent_event_payload("agent-1", &actor());
+        assert_eq!(payload["agentId"], "agent-1");
+        assert_eq!(payload["actor"]["name"], "Admin");
+        assert!(payload["timestamp"].is_string());
+    }
 }

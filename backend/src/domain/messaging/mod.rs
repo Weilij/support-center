@@ -30,7 +30,10 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/messages/tags", get(handlers::list_tags))
         .route("/api/messages/export", get(handlers::export_messages))
         .route("/api/messages/export/count", get(handlers::export_count))
-        .route("/api/messages/export/customers", get(handlers::export_customers))
+        .route(
+            "/api/messages/export/customers",
+            get(handlers::export_customers),
+        )
         .route("/api/messages/export/agents", get(handlers::export_agents))
         .route("/api/messages/bulk-create", post(handlers::bulk_create))
         .route("/api/messages/bulk-delete", post(handlers::bulk_delete))
@@ -53,7 +56,10 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .post(handlers::upload_attachment)
                 .layer(axum::extract::DefaultBodyLimit::max(50 * 1024 * 1024)),
         )
-        .route("/api/messages/{id}/forward", post(handlers::forward_message))
+        .route(
+            "/api/messages/{id}/forward",
+            post(handlers::forward_message),
+        )
         .route(
             "/api/messages/{id}/tags",
             put(handlers::set_tags).delete(handlers::remove_tags),

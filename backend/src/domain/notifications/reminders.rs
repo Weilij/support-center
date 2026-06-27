@@ -1,7 +1,6 @@
 //! Personal task reminders (CRD 5006-5051), base path /api/reminders.
 
 use axum::extract::{Path, Query, State};
-use axum::response::Response;
 use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -9,13 +8,11 @@ use std::sync::Arc;
 
 use crate::db::now_iso;
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
 
 use super::service::{self, NewNotification};
-
-type Result<T = Response> = std::result::Result<T, AppError>;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct ReminderRow {
@@ -55,6 +52,15 @@ fn view(r: &ReminderRow) -> Value {
     })
 }
 
+fn reminder_notification_content(title: &str, content: Option<&str>) -> String {
+    let preview: String = content.unwrap_or("").chars().take(50).collect();
+    if preview.is_empty() {
+        title.to_string()
+    } else {
+        format!("{title}: {preview}")
+    }
+}
+
 #[derive(Deserialize)]
 pub struct ReminderBody {
     pub title: Option<String>,
@@ -78,12 +84,16 @@ pub async fn create(
     let title = body.title.as_deref().unwrap_or("").trim();
     let remind_at_raw = body.remind_at.as_deref().unwrap_or("");
     if title.is_empty() || remind_at_raw.is_empty() {
-        return Err(AppError::BadRequest("Title and remindAt are required".into()));
+        return Err(AppError::BadRequest(
+            "Title and remindAt are required".into(),
+        ));
     }
     let remind_at = chrono::DateTime::parse_from_rfc3339(remind_at_raw)
         .map_err(|_| AppError::BadRequest("Invalid remindAt date format".into()))?;
     if remind_at.timestamp() <= chrono::Utc::now().timestamp() {
-        return Err(AppError::BadRequest("remindAt must be in the future".into()));
+        return Err(AppError::BadRequest(
+            "remindAt must be in the future".into(),
+        ));
     }
     let id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
@@ -224,11 +234,13 @@ pub async fn update(
     if let Some(raw) = &body.remind_at {
         let at = chrono::DateTime::parse_from_rfc3339(raw)
             .map_err(|_| AppError::BadRequest("Invalid remindAt date format".into()))?;
-        sqlx::query("UPDATE task_reminders SET remind_at = $1, is_sent = 0, sent_at = NULL WHERE id = $2")
-            .bind(at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
-            .bind(&id)
-            .execute(&state.db)
-            .await?;
+        sqlx::query(
+            "UPDATE task_reminders SET remind_at = $1, is_sent = 0, sent_at = NULL WHERE id = $2",
+        )
+        .bind(at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
     }
     if let Some(rt) = &body.repeat_type {
         sqlx::query("UPDATE task_reminders SET repeat_type = $1 WHERE id = $2")
@@ -311,13 +323,8 @@ pub async fn process_due(state: &AppState) -> usize {
 
     let mut processed = 0;
     for r in &due {
-        let preview: String = r.content.as_deref().unwrap_or("").chars().take(50).collect();
-        let content = if preview.is_empty() {
-            r.title.clone()
-        } else {
-            format!("{}: {preview}", r.title)
-        };
-        let _ = service::create(
+        let content = reminder_notification_content(&r.title, r.content.as_deref());
+        if let Err(error) = service::create(
             state,
             NewNotification {
                 recipient: &r.agent_id,
@@ -329,12 +336,21 @@ pub async fn process_due(state: &AppState) -> usize {
                 expires_at: service::expiry(24),
             },
         )
-        .await;
-        let _ = sqlx::query("UPDATE task_reminders SET is_sent = 1, sent_at = $1 WHERE id = $2")
-            .bind(&now)
-            .bind(&r.id)
-            .execute(&state.db)
-            .await;
+        .await
+        {
+            tracing::warn!(error = %error, reminder_id = %r.id, "task reminder notification create failed");
+            continue;
+        }
+        if let Err(error) =
+            sqlx::query("UPDATE task_reminders SET is_sent = 1, sent_at = $1 WHERE id = $2")
+                .bind(&now)
+                .bind(&r.id)
+                .execute(&state.db)
+                .await
+        {
+            tracing::warn!(error = %error, reminder_id = %r.id, "task reminder sent-state update failed");
+            continue;
+        }
 
         // Spawn the next occurrence for repeating reminders.
         if r.repeat_type != "none" {
@@ -350,7 +366,7 @@ pub async fn process_due(state: &AppState) -> usize {
                     "monthly" => at + chrono::Duration::days(30 * interval),
                     _ => at,
                 };
-                let _ = sqlx::query(
+                if let Err(error) = sqlx::query(
                     "INSERT INTO task_reminders
                         (id, agent_id, title, content, remind_at, conversation_id, repeat_type, repeat_interval, created_at)
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
@@ -365,10 +381,39 @@ pub async fn process_due(state: &AppState) -> usize {
                 .bind(interval)
                 .bind(&now)
                 .execute(&state.db)
-                .await;
+                .await
+                {
+                    tracing::warn!(error = %error, reminder_id = %r.id, "repeating task reminder spawn failed");
+                }
             }
         }
         processed += 1;
     }
     processed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reminder_notification_content;
+
+    #[test]
+    fn reminder_notification_content_uses_title_when_body_empty() {
+        assert_eq!(
+            reminder_notification_content("Follow up", None),
+            "Follow up"
+        );
+        assert_eq!(
+            reminder_notification_content("Follow up", Some("")),
+            "Follow up"
+        );
+    }
+
+    #[test]
+    fn reminder_notification_content_prefixes_preview_and_truncates() {
+        let body = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        assert_eq!(
+            reminder_notification_content("Follow up", Some(body)),
+            "Follow up: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX"
+        );
+    }
 }

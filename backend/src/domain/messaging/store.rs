@@ -13,7 +13,12 @@ pub const RECALL_PLACEHOLDER: &str = "[Message recalled]";
 /// New-message identifier in the documented prefixed shape
 /// `msg_<digits>_<alphanumeric>` (CRD 835).
 pub fn new_message_id() -> String {
-    let suffix: String = uuid::Uuid::new_v4().simple().to_string().chars().take(9).collect();
+    let suffix: String = uuid::Uuid::new_v4()
+        .simple()
+        .to_string()
+        .chars()
+        .take(9)
+        .collect();
     format!("msg_{}_{}", chrono::Utc::now().timestamp_millis(), suffix)
 }
 
@@ -73,7 +78,12 @@ pub const MESSAGE_SELECT: &str = "
 /// soft-deleted messages are treated as nonexistent).
 pub async fn find_message(db: &PgPool, id: &str) -> Result<Option<FullMessage>, AppError> {
     let sql = format!("{MESSAGE_SELECT} WHERE m.id = $1 AND m.deleted_at IS NULL");
-    Ok(sqlx::query_as::<_, FullMessage>(&crate::db::pg_params(&sql)).bind(id).fetch_optional(db).await?)
+    Ok(
+        sqlx::query_as::<_, FullMessage>(&crate::db::pg_params(&sql))
+            .bind(id)
+            .fetch_optional(db)
+            .await?,
+    )
 }
 
 /// Team-scoped read/write gate (CRD 852, 861): administrators always; any
@@ -102,7 +112,9 @@ pub async fn conversation_bare(
 }
 
 pub fn parse_metadata(raw: &Option<String>) -> Value {
-    raw.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or(Value::Null)
+    raw.as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(Value::Null)
 }
 
 pub fn metadata_map(raw: &Option<String>) -> Map<String, Value> {
@@ -115,10 +127,13 @@ pub fn metadata_map(raw: &Option<String>) -> Map<String, Value> {
 /// Resolved sender display name: persisted snapshot preferred, falling back to
 /// the joined agent/customer name (CRD 888, 929).
 pub fn resolved_sender_name(m: &FullMessage) -> Option<String> {
-    m.sender_name.clone().filter(|s| !s.is_empty()).or_else(|| match m.sender_type.as_str() {
-        "customer" => m.cust_name.clone(),
-        _ => m.agent_name.clone(),
-    })
+    m.sender_name
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| match m.sender_type.as_str() {
+            "customer" => m.cust_name.clone(),
+            _ => m.agent_name.clone(),
+        })
 }
 
 /// Sender-info sub-object: agent / customer / null (CRD 863, 888).
@@ -217,5 +232,7 @@ pub async fn touch_conversation(
 /// Escape `%`, `_`, and `\` so a user-supplied term is a safe substring match
 /// (CRD 894).
 pub fn like_escape(term: &str) -> String {
-    term.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    term.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }

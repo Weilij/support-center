@@ -7,8 +7,12 @@ use std::sync::Mutex;
 use crate::db::now_iso;
 use crate::state::AppState;
 
-pub const INSTANCE_TYPES: &[&str] =
-    &["conversation-room", "user-connection", "message-broadcaster", "delayed-processor"];
+pub const INSTANCE_TYPES: &[&str] = &[
+    "conversation-room",
+    "user-connection",
+    "message-broadcaster",
+    "delayed-processor",
+];
 
 // Default thresholds (CRD 4865).
 const ERROR_RATE_THRESHOLD: f64 = 0.10;
@@ -41,7 +45,13 @@ pub struct Breaker {
 
 impl Default for Breaker {
     fn default() -> Self {
-        Self { state: "closed", opened_count: 0, reset_count: 0, last_changed: None, events: Vec::new() }
+        Self {
+            state: "closed",
+            opened_count: 0,
+            reset_count: 0,
+            last_changed: None,
+            events: Vec::new(),
+        }
     }
 }
 
@@ -56,7 +66,8 @@ impl Breaker {
 
     fn record(&mut self, event: &str, actor: &str) {
         self.last_changed = Some(now_iso());
-        self.events.push(json!({"event": event, "actor": actor, "timestamp": now_iso()}));
+        self.events
+            .push(json!({"event": event, "actor": actor, "timestamp": now_iso()}));
         if self.events.len() > 20 {
             let drop = self.events.len() - 20;
             self.events.drain(0..drop);
@@ -145,9 +156,18 @@ pub fn sweep(state: &AppState) -> Value {
     let _ = &mut instances;
 
     let total = instances.len();
-    let healthy = instances.iter().filter(|i| i["status"] == "healthy").count();
-    let degraded = instances.iter().filter(|i| i["status"] == "degraded").count();
-    let unhealthy = instances.iter().filter(|i| i["status"] == "unhealthy").count();
+    let healthy = instances
+        .iter()
+        .filter(|i| i["status"] == "healthy")
+        .count();
+    let degraded = instances
+        .iter()
+        .filter(|i| i["status"] == "degraded")
+        .count();
+    let unhealthy = instances
+        .iter()
+        .filter(|i| i["status"] == "unhealthy")
+        .count();
     let mut by_type = serde_json::Map::new();
     for kind in INSTANCE_TYPES {
         let count = instances.iter().filter(|i| i["type"] == *kind).count();
@@ -164,7 +184,11 @@ pub fn sweep(state: &AppState) -> Value {
     let mut active = Vec::new();
     for inst in &instances {
         if inst["status"] != "healthy" {
-            let severity = if inst["status"] == "unhealthy" { "critical" } else { "warning" };
+            let severity = if inst["status"] == "unhealthy" {
+                "critical"
+            } else {
+                "warning"
+            };
             active.push(json!({
                 "type": "instance_degraded",
                 "severity": severity,
@@ -211,7 +235,10 @@ pub fn sweep(state: &AppState) -> Value {
 /// Application-level component checks (CRD 4853-4854).
 pub async fn component_checks(state: &AppState) -> (Value, &'static str, f64) {
     let started = std::time::Instant::now();
-    let db_ok = sqlx::query_scalar::<_, i64>("SELECT 1::bigint").fetch_one(&state.db).await.is_ok();
+    let db_ok = sqlx::query_scalar::<_, i64>("SELECT 1::bigint")
+        .fetch_one(&state.db)
+        .await
+        .is_ok();
     let db_ms = started.elapsed().as_millis() as f64;
     let components = json!([
         {

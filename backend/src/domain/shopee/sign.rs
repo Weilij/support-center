@@ -23,7 +23,11 @@ pub fn base_string(
 pub fn sign(partner_key: &str, base: &str) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(partner_key.as_bytes()).expect("any key size");
     mac.update(base.as_bytes());
-    mac.finalize().into_bytes().iter().map(|b| format!("{b:02x}")).collect()
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -32,14 +36,18 @@ mod tests {
 
     #[test]
     fn public_base_string_is_partner_path_timestamp() {
-        assert_eq!(base_string(1, "/api/v2/auth/token/get", 1610000000, None, None),
-            "1/api/v2/auth/token/get1610000000");
+        assert_eq!(
+            base_string(1, "/api/v2/auth/token/get", 1610000000, None, None),
+            "1/api/v2/auth/token/get1610000000"
+        );
     }
 
     #[test]
     fn shop_base_string_appends_token_and_shop() {
-        assert_eq!(base_string(1, "/api/v2/x", 1610000000, Some("ACCESS"), Some(42)),
-            "1/api/v2/x1610000000ACCESS42");
+        assert_eq!(
+            base_string(1, "/api/v2/x", 1610000000, Some("ACCESS"), Some(42)),
+            "1/api/v2/x1610000000ACCESS42"
+        );
     }
 
     #[test]

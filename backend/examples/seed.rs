@@ -13,10 +13,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let now = mcss_backend::db::now_iso();
 
     // Administrator (idempotent: skipped when the email already exists).
-    let existing: Option<String> =
-        sqlx::query_scalar("SELECT id FROM agents WHERE email = 'admin@example.com' AND deleted_at IS NULL")
-            .fetch_optional(&pool)
-            .await?;
+    let existing: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM agents WHERE email = 'admin@example.com' AND deleted_at IS NULL",
+    )
+    .fetch_optional(&pool)
+    .await?;
     if existing.is_some() {
         println!("admin@example.com already exists — nothing to do");
         return Ok(());

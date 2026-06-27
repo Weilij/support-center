@@ -69,7 +69,7 @@ fn unexpected_failure(state: &Arc<AppState>) -> Response {
     // Best-effort error analytics record (CRD 645) — never alters the result.
     let db = state.db.clone();
     tokio::spawn(async move {
-        let _ = sqlx::query(
+        if let Err(error) = sqlx::query(
             "INSERT INTO realtime_error_events (id, timestamp, error_code, error_type, details, created_at)
              VALUES ($1, $2, '4500', 'AUTH_SYSTEM_ERROR', NULL, $3)",
         )
@@ -77,7 +77,10 @@ fn unexpected_failure(state: &Arc<AppState>) -> Response {
         .bind(crate::db::now_iso())
         .bind(crate::db::now_iso())
         .execute(&db)
-        .await;
+        .await
+        {
+            tracing::warn!(error = %error, "realtime auth error event insert failed");
+        }
     });
     gate_error(
         StatusCode::INTERNAL_SERVER_ERROR,

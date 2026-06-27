@@ -19,15 +19,39 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let authed = Router::new()
         .route("/api/monitoring/metrics", get(handlers::metrics))
         .route("/api/monitoring/alerts", get(handlers::alerts))
-        .route("/api/monitoring/alerts/history", get(handlers::alert_history))
-        .route("/api/monitoring/circuit-breaker/status", get(handlers::breaker_status))
-        .route("/api/monitoring/circuit-breaker/reset", post(handlers::breaker_reset))
-        .route("/api/monitoring/circuit-breaker/open", post(handlers::breaker_open))
-        .route("/api/monitoring/instances/{type}", get(handlers::instances_by_type))
-        .route("/api/monitoring/health-check", post(handlers::manual_health_check))
+        .route(
+            "/api/monitoring/alerts/history",
+            get(handlers::alert_history),
+        )
+        .route(
+            "/api/monitoring/circuit-breaker/status",
+            get(handlers::breaker_status),
+        )
+        .route(
+            "/api/monitoring/circuit-breaker/reset",
+            post(handlers::breaker_reset),
+        )
+        .route(
+            "/api/monitoring/circuit-breaker/open",
+            post(handlers::breaker_open),
+        )
+        .route(
+            "/api/monitoring/instances/{type}",
+            get(handlers::instances_by_type),
+        )
+        .route(
+            "/api/monitoring/health-check",
+            post(handlers::manual_health_check),
+        )
         .route("/api/monitoring/dashboard", get(handlers::dashboard))
-        .route("/api/monitoring/health/history", get(handlers::health_history))
-        .route("/api/monitoring/health/check", post(handlers::app_health_check))
+        .route(
+            "/api/monitoring/health/history",
+            get(handlers::health_history),
+        )
+        .route(
+            "/api/monitoring/health/check",
+            post(handlers::app_health_check),
+        )
         .route("/api/monitoring/config", put(handlers::update_config))
         .route("/api/monitoring/stats", get(handlers::monitor_stats))
         .layer(from_fn_with_state(state, require_auth));

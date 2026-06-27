@@ -111,7 +111,10 @@ async fn smtp_sink() -> (String, u16, Arc<Mutex<Vec<String>>>) {
                 authed = true;
                 writer.write_all(b"235 authenticated\r\n").await.unwrap();
             } else if command.starts_with("MAIL FROM:") && !authed {
-                writer.write_all(b"530 authentication required\r\n").await.unwrap();
+                writer
+                    .write_all(b"530 authentication required\r\n")
+                    .await
+                    .unwrap();
             } else if command.eq_ignore_ascii_case("QUIT") {
                 writer.write_all(b"221 bye\r\n").await.unwrap();
                 break;
@@ -128,10 +131,14 @@ async fn smtp_sink() -> (String, u16, Arc<Mutex<Vec<String>>>) {
 #[tokio::test]
 async fn health_and_info_are_public() {
     let app = spawn_app().await;
-    let (status, body, _) = app.request("GET", "/api/notifications/health", None, None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/notifications/health", None, None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["status"], "healthy");
-    let (status, body, _) = app.request("GET", "/api/notifications/info", None, None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/notifications/info", None, None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["data"]["types"].as_array().unwrap().len() >= 10);
 }
@@ -147,23 +154,39 @@ async fn create_validates_sanitizes_and_enforces_ownership() {
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     let (status, _, _) = app
-        .request("POST", "/api/notifications", Some(&agent),
-            Some(json!({"type": "telepathy", "title": "t", "content": "c"})))
+        .request(
+            "POST",
+            "/api/notifications",
+            Some(&agent),
+            Some(json!({"type": "telepathy", "title": "t", "content": "c"})),
+        )
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     let (status, _, _) = app
-        .request("POST", "/api/notifications", Some(&agent),
+        .request(
+            "POST",
+            "/api/notifications",
+            Some(&agent),
             Some(json!({"type": "system", "title": "t", "content": "c",
-                        "expiresAt": "2000-01-01T00:00:00Z"})))
+                        "expiresAt": "2000-01-01T00:00:00Z"})),
+        )
         .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "expiry must be future");
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "expiry must be future"
+    );
 
     // Non-admins always target themselves: the supplied userId is ignored.
     let (status, body, _) = app
-        .request("POST", "/api/notifications", Some(&agent),
+        .request(
+            "POST",
+            "/api/notifications",
+            Some(&agent),
             Some(json!({"type": "system", "title": "Mine", "content": "c",
                         "userId": "someone-else",
-                        "data": {"note": "<script>alert(1)</script>safe"}})))
+                        "data": {"note": "<script>alert(1)</script>safe"}})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let id = body["data"]["id"].as_str().unwrap().to_string();
@@ -174,12 +197,21 @@ async fn create_validates_sanitizes_and_enforces_ownership() {
             .await
             .unwrap();
     assert_eq!(owner, agent_id, "ownership enforced server-side");
-    assert!(!data.unwrap().contains("<script>"), "markup stripped from data strings");
+    assert!(
+        !data.unwrap().contains("<script>"),
+        "markup stripped from data strings"
+    );
 
     // Admin may target another recipient.
     let (status, body, _) = app
-        .request("POST", "/api/notifications", Some(&admin),
-            Some(json!({"type": "system", "title": "For agent", "content": "c", "userId": agent_id})))
+        .request(
+            "POST",
+            "/api/notifications",
+            Some(&admin),
+            Some(
+                json!({"type": "system", "title": "For agent", "content": "c", "userId": agent_id}),
+            ),
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     let owner: String = sqlx::query_scalar("SELECT agent_id FROM notifications WHERE id = $1")
@@ -220,7 +252,9 @@ async fn list_filters_and_excludes_expired() {
     .await
     .unwrap();
 
-    let (status, body, _) = app.request("GET", "/api/notifications", Some(&agent), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/notifications", Some(&agent), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["total"], 3, "expired excluded");
 
@@ -235,7 +269,12 @@ async fn list_filters_and_excludes_expired() {
 
     // Invalid filters produce structured validation errors.
     let (status, body, _) = app
-        .request("GET", "/api/notifications?type=bogus&priority=mega", Some(&agent), None)
+        .request(
+            "GET",
+            "/api/notifications?type=bogus&priority=mega",
+            Some(&agent),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(body["data"]["errors"].as_array().unwrap().len() >= 2);
@@ -248,8 +287,12 @@ async fn read_delete_counts_and_recent() {
     let mut ids = Vec::new();
     for i in 0..3 {
         let (_, body, _) = app
-            .request("POST", "/api/notifications", Some(&agent),
-                Some(json!({"type": "system", "title": format!("n{i}"), "content": "c"})))
+            .request(
+                "POST",
+                "/api/notifications",
+                Some(&agent),
+                Some(json!({"type": "system", "title": format!("n{i}"), "content": "c"})),
+            )
             .await;
         ids.push(body["data"]["id"].as_str().unwrap().to_string());
     }
@@ -261,34 +304,65 @@ async fn read_delete_counts_and_recent() {
     assert_eq!(body["data"]["type"], "all");
 
     let (status, _, _) = app
-        .request("PUT", &format!("/api/notifications/{}/read", ids[0]), Some(&agent), None)
+        .request(
+            "PUT",
+            &format!("/api/notifications/{}/read", ids[0]),
+            Some(&agent),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
 
     let (_, body, _) = app
-        .request("GET", "/api/notifications/recent?limit=5", Some(&agent), None)
+        .request(
+            "GET",
+            "/api/notifications/recent?limit=5",
+            Some(&agent),
+            None,
+        )
         .await;
     assert_eq!(body["data"]["count"], 2, "recent lists only unread");
 
     let (_, body, _) = app
-        .request("PUT", "/api/notifications/mark-all-read", Some(&agent), Some(json!({})))
+        .request(
+            "PUT",
+            "/api/notifications/mark-all-read",
+            Some(&agent),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(body["data"]["updated"], 2);
 
     // Ownership: another user cannot read or delete my record.
-    app.seed_agent("intruder@test.dev", "pw123456", "agent").await;
+    app.seed_agent("intruder@test.dev", "pw123456", "agent")
+        .await;
     let (intruder, _, _) = app.login("intruder@test.dev", "pw123456").await;
     let (status, _, _) = app
-        .request("GET", &format!("/api/notifications/{}", ids[1]), Some(&intruder), None)
+        .request(
+            "GET",
+            &format!("/api/notifications/{}", ids[1]),
+            Some(&intruder),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, _, _) = app
-        .request("DELETE", &format!("/api/notifications/{}", ids[1]), Some(&intruder), None)
+        .request(
+            "DELETE",
+            &format!("/api/notifications/{}", ids[1]),
+            Some(&intruder),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     let (status, _, _) = app
-        .request("DELETE", &format!("/api/notifications/{}", ids[1]), Some(&agent), None)
+        .request(
+            "DELETE",
+            &format!("/api/notifications/{}", ids[1]),
+            Some(&agent),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE id = $1")
@@ -299,7 +373,9 @@ async fn read_delete_counts_and_recent() {
     assert_eq!(remaining, 0, "hard delete");
 
     // Stats shape.
-    let (_, body, _) = app.request("GET", "/api/notifications/stats", Some(&agent), None).await;
+    let (_, body, _) = app
+        .request("GET", "/api/notifications/stats", Some(&agent), None)
+        .await;
     assert_eq!(body["data"]["total"], 2);
     assert!(body["data"]["byType"]["system"]["total"].as_i64().unwrap() >= 2);
     assert!(body["data"]["timeRanges"]["today"].as_i64().unwrap() >= 2);
@@ -313,32 +389,51 @@ async fn bulk_admin_broadcast_and_cleanup() {
 
     // Bulk is admin-only and validates per item.
     let (status, _, _) = app
-        .request("POST", "/api/notifications/bulk", Some(&agent),
-            Some(json!({"notifications": [{"type": "system", "title": "t", "content": "c"}]})))
+        .request(
+            "POST",
+            "/api/notifications/bulk",
+            Some(&agent),
+            Some(json!({"notifications": [{"type": "system", "title": "t", "content": "c"}]})),
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, body, _) = app
-        .request("POST", "/api/notifications/bulk", Some(&admin),
+        .request(
+            "POST",
+            "/api/notifications/bulk",
+            Some(&admin),
             Some(json!({"notifications": [
                 {"type": "system", "title": "ok", "content": "c", "userId": agent_id},
                 {"type": "system", "title": "ok2", "content": "c"}
-            ]})))
+            ]})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["successCount"], 2);
 
     // Targeted system + broadcast.
     let (status, _, _) = app
-        .request("POST", "/api/notifications/system", Some(&agent),
-            Some(json!({"title": "t", "content": "c"})))
+        .request(
+            "POST",
+            "/api/notifications/system",
+            Some(&agent),
+            Some(json!({"title": "t", "content": "c"})),
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, body, _) = app
-        .request("POST", "/api/notifications/broadcast", Some(&admin),
-            Some(json!({"title": "公告", "content": "all hands"})))
+        .request(
+            "POST",
+            "/api/notifications/broadcast",
+            Some(&admin),
+            Some(json!({"title": "公告", "content": "all hands"})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body["data"]["recipientCount"].as_i64().unwrap() >= 2, "all active staff");
+    assert!(
+        body["data"]["recipientCount"].as_i64().unwrap() >= 2,
+        "all active staff"
+    );
 
     // Cleanup removes expired records system-wide (admin only).
     sqlx::query(
@@ -350,27 +445,54 @@ async fn bulk_admin_broadcast_and_cleanup() {
     .execute(&app.state.db)
     .await
     .unwrap();
-    let (status, _, _) = app.request("DELETE", "/api/notifications/cleanup", Some(&agent), None).await;
+    let (status, _, _) = app
+        .request("DELETE", "/api/notifications/cleanup", Some(&agent), None)
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    let (_, body, _) = app.request("DELETE", "/api/notifications/cleanup", Some(&admin), None).await;
+    let (_, body, _) = app
+        .request("DELETE", "/api/notifications/cleanup", Some(&admin), None)
+        .await;
     assert_eq!(body["data"]["deleted"], 1);
 
     // Channel registry + channel test.
     let (_, body, _) = app
-        .request("GET", "/api/notifications/channels/stats", Some(&admin), None)
+        .request(
+            "GET",
+            "/api/notifications/channels/stats",
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(body["data"]["channels"]["realtime"]["enabled"], true);
     let (status, body, _) = app
-        .request("POST", "/api/notifications/channels/realtime/test", Some(&agent), Some(json!({})))
+        .request(
+            "POST",
+            "/api/notifications/channels/realtime/test",
+            Some(&agent),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["success"], true);
     let (_, body, _) = app
-        .request("POST", "/api/notifications/channels/email/test", Some(&agent), Some(json!({})))
+        .request(
+            "POST",
+            "/api/notifications/channels/email/test",
+            Some(&agent),
+            Some(json!({})),
+        )
         .await;
-    assert_eq!(body["data"]["success"], false, "unconfigured channel fails gracefully");
+    assert_eq!(
+        body["data"]["success"], false,
+        "unconfigured channel fails gracefully"
+    );
     let (status, _, _) = app
-        .request("POST", "/api/notifications/channels/telepathy/test", Some(&agent), Some(json!({})))
+        .request(
+            "POST",
+            "/api/notifications/channels/telepathy/test",
+            Some(&agent),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -380,9 +502,13 @@ async fn trigger_endpoints_create_typed_records() {
     let app = spawn_app().await;
     let (_, agent, agent_id) = users(&app).await;
     let (status, _, _) = app
-        .request("POST", "/api/notifications/new-message", Some(&agent),
+        .request(
+            "POST",
+            "/api/notifications/new-message",
+            Some(&agent),
             Some(json!({"userId": agent_id, "conversationId": "c-1",
-                        "senderName": "客戶A", "content": "x".repeat(300)})))
+                        "senderName": "客戶A", "content": "x".repeat(300)})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     let (kind, content, priority): (String, String, String) = sqlx::query_as(
@@ -393,13 +519,20 @@ async fn trigger_endpoints_create_typed_records() {
     .await
     .unwrap();
     assert_eq!(kind, "new_message");
-    assert!(content.chars().count() <= 120, "preview truncated (~100 chars)");
+    assert!(
+        content.chars().count() <= 120,
+        "preview truncated (~100 chars)"
+    );
     assert_eq!(priority, "normal");
 
     let (status, _, _) = app
-        .request("POST", "/api/notifications/conversation-assigned", Some(&agent),
+        .request(
+            "POST",
+            "/api/notifications/conversation-assigned",
+            Some(&agent),
             Some(json!({"userId": agent_id, "conversationId": "c-1",
-                        "customerName": "客戶B", "assignedBy": "主管"})))
+                        "customerName": "客戶B", "assignedBy": "主管"})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     let (kind, priority): (String, String) = sqlx::query_as(
@@ -423,22 +556,33 @@ async fn reminder_crud_and_validation() {
     let cases = [
         (json!({}), "missing both"),
         (json!({"title": "t", "remindAt": "soon"}), "bad date"),
-        (json!({"title": "t", "remindAt": "2000-01-01T00:00:00Z"}), "past"),
+        (
+            json!({"title": "t", "remindAt": "2000-01-01T00:00:00Z"}),
+            "past",
+        ),
     ];
     for (body, label) in cases {
-        let (status, _, _) = app.request("POST", "/api/reminders", Some(&agent), Some(body)).await;
+        let (status, _, _) = app
+            .request("POST", "/api/reminders", Some(&agent), Some(body))
+            .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "case: {label}");
     }
 
     let future = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
     let (status, body, _) = app
-        .request("POST", "/api/reminders", Some(&agent),
-            Some(json!({"title": "跟進客戶", "remindAt": future, "content": "記得回電"})))
+        .request(
+            "POST",
+            "/api/reminders",
+            Some(&agent),
+            Some(json!({"title": "跟進客戶", "remindAt": future, "content": "記得回電"})),
+        )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let id = body["data"]["id"].as_str().unwrap().to_string();
 
-    let (_, body, _) = app.request("GET", "/api/reminders", Some(&agent), None).await;
+    let (_, body, _) = app
+        .request("GET", "/api/reminders", Some(&agent), None)
+        .await;
     assert_eq!(body["data"]["count"], 1);
 
     // Update re-arms the sent flag when the time changes.
@@ -449,8 +593,12 @@ async fn reminder_crud_and_validation() {
         .unwrap();
     let new_time = (chrono::Utc::now() + chrono::Duration::hours(4)).to_rfc3339();
     let (status, _, _) = app
-        .request("PUT", &format!("/api/reminders/{id}"), Some(&agent),
-            Some(json!({"remindAt": new_time})))
+        .request(
+            "PUT",
+            &format!("/api/reminders/{id}"),
+            Some(&agent),
+            Some(json!({"remindAt": new_time})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     let sent: i64 = sqlx::query_scalar("SELECT is_sent FROM task_reminders WHERE id = $1")
@@ -462,18 +610,35 @@ async fn reminder_crud_and_validation() {
 
     // Complete, then it disappears from the default listing.
     let (status, _, _) = app
-        .request("PUT", &format!("/api/reminders/{id}/complete"), Some(&agent), None)
+        .request(
+            "PUT",
+            &format!("/api/reminders/{id}/complete"),
+            Some(&agent),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
-    let (_, body, _) = app.request("GET", "/api/reminders", Some(&agent), None).await;
+    let (_, body, _) = app
+        .request("GET", "/api/reminders", Some(&agent), None)
+        .await;
     assert_eq!(body["data"]["count"], 0);
     let (_, body, _) = app
-        .request("GET", "/api/reminders?includeCompleted=true", Some(&agent), None)
+        .request(
+            "GET",
+            "/api/reminders?includeCompleted=true",
+            Some(&agent),
+            None,
+        )
         .await;
     assert_eq!(body["data"]["count"], 1);
 
     let (status, _, _) = app
-        .request("DELETE", &format!("/api/reminders/{id}"), Some(&agent), None)
+        .request(
+            "DELETE",
+            &format!("/api/reminders/{id}"),
+            Some(&agent),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     let (status, _, _) = app
@@ -500,13 +665,19 @@ async fn due_reminders_fire_notifications_and_repeat() {
     .unwrap();
 
     // Stats see it as overdue.
-    let (_, body, _) = app.request("GET", "/api/reminders/stats", Some(&agent), None).await;
+    let (_, body, _) = app
+        .request("GET", "/api/reminders/stats", Some(&agent), None)
+        .await;
     assert_eq!(body["data"]["overdue"], 1);
 
     // The manual pass is admin-only.
-    let (status, _, _) = app.request("POST", "/api/reminders/process", Some(&agent), None).await;
+    let (status, _, _) = app
+        .request("POST", "/api/reminders/process", Some(&agent), None)
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    let (status, body, _) = app.request("POST", "/api/reminders/process", Some(&admin), None).await;
+    let (status, body, _) = app
+        .request("POST", "/api/reminders/process", Some(&admin), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["processed"], 1);
 
@@ -545,13 +716,20 @@ async fn due_reminders_fire_notifications_and_repeat() {
 async fn monitoring_alerts_rate_limit_ack_and_resolve() {
     let app = spawn_app().await;
 
-    let alert = alerts::send_monitoring_alert(&app.state, "critical", "CPU 過載", "90%", None).await;
+    let alert =
+        alerts::send_monitoring_alert(&app.state, "critical", "CPU 過載", "90%", None).await;
     assert_eq!(alert["level"], "critical");
     assert_eq!(alert["acknowledged"], false);
     let attempts = alert["channelAttempts"].as_array().unwrap();
-    assert!(attempts.iter().any(|a| a["channel"] == "console" && a["success"] == true));
-    assert!(attempts.iter().any(|a| a["channel"] == "webhook" && a["success"] == false),
-        "unconfigured webhook fails gracefully");
+    assert!(attempts
+        .iter()
+        .any(|a| a["channel"] == "console" && a["success"] == true));
+    assert!(
+        attempts
+            .iter()
+            .any(|a| a["channel"] == "webhook" && a["success"] == false),
+        "unconfigured webhook fails gracefully"
+    );
 
     let id = alert["id"].as_str().unwrap();
     assert!(alerts::acknowledge(&app.state.db, id, "admin-1").await);
@@ -566,7 +744,10 @@ async fn monitoring_alerts_rate_limit_ack_and_resolve() {
     assert_eq!(limited["rateLimited"], true);
     assert_eq!(limited["channelAttempts"].as_array().unwrap().len(), 0);
     let emergency = alerts::send_monitoring_alert(&app.state, "emergency", "fire", "d", None).await;
-    assert_eq!(emergency["rateLimited"], false, "emergency always bypasses the limit");
+    assert_eq!(
+        emergency["rateLimited"], false,
+        "emergency always bypasses the limit"
+    );
 
     // Config read/merge round trip.
     let config = alerts::get_config(&app.state.db).await;
@@ -574,8 +755,11 @@ async fn monitoring_alerts_rate_limit_ack_and_resolve() {
     let updated = alerts::update_config(&app.state.db, &json!({"enabled": false})).await;
     assert_eq!(updated["enabled"], false);
     let disabled = alerts::send_monitoring_alert(&app.state, "info", "quiet", "d", None).await;
-    assert_eq!(disabled["channelAttempts"].as_array().unwrap().len(), 0,
-        "globally disabled: recorded but not delivered");
+    assert_eq!(
+        disabled["channelAttempts"].as_array().unwrap().len(),
+        0,
+        "globally disabled: recorded but not delivered"
+    );
 }
 
 #[tokio::test]
@@ -602,7 +786,9 @@ async fn monitoring_alert_posts_configured_webhook_channel() {
     )
     .await;
     let attempts = alert["channelAttempts"].as_array().unwrap();
-    assert!(attempts.iter().any(|a| a["channel"] == "webhook" && a["success"] == true));
+    assert!(attempts
+        .iter()
+        .any(|a| a["channel"] == "webhook" && a["success"] == true));
 
     let received = seen.lock().await;
     assert_eq!(received.len(), 1);
@@ -636,7 +822,9 @@ async fn monitoring_alert_posts_slack_specific_payload_for_chat_channel() {
     )
     .await;
     let attempts = alert["channelAttempts"].as_array().unwrap();
-    assert!(attempts.iter().any(|a| a["channel"] == "chat" && a["success"] == true));
+    assert!(attempts
+        .iter()
+        .any(|a| a["channel"] == "chat" && a["success"] == true));
 
     let received = seen.lock().await;
     assert_eq!(received.len(), 1);
@@ -656,13 +844,16 @@ async fn monitoring_alert_sends_configured_email_channel() {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
     )
     .bind("alert.email")
-    .bind(json!({
-        "host": host,
-        "port": port,
-        "sender": "ops@example.test",
-        "password": "smtp-secret",
-        "recipients": ["lead@example.test", "oncall@example.test"],
-    }).to_string())
+    .bind(
+        json!({
+            "host": host,
+            "port": port,
+            "sender": "ops@example.test",
+            "password": "smtp-secret",
+            "recipients": ["lead@example.test", "oncall@example.test"],
+        })
+        .to_string(),
+    )
     .bind(chrono::Utc::now().to_rfc3339())
     .execute(&app.state.db)
     .await
@@ -685,7 +876,9 @@ async fn monitoring_alert_sends_configured_email_channel() {
     )
     .await;
     let attempts = alert["channelAttempts"].as_array().unwrap();
-    assert!(attempts.iter().any(|a| a["channel"] == "email" && a["success"] == true));
+    assert!(attempts
+        .iter()
+        .any(|a| a["channel"] == "email" && a["success"] == true));
 
     let received = seen.lock().await;
     assert_eq!(received.len(), 1);
@@ -762,7 +955,10 @@ async fn security_alert_posts_configured_env_sinks() {
     let chat = chat_seen.lock().await;
     assert_eq!(chat.len(), 1);
     assert!(chat[0]["text"].as_str().unwrap().contains("攻擊偵測"));
-    assert!(chat[0].get("type").is_none(), "chat sink should use text payload");
+    assert!(
+        chat[0].get("type").is_none(),
+        "chat sink should use text payload"
+    );
 
     let email = email_seen.lock().await;
     assert_eq!(email.len(), 1);

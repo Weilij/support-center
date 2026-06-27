@@ -1,18 +1,15 @@
 //! Period comparison family (CRD 4294-4325).
 
 use axum::extract::{Query, State};
-use axum::response::Response;
 use axum::Extension;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
-
-type Result<T = Response> = std::result::Result<T, AppError>;
 
 #[derive(Deserialize)]
 pub struct ComparisonQuery {
@@ -52,8 +49,12 @@ fn parse(q: &ComparisonQuery) -> Result<Periods> {
         .with_timezone(&chrono::Utc);
     // Auto previous period: equal length ending one second before (CRD 4297).
     let (prev_s, prev_e) = match (
-        q.previous_start.as_deref().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()),
-        q.previous_end.as_deref().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()),
+        q.previous_start
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()),
+        q.previous_end
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()),
     ) {
         (Some(s), Some(e)) => (s.with_timezone(&chrono::Utc), e.with_timezone(&chrono::Utc)),
         _ => {
@@ -62,7 +63,12 @@ fn parse(q: &ComparisonQuery) -> Result<Periods> {
             (prev_e - len, prev_e)
         }
     };
-    Ok(Periods { cur_s, cur_e, prev_s, prev_e })
+    Ok(Periods {
+        cur_s,
+        cur_e,
+        prev_s,
+        prev_e,
+    })
 }
 
 async fn metric_value(
@@ -103,7 +109,11 @@ fn compare(current: f64, previous: f64, p: &Periods) -> Value {
     let change = current - previous;
     // Zero prior value: 100 when current positive, else 0 (CRD 4298).
     let pct = if previous == 0.0 {
-        if current > 0.0 { 100.0 } else { 0.0 }
+        if current > 0.0 {
+            100.0
+        } else {
+            0.0
+        }
     } else {
         change / previous * 100.0
     };
@@ -212,12 +222,7 @@ pub async fn multi(
     })))
 }
 
-async fn preset(
-    state: Arc<AppState>,
-    q: ComparisonQuery,
-    name: &str,
-    metrics: &[&str],
-) -> Result {
+async fn preset(state: Arc<AppState>, q: ComparisonQuery, name: &str, metrics: &[&str]) -> Result {
     let p = parse(&q)?;
     let metric_names: Vec<String> = metrics.iter().map(|m| m.to_string()).collect();
     let comparison = multi_compare(&state, &metric_names, &p, q.team_id).await;
@@ -232,10 +237,18 @@ pub async fn preset_conversation(
     Extension(_user): Extension<AuthUser>,
     Query(q): Query<ComparisonQuery>,
 ) -> Result {
-    preset(state, q, "conversation", &[
-        "total_conversations", "active_conversations", "closed_conversations",
-        "avg_resolution_time", "customer_satisfaction",
-    ])
+    preset(
+        state,
+        q,
+        "conversation",
+        &[
+            "total_conversations",
+            "active_conversations",
+            "closed_conversations",
+            "avg_resolution_time",
+            "customer_satisfaction",
+        ],
+    )
     .await
 }
 
@@ -244,10 +257,18 @@ pub async fn preset_message(
     Extension(_user): Extension<AuthUser>,
     Query(q): Query<ComparisonQuery>,
 ) -> Result {
-    preset(state, q, "message", &[
-        "total_messages", "customer_messages", "agent_messages",
-        "avg_response_time", "messages_per_conversation",
-    ])
+    preset(
+        state,
+        q,
+        "message",
+        &[
+            "total_messages",
+            "customer_messages",
+            "agent_messages",
+            "avg_response_time",
+            "messages_per_conversation",
+        ],
+    )
     .await
 }
 
@@ -256,9 +277,17 @@ pub async fn preset_user_activity(
     Extension(_user): Extension<AuthUser>,
     Query(q): Query<ComparisonQuery>,
 ) -> Result {
-    preset(state, q, "user-activity", &[
-        "active_users", "total_activities", "avg_session_duration", "user_engagement_rate",
-    ])
+    preset(
+        state,
+        q,
+        "user-activity",
+        &[
+            "active_users",
+            "total_activities",
+            "avg_session_duration",
+            "user_engagement_rate",
+        ],
+    )
     .await
 }
 

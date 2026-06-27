@@ -21,15 +21,17 @@ use serde_json::json;
 use crate::middleware::auth::{require_auth, AuthUser};
 use crate::state::AppState;
 
-fn require_admin(user: &AuthUser) -> Result<(), axum::response::Response> {
+fn require_admin(user: &AuthUser) -> Option<axum::response::Response> {
     if user.is_admin() {
-        Ok(())
+        None
     } else {
-        Err((
-            axum::http::StatusCode::FORBIDDEN,
-            Json(json!({"success": false, "error": "Administrator role required"})),
+        Some(
+            (
+                axum::http::StatusCode::FORBIDDEN,
+                Json(json!({"success": false, "error": "Administrator role required"})),
+            )
+                .into_response(),
         )
-            .into_response())
     }
 }
 
@@ -57,7 +59,7 @@ async fn auth_authorize(
     Extension(user): Extension<AuthUser>,
     Query(q): Query<AuthorizeQuery>,
 ) -> axum::response::Response {
-    if let Err(resp) = require_admin(&user) {
+    if let Some(resp) = require_admin(&user) {
         return resp;
     }
     if q.shop_id <= 0 {
@@ -76,7 +78,9 @@ async fn auth_authorize(
     };
 
     let oauth_state = uuid::Uuid::new_v4().simple().to_string();
-    state.shopee_oauth.put(&oauth_state, &user.id, q.shop_id, q.team_id);
+    state
+        .shopee_oauth
+        .put(&oauth_state, &user.id, q.shop_id, q.team_id);
     let redirect_url = reqwest::Url::parse_with_params(
         &format!("{}/api/shopee/auth/callback", backend_base(&state)),
         &[("state", oauth_state.clone())],
@@ -102,7 +106,7 @@ async fn auth_callback(
     Extension(user): Extension<AuthUser>,
     Query(params): Query<HashMap<String, String>>,
 ) -> axum::response::Response {
-    if let Err(resp) = require_admin(&user) {
+    if let Some(resp) = require_admin(&user) {
         return resp;
     }
     let oauth_state = params.get("state").map(String::as_str).unwrap_or_default();
@@ -131,17 +135,39 @@ async fn auth_callback(
             .into_response();
     }
     let Some(client) = client::ShopeeClient::from_config(&state.config) else {
-        return (axum::http::StatusCode::NOT_IMPLEMENTED, Json(json!({"success": false, "error": "Shopee is not configured"}))).into_response();
+        return (
+            axum::http::StatusCode::NOT_IMPLEMENTED,
+            Json(json!({"success": false, "error": "Shopee is not configured"})),
+        )
+            .into_response();
     };
     match client.fetch_token(code, shop_id).await {
         Ok(t) => {
-            let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(t.expire_in)).to_rfc3339();
-            match store::save_tokens(&state.db, state.config.encryption_key.as_deref(), shop_id, &t.access_token, &t.refresh_token, &expires_at).await {
+            let expires_at =
+                (chrono::Utc::now() + chrono::Duration::seconds(t.expire_in)).to_rfc3339();
+            match store::save_tokens(
+                &state.db,
+                state.config.encryption_key.as_deref(),
+                shop_id,
+                &t.access_token,
+                &t.refresh_token,
+                &expires_at,
+            )
+            .await
+            {
                 Ok(()) => Json(json!({"success": true, "shopId": shop_id})).into_response(),
-                Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"success": false, "error": e}))).into_response(),
+                Err(e) => (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"success": false, "error": e.to_string()})),
+                )
+                    .into_response(),
             }
         }
-        Err(e) => (axum::http::StatusCode::BAD_GATEWAY, Json(json!({"success": false, "error": e}))).into_response(),
+        Err(e) => (
+            axum::http::StatusCode::BAD_GATEWAY,
+            Json(json!({"success": false, "error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 

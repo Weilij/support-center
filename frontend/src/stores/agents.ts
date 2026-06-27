@@ -25,10 +25,53 @@ export interface AgentsPage {
   page: number
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+function nullableStringField(value: unknown): string | null | undefined {
+  if (value === null) return null
+  return stringField(value)
+}
+
+function nullableNumberField(value: unknown): number | null | undefined {
+  if (value === null) return null
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function booleanField(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined
+}
+
+function normalizeAgent(value: unknown): Agent | null {
+  if (!isRecord(value) || typeof value.id !== 'string') return null
+  return {
+    id: value.id,
+    email: stringField(value.email),
+    displayName: stringField(value.displayName),
+    role: stringField(value.role),
+    position: stringField(value.position),
+    isActive: booleanField(value.isActive),
+    teamId: nullableNumberField(value.teamId),
+    teamName: nullableStringField(value.teamName),
+    lastActiveAt: nullableStringField(value.lastActiveAt),
+    lastLoginAt: nullableStringField(value.lastLoginAt),
+    createdAt: stringField(value.createdAt),
+  }
+}
+
 export async function loadAgents(page = 1, limit = 20): Promise<AgentsPage> {
-  const resp = await get<Agent[]>(`/api/agents${buildQuery({ page, limit })}`)
-  const { items, total } = unwrapList<Agent>(resp as never, page)
-  return { items, total, page }
+  const resp = await get<unknown>(`/api/agents${buildQuery({ page, limit })}`)
+  const result = unwrapList(resp, page)
+  const items = result.items.flatMap((item) => {
+    const agent = normalizeAgent(item)
+    return agent ? [agent] : []
+  })
+  return { items, total: result.total, page: result.page }
 }
 
 export async function loadStatusStatistics(): Promise<Record<string, number>> {

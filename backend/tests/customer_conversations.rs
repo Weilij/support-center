@@ -12,7 +12,9 @@ use tower::ServiceExt;
 use mcss_backend::domain::auth::tokens::{sign, Claims};
 
 async fn admin(app: &TestApp) -> (String, String) {
-    let id = app.seed_agent("admin@test.dev", "Secret123!", "admin").await;
+    let id = app
+        .seed_agent("admin@test.dev", "Secret123!", "admin")
+        .await;
     let token = app.login("admin@test.dev", "Secret123!").await.0;
     (token, id)
 }
@@ -78,7 +80,10 @@ fn multipart_request(path: &str, session: &str, data: Option<&[u8]>) -> Request<
         .method("POST")
         .uri(path)
         .header("X-Session-Id", session)
-        .header("Content-Type", format!("multipart/form-data; boundary={boundary}"))
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
         .body(Body::from(body))
         .unwrap()
 }
@@ -96,8 +101,12 @@ async fn history_returns_enriched_messages_newest_first() {
     let (token, _) = admin(&app).await;
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, None, "active").await;
-    let older = app.seed_message(&conv, "customer", "hi", Some("2026-01-01T00:00:00.000Z")).await;
-    let newer = app.seed_message(&conv, "agent", "hello", Some("2026-02-01T00:00:00.000Z")).await;
+    let older = app
+        .seed_message(&conv, "customer", "hi", Some("2026-01-01T00:00:00.000Z"))
+        .await;
+    let newer = app
+        .seed_message(&conv, "agent", "hello", Some("2026-02-01T00:00:00.000Z"))
+        .await;
 
     // One attachment with a stored binary (gets a force-download link) and one
     // without (inline link only).
@@ -130,7 +139,10 @@ async fn history_returns_enriched_messages_newest_first() {
     // falls back to inline-only.
     let stored = &messages[0]["attachments"][0];
     assert_eq!(stored["url"], json!("/uploads/stored.png"));
-    assert_eq!(stored["downloadUrl"], json!("/uploads/stored.png?download=1"));
+    assert_eq!(
+        stored["downloadUrl"],
+        json!("/uploads/stored.png?download=1")
+    );
     let unstored = &messages[1]["attachments"][0];
     assert!(unstored["downloadUrl"].is_null());
 }
@@ -141,9 +153,15 @@ async fn history_paginates_with_before_cursor() {
     let (token, _) = admin(&app).await;
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, None, "active").await;
-    let first = app.seed_message(&conv, "customer", "1", Some("2026-01-01T00:00:00.000Z")).await;
-    let second = app.seed_message(&conv, "customer", "2", Some("2026-01-02T00:00:00.000Z")).await;
-    let third = app.seed_message(&conv, "customer", "3", Some("2026-01-03T00:00:00.000Z")).await;
+    let first = app
+        .seed_message(&conv, "customer", "1", Some("2026-01-01T00:00:00.000Z"))
+        .await;
+    let second = app
+        .seed_message(&conv, "customer", "2", Some("2026-01-02T00:00:00.000Z"))
+        .await;
+    let third = app
+        .seed_message(&conv, "customer", "3", Some("2026-01-03T00:00:00.000Z"))
+        .await;
 
     // limit=1 returns the newest; hasMore signals the full-page condition.
     let (_, body, _) = app
@@ -166,8 +184,12 @@ async fn history_paginates_with_before_cursor() {
             None,
         )
         .await;
-    let ids: Vec<&str> =
-        body["messages"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
+    let ids: Vec<&str> = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
     assert_eq!(ids, vec![second.as_str(), first.as_str()]);
 
     // An unresolvable cursor falls back to the most recent page.
@@ -199,8 +221,9 @@ async fn history_accepts_all_credential_supply_methods() {
         .await;
     assert_eq!(status, StatusCode::OK);
     // sessionId query parameter.
-    let (status, _, _) =
-        app.request("GET", &format!("{path}?sessionId={token}"), None, None).await;
+    let (status, _, _) = app
+        .request("GET", &format!("{path}?sessionId={token}"), None, None)
+        .await;
     assert_eq!(status, StatusCode::OK);
 }
 
@@ -218,18 +241,29 @@ async fn history_error_conditions() {
     let (status, body, _) = app.request("GET", &path, None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["success"], json!(false));
-    assert!(body["error"].as_str().unwrap().contains("Authentication required"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("Authentication required"));
     // Invalid session token -> 401.
     let (status, body, _) = app.request("GET", &path, Some("garbage"), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert!(body["error"].as_str().unwrap().contains("Invalid or expired"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("Invalid or expired"));
     // Valid session but not admitted by the four-way rule -> 403.
     let (status, body, _) = app.request("GET", &path, Some(&outsider_token), None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["success"], json!(false));
     // Conversation missing -> 404.
     let (status, _, _) = app
-        .request("GET", "/api/customer-conversations/missing/messages", Some(&token), None)
+        .request(
+            "GET",
+            "/api/customer-conversations/missing/messages",
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     // Soft-deleted conversation is not a valid target -> 404.
@@ -258,23 +292,38 @@ async fn four_way_access_rule_admits_each_leg() {
     let pool_path = format!("/api/customer-conversations/{pool}/messages");
 
     // 1. Administrators are always admitted.
-    let (status, _, _) = app.request("GET", &assigned_path, Some(&admin_token), None).await;
+    let (status, _, _) = app
+        .request("GET", &assigned_path, Some(&admin_token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     // 2. The conversation's owner (its customer) is admitted even when assigned.
-    let (status, _, _) =
-        app.request("GET", &assigned_path, Some(&customer_token(cust)), None).await;
+    let (status, _, _) = app
+        .request("GET", &assigned_path, Some(&customer_token(cust)), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     // ...but a different customer is not.
-    let (status, _, _) =
-        app.request("GET", &assigned_path, Some(&customer_token(other_cust)), None).await;
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &assigned_path,
+            Some(&customer_token(other_cust)),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     // 3. An unassigned conversation admits any valid session.
-    let (status, _, _) = app.request("GET", &pool_path, Some(&outsider_token), None).await;
+    let (status, _, _) = app
+        .request("GET", &pool_path, Some(&outsider_token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     // 4. Assigned conversations admit team members; non-members are rejected.
-    let (status, _, _) = app.request("GET", &assigned_path, Some(&member_token), None).await;
+    let (status, _, _) = app
+        .request("GET", &assigned_path, Some(&member_token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _, _) = app.request("GET", &assigned_path, Some(&outsider_token), None).await;
+    let (status, _, _) = app
+        .request("GET", &assigned_path, Some(&outsider_token), None)
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
@@ -394,10 +443,13 @@ async fn reply_shares_the_gate_error_conditions() {
     let path = format!("/api/customer-conversations/{assigned}/messages");
     let payload = json!({ "content": "hi" });
 
-    let (status, _, _) = app.request("POST", &path, None, Some(payload.clone())).await;
+    let (status, _, _) = app
+        .request("POST", &path, None, Some(payload.clone()))
+        .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    let (status, _, _) =
-        app.request("POST", &path, Some(&outsider_token), Some(payload.clone())).await;
+    let (status, _, _) = app
+        .request("POST", &path, Some(&outsider_token), Some(payload.clone()))
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _, _) = app
         .request(
@@ -436,7 +488,9 @@ async fn upload_stores_namespaced_file_and_creates_no_message() {
     assert!(url.starts_with(&format!("/uploads/conv_{conv}_")));
     assert!(url.ends_with(".png"));
     let key = url.strip_prefix("/uploads/").unwrap();
-    assert!(std::path::Path::new(&app.state.config.upload_dir).join(key).exists());
+    assert!(std::path::Path::new(&app.state.config.upload_dir)
+        .join(key)
+        .exists());
 
     // No message was created by the upload (CRD 1110, 1112).
     let messages: i64 =
@@ -451,7 +505,9 @@ async fn upload_stores_namespaced_file_and_creates_no_message() {
 #[tokio::test]
 async fn upload_revalidates_against_the_live_session_store() {
     let app = spawn_app().await;
-    let admin_id = app.seed_agent("admin@test.dev", "Secret123!", "admin").await;
+    let admin_id = app
+        .seed_agent("admin@test.dev", "Secret123!", "admin")
+        .await;
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, None, "active").await;
 
@@ -522,7 +578,10 @@ async fn ws_requires_both_query_parameters() {
     ] {
         let (status, body, _) = app.request("GET", &path, None, None).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{path}");
-        assert!(body["error"].as_str().unwrap().contains("Missing required parameters"));
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("Missing required parameters"));
     }
 }
 

@@ -26,7 +26,10 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/join", get(handlers::join_page));
 
     let admin = Router::new()
-        .route("/api/admin/liff-qr/batch-generate", post(handlers::batch_generate))
+        .route(
+            "/api/admin/liff-qr/batch-generate",
+            post(handlers::batch_generate),
+        )
         .route("/api/admin/liff-qr/status", get(handlers::coverage_status))
         .layer(from_fn_with_state(state, require_admin));
 

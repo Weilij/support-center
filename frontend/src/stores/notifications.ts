@@ -30,15 +30,43 @@ export const notificationsStore = new Store<NotificationsState>({
   error: null,
 })
 
+function stringField(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function normalizeNotification(value: unknown): Notification | null {
+  if (!isRecord(value) || typeof value.id !== 'string') return null
+  return {
+    ...value,
+    id: value.id,
+    type: stringField(value.type),
+    title: stringField(value.title),
+    content: stringField(value.content),
+    priority: stringField(value.priority),
+    isRead: typeof value.isRead === 'boolean' ? value.isRead : undefined,
+    createdAt: stringField(value.createdAt),
+  }
+}
+
+function normalizeNotifications(value: unknown): Notification[] {
+  return Array.isArray(value)
+    ? value.map(normalizeNotification).filter((item): item is Notification => item !== null)
+    : []
+}
+
 export async function loadNotifications(): Promise<void> {
   notificationsStore.update((s) => ({ ...s, busy: true, error: null }))
   const [list, count] = await Promise.all([
-    get<{ notifications?: Notification[] }>('/api/notifications'),
+    get<unknown>('/api/notifications'),
     get<{ count?: number }>('/api/notifications/unread-count'),
   ])
-  if (list.success && list.data) {
+  if (list.success && isRecord(list.data)) {
     notificationsStore.set({
-      items: list.data.notifications ?? [],
+      items: normalizeNotifications(list.data.notifications),
       unread: count.success ? (count.data?.count ?? 0) : 0,
       busy: false,
       error: null,
@@ -74,12 +102,12 @@ onEvent('notification', (payload) => {
     unread: s.unread + 1,
     items: [{
       id: String(payload.id ?? crypto.randomUUID()),
-      type: payload.type as string | undefined,
-      title: payload.title as string | undefined,
-      content: payload.content as string | undefined,
-      priority: payload.priority as string | undefined,
+      type: stringField(payload.type),
+      title: stringField(payload.title),
+      content: stringField(payload.content),
+      priority: stringField(payload.priority),
       isRead: false,
-      createdAt: payload.createdAt as string | undefined,
+      createdAt: stringField(payload.createdAt),
     }, ...s.items],
   }))
 })

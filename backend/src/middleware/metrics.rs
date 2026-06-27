@@ -47,14 +47,17 @@ pub async fn metrics_layer(
             "status": status,
         })
         .to_string();
-        let _ = sqlx::query(
+        if let Err(error) = sqlx::query(
             "INSERT INTO metrics (name, value, timestamp, tags, unit) VALUES ('http_request', $1, $2, $3, 'ms')",
         )
         .bind(elapsed_ms)
         .bind(chrono::Utc::now().timestamp_millis())
-        .bind(tags)
+        .bind(&tags)
         .execute(&db)
-        .await;
+        .await
+        {
+            tracing::warn!(error = %error, tags, "request metrics insert failed");
+        }
     });
     resp
 }

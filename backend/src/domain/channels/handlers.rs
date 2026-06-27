@@ -7,28 +7,41 @@ use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use crate::crypto;
 use crate::db::now_iso;
 use crate::domain::auth::store::log_activity;
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
 
 use super::store::{self, ChannelRow};
 
-type Result<T = Response> = std::result::Result<T, AppError>;
-
 pub const PLATFORMS: [&str; 3] = ["line", "facebook", "whatsapp"];
 
 /// Per-platform configuration descriptor: JSON body key, non-secret identifier
 /// fields, and secret credential fields — all required at creation (CRD 2634-2636).
-fn platform_fields(platform: &str) -> (&'static str, &'static [&'static str], &'static [&'static str]) {
+fn platform_fields(
+    platform: &str,
+) -> (
+    &'static str,
+    &'static [&'static str],
+    &'static [&'static str],
+) {
     match platform {
-        "line" => ("lineConfig", &["channelId"], &["channelAccessToken", "channelSecret"]),
+        "line" => (
+            "lineConfig",
+            &["channelId"],
+            &["channelAccessToken", "channelSecret"],
+        ),
         "facebook" => ("facebookConfig", &["pageId"], &["accessToken", "appSecret"]),
-        "whatsapp" => ("whatsappConfig", &["phoneNumber", "businessAccountId"], &["accessToken"]),
+        "whatsapp" => (
+            "whatsappConfig",
+            &["phoneNumber", "businessAccountId"],
+            &["accessToken"],
+        ),
         _ => ("config", &[], &[]),
     }
 }
@@ -49,7 +62,9 @@ fn client_ip(headers: &HeaderMap) -> Option<String> {
 fn parse_id(raw: &str) -> Result<i64> {
     match raw.parse::<i64>() {
         Ok(v) if v > 0 => Ok(v),
-        _ => Err(AppError::BadRequest(format!("invalid id: must be a positive integer (got '{raw}')"))),
+        _ => Err(AppError::BadRequest(format!(
+            "invalid id: must be a positive integer (got '{raw}')"
+        ))),
     }
 }
 
@@ -57,7 +72,9 @@ fn admin_gate(user: &AuthUser) -> Result<()> {
     if user.is_admin() {
         Ok(())
     } else {
-        Err(AppError::Forbidden("Only administrators can manage channel integrations".into()))
+        Err(AppError::Forbidden(
+            "Only administrators can manage channel integrations".into(),
+        ))
     }
 }
 
@@ -108,7 +125,9 @@ pub async fn list_channels(
             ),
         }
     } else {
-        return Err(AppError::BadRequest("Team not found for current user".into()));
+        return Err(AppError::BadRequest(
+            "Team not found for current user".into(),
+        ));
     };
 
     let platform = match &q.platform {
@@ -117,7 +136,7 @@ pub async fn list_channels(
         Some(_) => {
             return Err(AppError::BadRequest(
                 "Invalid platform. Supported platforms: line, facebook, whatsapp".into(),
-            ))
+            ));
         }
     };
 
@@ -209,7 +228,10 @@ pub async fn create_channel(
     let mut credentials = Map::new();
     for field in secret_fields {
         let plaintext = supplied[*field].as_str().unwrap_or_default();
-        credentials.insert((*field).to_string(), Value::String(crypto::protect(key, plaintext)?));
+        credentials.insert(
+            (*field).to_string(),
+            Value::String(crypto::protect(key, plaintext)?),
+        );
     }
 
     let row = store::insert(
@@ -267,10 +289,14 @@ pub async fn get_channel(
     Path(raw_id): Path<String>,
 ) -> Result {
     let id = parse_id(&raw_id)?;
-    let row = store::find_by_id(&state.db, id).await?.ok_or_else(not_found)?;
+    let row = store::find_by_id(&state.db, id)
+        .await?
+        .ok_or_else(not_found)?;
     // Same-team callers and admins (any team) may read (CRD 2647).
     if !user.is_admin() && user.primary_team_id != Some(row.team_id) {
-        return Err(AppError::Forbidden("Channel integration belongs to another team".into()));
+        return Err(AppError::Forbidden(
+            "Channel integration belongs to another team".into(),
+        ));
     }
     Ok(envelope::ok(store::view(&row)))
 }
@@ -287,7 +313,9 @@ pub async fn update_channel(
     user.primary_team_id
         .ok_or_else(|| AppError::BadRequest("Team context required".into()))?;
     admin_gate(&user)?;
-    let row = store::find_by_id(&state.db, id).await?.ok_or_else(not_found)?;
+    let row = store::find_by_id(&state.db, id)
+        .await?
+        .ok_or_else(not_found)?;
     own_team_gate(&user, &row)?;
 
     let mut config: Map<String, Value> = row
@@ -314,8 +342,10 @@ pub async fn update_channel(
         let key = state.config.encryption_key.as_deref();
         for field in secret_fields {
             if let Some(v) = patch.get(*field).and_then(Value::as_str) {
-                credentials
-                    .insert((*field).to_string(), Value::String(crypto::protect(key, v)?));
+                credentials.insert(
+                    (*field).to_string(),
+                    Value::String(crypto::protect(key, v)?),
+                );
                 secrets_changed = true;
             }
         }
@@ -365,7 +395,9 @@ pub async fn update_channel(
     .execute(&state.db)
     .await?;
 
-    let updated = store::find_by_id(&state.db, row.id).await?.ok_or_else(not_found)?;
+    let updated = store::find_by_id(&state.db, row.id)
+        .await?
+        .ok_or_else(not_found)?;
     Ok(envelope::ok(store::view(&updated)))
 }
 
@@ -380,7 +412,9 @@ pub async fn delete_channel(
     user.primary_team_id
         .ok_or_else(|| AppError::BadRequest("Team context required".into()))?;
     admin_gate(&user)?;
-    let row = store::find_by_id(&state.db, id).await?.ok_or_else(not_found)?;
+    let row = store::find_by_id(&state.db, id)
+        .await?
+        .ok_or_else(not_found)?;
     own_team_gate(&user, &row)?;
 
     sqlx::query("UPDATE channel_integrations SET is_active = 0, updated_at = $1 WHERE id = $2")
@@ -389,7 +423,9 @@ pub async fn delete_channel(
         .execute(&state.db)
         .await?;
 
-    Ok(envelope::message_only("Channel integration disabled successfully"))
+    Ok(envelope::message_only(
+        "Channel integration disabled successfully",
+    ))
 }
 
 // --------------------------------------------------- Verify a connection (CRD 2669-2680)
@@ -407,19 +443,80 @@ fn verification_failure(message: &str, details: Option<Value>) -> Response {
     (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
-/// Stub of the live platform credential check.
-///
-/// TODO(live-platform): replace with real outbound calls — LINE token-verify
-/// endpoint, Facebook page-profile fetch, WhatsApp phone-number metadata fetch
-/// (CRD 2673-2676). The stub reproduces the documented observable outcomes:
-/// a credential containing the marker "invalid" fails with a platform-status
-/// message; anything else verifies.
-fn stub_platform_check(token: &str) -> std::result::Result<(), String> {
-    if token.contains("invalid") {
-        Err("Platform API returned status 401".into())
-    } else {
-        Ok(())
+fn platform_http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("reqwest client")
+    })
+}
+
+#[derive(Debug, thiserror::Error)]
+enum PlatformVerifyError {
+    #[error("Invalid platform verification URL: {0}")]
+    Url(String),
+    #[error("Platform API request failed: {0}")]
+    Request(#[from] reqwest::Error),
+    #[error("Platform API returned status {status}: {body}")]
+    Status {
+        status: reqwest::StatusCode,
+        body: String,
+    },
+}
+
+async fn platform_get_json(
+    url: reqwest::Url,
+    token: &str,
+) -> std::result::Result<Value, PlatformVerifyError> {
+    let resp = platform_http_client()
+        .get(url)
+        .bearer_auth(token)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(PlatformVerifyError::Status { status, body });
     }
+    Ok(resp.json::<Value>().await?)
+}
+
+async fn verify_line_credentials(
+    state: &AppState,
+    token: &str,
+    channel_id: String,
+    webhook_url: Option<String>,
+) -> std::result::Result<Value, PlatformVerifyError> {
+    let url = reqwest::Url::parse(&state.config.line_bot_info_url)
+        .map_err(|error| PlatformVerifyError::Url(error.to_string()))?;
+    let details = platform_get_json(url, token).await?;
+    Ok(json!({
+        "channelId": channel_id,
+        "webhookUrl": webhook_url,
+        "botUserId": details.get("userId").and_then(Value::as_str),
+        "basicId": details.get("basicId").and_then(Value::as_str),
+        "displayName": details.get("displayName").and_then(Value::as_str),
+    }))
+}
+
+async fn verify_meta_node(
+    state: &AppState,
+    node_id: &str,
+    token: &str,
+    fields: &[&str],
+) -> std::result::Result<Value, PlatformVerifyError> {
+    let url = reqwest::Url::parse_with_params(
+        &format!(
+            "{}/{}",
+            state.config.meta_graph_url.trim_end_matches('/'),
+            node_id
+        ),
+        &[("fields", fields.join(","))],
+    )
+    .map_err(|error| PlatformVerifyError::Url(error.to_string()))?;
+    platform_get_json(url, token).await
 }
 
 pub async fn verify_channel(
@@ -433,11 +530,16 @@ pub async fn verify_channel(
     let id = parse_id(&raw_id)?;
     user.primary_team_id
         .ok_or_else(|| AppError::BadRequest("Team context required".into()))?;
-    let row = store::find_by_id(&state.db, id).await?.ok_or_else(not_found)?;
+    let row = store::find_by_id(&state.db, id)
+        .await?
+        .ok_or_else(not_found)?;
     own_team_gate(&user, &row)?;
 
     if row.is_active == 0 {
-        return Ok(verification_failure("Channel integration is not active", None));
+        return Ok(verification_failure(
+            "Channel integration is not active",
+            None,
+        ));
     }
 
     let key = state.config.encryption_key.as_deref();
@@ -447,24 +549,38 @@ pub async fn verify_channel(
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_default();
-    let cred = |name: &str| creds.get(name).and_then(Value::as_str).unwrap_or("").to_string();
-    let conf = |name: &str| config.get(name).and_then(Value::as_str).unwrap_or("").to_string();
+    let cred = |name: &str| {
+        creds
+            .get(name)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let conf = |name: &str| {
+        config
+            .get(name)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
     let webhook_url = row
         .webhook_config
         .as_deref()
         .and_then(|s| serde_json::from_str::<Value>(s).ok())
-        .and_then(|v| v.get("webhookUrl").and_then(Value::as_str).map(str::to_string));
+        .and_then(|v| {
+            v.get("webhookUrl")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
 
     // Per-platform credential/identifier presence + live check (CRD 2673-2676).
-    let outcome: std::result::Result<Value, String> = match row.platform.as_str() {
+    let outcome: std::result::Result<Value, PlatformVerifyError> = match row.platform.as_str() {
         "line" => {
             let token = cred("channelAccessToken");
             if token.is_empty() {
                 return Ok(verification_failure("Missing channel access token", None));
             }
-            stub_platform_check(&token).map(|()| {
-                json!({ "channelId": conf("channelId"), "webhookUrl": webhook_url })
-            })
+            verify_line_credentials(&state, &token, conf("channelId"), webhook_url).await
         }
         "facebook" => {
             let token = cred("accessToken");
@@ -475,23 +591,40 @@ pub async fn verify_channel(
             if page_id.is_empty() {
                 return Ok(verification_failure("Missing page ID", None));
             }
-            stub_platform_check(&token)
-                .map(|()| json!({ "pageId": page_id, "pageName": format!("Page {page_id}") }))
+            verify_meta_node(&state, &page_id, &token, &["id", "name"])
+                .await
+                .map(|details| {
+                    json!({
+                        "pageId": details.get("id").and_then(Value::as_str).unwrap_or(&page_id),
+                        "pageName": details.get("name").and_then(Value::as_str),
+                    })
+                })
         }
         "whatsapp" => {
             let token = cred("accessToken");
             let business_id = conf("businessAccountId");
+            let phone_number = conf("phoneNumber");
             if token.is_empty() {
                 return Ok(verification_failure("Missing access token", None));
             }
             if business_id.is_empty() {
                 return Ok(verification_failure("Missing business account ID", None));
             }
-            stub_platform_check(&token).map(|()| {
+            verify_meta_node(
+                &state,
+                &business_id,
+                &token,
+                &["id", "display_phone_number", "verified_name"],
+            )
+            .await
+            .map(|details| {
                 json!({
-                    "phoneNumberId": business_id,
-                    "displayPhoneNumber": conf("phoneNumber"),
-                    "verifiedName": format!("WhatsApp {}", conf("phoneNumber")),
+                    "phoneNumberId": details.get("id").and_then(Value::as_str).unwrap_or(&business_id),
+                    "displayPhoneNumber": details
+                        .get("display_phone_number")
+                        .and_then(Value::as_str)
+                        .unwrap_or(phone_number.as_str()),
+                    "verifiedName": details.get("verified_name").and_then(Value::as_str),
                 })
             })
         }
@@ -499,7 +632,7 @@ pub async fn verify_channel(
             return Ok(verification_failure(
                 &format!("Verification is not supported for platform '{other}'"),
                 None,
-            ))
+            ));
         }
     };
 
@@ -532,7 +665,8 @@ pub async fn verify_channel(
             )
                 .into_response())
         }
-        Err(message) => {
+        Err(error) => {
+            let message = error.to_string();
             // Failure: error counter incremented, structured last-error stored
             // (CRD 2676).
             let attempts = row.error_count + 1;
@@ -566,7 +700,9 @@ pub async fn channel_stats(
     Path(raw_id): Path<String>,
 ) -> Result {
     let id = parse_id(&raw_id)?;
-    let row = store::find_by_id(&state.db, id).await?.ok_or_else(not_found)?;
+    let row = store::find_by_id(&state.db, id)
+        .await?
+        .ok_or_else(not_found)?;
     // Strict same-team ownership: admins are NOT granted cross-team access
     // here (CRD 2685).
     own_team_gate(&user, &row)?;
@@ -604,23 +740,31 @@ pub async fn channel_health(
     Path(raw_id): Path<String>,
 ) -> Result {
     let id = parse_id(&raw_id)?;
-    let row = store::find_by_id(&state.db, id).await?.ok_or_else(not_found)?;
+    let row = store::find_by_id(&state.db, id)
+        .await?
+        .ok_or_else(not_found)?;
     // Same strict ownership rule as statistics (CRD 2693).
     own_team_gate(&user, &row)?;
 
     let (status, recommendations): (&str, Vec<&str>) = if row.error_count == 0 {
         ("healthy", vec![])
     } else if row.error_count <= DEGRADED_ERROR_THRESHOLD {
-        ("degraded", vec![
-            "Monitor the connection for recurring errors",
-            "Re-verify the connection to confirm credentials are still valid",
-        ])
+        (
+            "degraded",
+            vec![
+                "Monitor the connection for recurring errors",
+                "Re-verify the connection to confirm credentials are still valid",
+            ],
+        )
     } else {
-        ("down", vec![
-            "Re-verify or rotate the platform credentials",
-            "Check the platform's service status",
-            "Review the most recent stored error for details",
-        ])
+        (
+            "down",
+            vec![
+                "Re-verify or rotate the platform credentials",
+                "Check the platform's service status",
+                "Review the most recent stored error for details",
+            ],
+        )
     };
 
     let last_error: Value = row

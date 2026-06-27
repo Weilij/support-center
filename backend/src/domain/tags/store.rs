@@ -64,7 +64,9 @@ pub struct TagDetail {
 /// Escape LIKE wildcards so user-supplied search text matches literally
 /// (CRD 1553: wildcard characters in the search are treated literally).
 pub fn escape_like(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 /// A live (non-soft-deleted) tag.
@@ -76,11 +78,7 @@ pub async fn find_live_tag(pool: &PgPool, id: i64) -> sqlx::Result<Option<TagRow
 }
 
 /// Name uniqueness among live tags (soft-deleting a tag frees its name — CRD 1487/1504).
-pub async fn name_in_use(
-    pool: &PgPool,
-    name: &str,
-    exclude_id: Option<i64>,
-) -> sqlx::Result<bool> {
+pub async fn name_in_use(pool: &PgPool, name: &str, exclude_id: Option<i64>) -> sqlx::Result<bool> {
     let found: Option<i64> = sqlx::query_scalar(
         "SELECT id FROM tags WHERE name = $1 AND deleted_at IS NULL AND id != $2 LIMIT 1",
     )
@@ -97,7 +95,10 @@ pub async fn tag_with_counts(pool: &PgPool, id: i64) -> sqlx::Result<Option<TagW
         "SELECT t.id, t.name, t.color, t.description, t.team_id, t.is_active, t.created_by, \
          t.created_at, t.updated_at, {TAG_COUNT_COLUMNS} FROM tags t WHERE t.id = $1"
     );
-    sqlx::query_as::<_, TagWithCounts>(&crate::db::pg_params(&sql)).bind(id).fetch_optional(pool).await
+    sqlx::query_as::<_, TagWithCounts>(&crate::db::pg_params(&sql))
+        .bind(id)
+        .fetch_optional(pool)
+        .await
 }
 
 /// Detail view with team/creator display names; intentionally does not exclude
@@ -112,7 +113,10 @@ pub async fn tag_detail(pool: &PgPool, id: i64) -> sqlx::Result<Option<TagDetail
          LEFT JOIN agents a ON a.id = t.created_by \
          WHERE t.id = $1"
     );
-    sqlx::query_as::<_, TagDetail>(&crate::db::pg_params(&sql)).bind(id).fetch_optional(pool).await
+    sqlx::query_as::<_, TagDetail>(&crate::db::pg_params(&sql))
+        .bind(id)
+        .fetch_optional(pool)
+        .await
 }
 
 /// One page of live tags ordered by name, with derived counts (CRD 1475-1481).

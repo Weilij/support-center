@@ -7,8 +7,14 @@ use sqlx::PgPool;
 use crate::db::now_iso;
 
 pub const PRESENCE_STATES: [&str; 6] = ["online", "busy", "away", "offline", "break", "meeting"];
-pub const SKILL_CATEGORIES: [&str; 6] =
-    ["communication", "technical", "product", "language", "platform", "soft_skill"];
+pub const SKILL_CATEGORIES: [&str; 6] = [
+    "communication",
+    "technical",
+    "product",
+    "language",
+    "platform",
+    "soft_skill",
+];
 pub const SKILL_LEVELS: [&str; 4] = ["beginner", "intermediate", "advanced", "expert"];
 
 /// Presence history is retained to the most recent 100 entries per operator (CRD 2263).
@@ -43,10 +49,12 @@ pub const OPERATOR_SELECT: &str =
      WHERE a.deleted_at IS NULL";
 
 pub async fn find_operator(pool: &PgPool, id: &str) -> sqlx::Result<Option<OperatorRow>> {
-    sqlx::query_as(&crate::db::pg_params(&format!("{OPERATOR_SELECT} AND a.id = ?")))
-        .bind(id)
-        .fetch_optional(pool)
-        .await
+    sqlx::query_as(&crate::db::pg_params(&format!(
+        "{OPERATOR_SELECT} AND a.id = ?"
+    )))
+    .bind(id)
+    .fetch_optional(pool)
+    .await
 }
 
 /// Password material is always blank in responses (CRD 2168, 2303).

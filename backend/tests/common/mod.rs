@@ -8,16 +8,30 @@ use axum::Router;
 use http_body_util::BodyExt;
 use serde_json::Value;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tower::ServiceExt;
 
 use mcss_backend::config::Config;
 use mcss_backend::state::AppState;
 use mcss_backend::{app, db};
 
+static DATABASE_CREATE_PERMITS: Semaphore = Semaphore::const_new(4);
+
 pub struct TestApp {
     pub router: Router,
     pub state: Arc<AppState>,
     _dir: tempfile::TempDir,
+}
+
+impl Drop for TestApp {
+    fn drop(&mut self) {
+        let pool = self.state.db.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                pool.close().await;
+            });
+        }
+    }
 }
 
 pub async fn spawn_app() -> TestApp {
@@ -59,6 +73,10 @@ async fn sweep_stale_test_dbs(admin: &sqlx::PgPool) {
 
 pub async fn spawn_app_custom(customize: impl FnOnce(&mut Config)) -> TestApp {
     let dir = tempfile::tempdir().expect("tempdir");
+    let _permit = DATABASE_CREATE_PERMITS
+        .acquire()
+        .await
+        .expect("database create semaphore closed");
     let admin = sqlx::PgPool::connect(&admin_url())
         .await
         .expect("admin pg connect");
@@ -73,6 +91,7 @@ pub async fn spawn_app_custom(customize: impl FnOnce(&mut Config)) -> TestApp {
         "{}/{db_name}",
         base.rsplit_once('/').map(|(b, _)| b).unwrap_or(&base)
     );
+    admin.close().await;
     let pool = db::init_pool(&url).await.expect("db init");
     let mut config = Config {
         database_url: url,
@@ -95,6 +114,9 @@ pub async fn spawn_app_custom(customize: impl FnOnce(&mut Config)) -> TestApp {
         line_bot_id: Some("@testbot".into()),
         line_channel_access_token: None,
         line_push_url: "https://api.line.me/v2/bot/message/push".into(),
+        line_bot_info_url: "https://api.line.me/v2/bot/info".into(),
+        line_content_api_base_url: "https://api-data.line.me".into(),
+        meta_graph_url: "https://graph.facebook.com/v20.0".into(),
         facebook_app_secret: Some("test-fb-secret".into()),
         facebook_verify_token: Some("test-verify-token".into()),
         facebook_page_access_token: None,

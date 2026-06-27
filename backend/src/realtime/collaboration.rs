@@ -20,11 +20,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
-
-type Result<T = Response> = std::result::Result<T, AppError>;
 
 /// Per-conversation viewer capacity (CRD 2367: default fifty).
 pub const VIEWER_CAP: usize = 50;

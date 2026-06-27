@@ -27,7 +27,15 @@ async fn setup() -> Ctx {
     app.add_membership(&agent_id, team_a, "member", true).await;
     let (admin_token, _, _) = app.login("admin@test.com", "pw123456").await;
     let (agent_token, _, _) = app.login("agent@test.com", "pw123456").await;
-    Ctx { app, admin_id, admin_token, agent_id, agent_token, team_a, team_b }
+    Ctx {
+        app,
+        admin_id,
+        admin_token,
+        agent_id,
+        agent_token,
+        team_a,
+        team_b,
+    }
 }
 
 // -------------------------------------------------------------- list customers
@@ -43,13 +51,23 @@ async fn list_customers_requires_auth() {
 #[tokio::test]
 async fn list_customers_is_team_scoped() {
     let ctx = setup().await;
-    let shared = ctx.app.seed_customer("line", "U-shared", "Shared", None).await;
-    let mine = ctx.app.seed_customer("line", "U-mine", "Mine", Some(ctx.team_a)).await;
-    ctx.app.seed_customer("line", "U-theirs", "Theirs", Some(ctx.team_b)).await;
+    let shared = ctx
+        .app
+        .seed_customer("line", "U-shared", "Shared", None)
+        .await;
+    let mine = ctx
+        .app
+        .seed_customer("line", "U-mine", "Mine", Some(ctx.team_a))
+        .await;
+    ctx.app
+        .seed_customer("line", "U-theirs", "Theirs", Some(ctx.team_b))
+        .await;
 
     // Admin sees all three.
-    let (status, body, _) =
-        ctx.app.request("GET", "/api/customers", Some(&ctx.admin_token), None).await;
+    let (status, body, _) = ctx
+        .app
+        .request("GET", "/api/customers", Some(&ctx.admin_token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], true);
     assert_eq!(body["data"]["count"], 3);
@@ -57,8 +75,10 @@ async fn list_customers_is_team_scoped() {
     assert!(body["timestamp"].is_string());
 
     // Agent sees own-team customers plus the shared (team-less) pool.
-    let (status, body, _) =
-        ctx.app.request("GET", "/api/customers", Some(&ctx.agent_token), None).await;
+    let (status, body, _) = ctx
+        .app
+        .request("GET", "/api/customers", Some(&ctx.agent_token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["count"], 2);
     let ids: Vec<i64> = body["data"]["customers"]
@@ -71,8 +91,19 @@ async fn list_customers_is_team_scoped() {
 
     // Customer record shape.
     let rec = &body["data"]["customers"][0];
-    for key in ["id", "platform", "platform_user_id", "display_name", "avatar_url", "email",
-                "phone", "source_team_id", "metadata", "created_at", "updated_at"] {
+    for key in [
+        "id",
+        "platform",
+        "platform_user_id",
+        "display_name",
+        "avatar_url",
+        "email",
+        "phone",
+        "source_team_id",
+        "metadata",
+        "created_at",
+        "updated_at",
+    ] {
         assert!(rec.get(key).is_some(), "missing field {key}: {rec}");
     }
 }
@@ -82,12 +113,23 @@ async fn list_customers_is_team_scoped() {
 #[tokio::test]
 async fn get_customer_returns_conversations() {
     let ctx = setup().await;
-    let customer = ctx.app.seed_customer("line", "U1", "Cust", Some(ctx.team_a)).await;
-    let conv = ctx.app.seed_conversation(customer, Some(ctx.team_a), "active").await;
+    let customer = ctx
+        .app
+        .seed_customer("line", "U1", "Cust", Some(ctx.team_a))
+        .await;
+    let conv = ctx
+        .app
+        .seed_conversation(customer, Some(ctx.team_a), "active")
+        .await;
 
     let (status, body, _) = ctx
         .app
-        .request("GET", &format!("/api/customers/{customer}"), Some(&ctx.agent_token), None)
+        .request(
+            "GET",
+            &format!("/api/customers/{customer}"),
+            Some(&ctx.agent_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["customer"]["id"], customer);
@@ -99,25 +141,40 @@ async fn get_customer_returns_conversations() {
 #[tokio::test]
 async fn get_customer_error_conditions() {
     let ctx = setup().await;
-    let foreign = ctx.app.seed_customer("line", "U2", "Foreign", Some(ctx.team_b)).await;
+    let foreign = ctx
+        .app
+        .seed_customer("line", "U2", "Foreign", Some(ctx.team_b))
+        .await;
 
     // Invalid id -> validation rejection before handler logic.
     let (status, _, _) = ctx
         .app
-        .request("GET", "/api/customers/not-a-number", Some(&ctx.agent_token), None)
+        .request(
+            "GET",
+            "/api/customers/not-a-number",
+            Some(&ctx.agent_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     // Unknown id -> 404 "Customer not found".
-    let (status, body, _) =
-        ctx.app.request("GET", "/api/customers/99999", Some(&ctx.agent_token), None).await;
+    let (status, body, _) = ctx
+        .app
+        .request("GET", "/api/customers/99999", Some(&ctx.agent_token), None)
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"], "Customer not found");
 
     // Out-of-scope -> indistinguishable 404 (never 403), hiding existence.
     let (status, body, _) = ctx
         .app
-        .request("GET", &format!("/api/customers/{foreign}"), Some(&ctx.agent_token), None)
+        .request(
+            "GET",
+            &format!("/api/customers/{foreign}"),
+            Some(&ctx.agent_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"], "Customer not found");
@@ -125,7 +182,12 @@ async fn get_customer_error_conditions() {
     // Admin may access any.
     let (status, _, _) = ctx
         .app
-        .request("GET", &format!("/api/customers/{foreign}"), Some(&ctx.admin_token), None)
+        .request(
+            "GET",
+            &format!("/api/customers/{foreign}"),
+            Some(&ctx.admin_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
 }
@@ -135,12 +197,20 @@ async fn get_customer_error_conditions() {
 #[tokio::test]
 async fn get_customer_by_platform_identity() {
     let ctx = setup().await;
-    let customer = ctx.app.seed_customer("line", "U-line-1", "P Cust", None).await;
+    let customer = ctx
+        .app
+        .seed_customer("line", "U-line-1", "P Cust", None)
+        .await;
     ctx.app.seed_conversation(customer, None, "active").await;
 
     let (status, body, _) = ctx
         .app
-        .request("GET", "/api/customers/platform/line/U-line-1", Some(&ctx.agent_token), None)
+        .request(
+            "GET",
+            "/api/customers/platform/line/U-line-1",
+            Some(&ctx.agent_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["customer"]["id"], customer);
@@ -149,16 +219,28 @@ async fn get_customer_by_platform_identity() {
     // No match -> 404.
     let (status, body, _) = ctx
         .app
-        .request("GET", "/api/customers/platform/line/unknown", Some(&ctx.agent_token), None)
+        .request(
+            "GET",
+            "/api/customers/platform/line/unknown",
+            Some(&ctx.agent_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"], "Customer not found");
 
     // Out-of-scope match -> same hidden 404.
-    ctx.app.seed_customer("line", "U-b-1", "B Cust", Some(ctx.team_b)).await;
+    ctx.app
+        .seed_customer("line", "U-b-1", "B Cust", Some(ctx.team_b))
+        .await;
     let (status, body, _) = ctx
         .app
-        .request("GET", "/api/customers/platform/line/U-b-1", Some(&ctx.agent_token), None)
+        .request(
+            "GET",
+            "/api/customers/platform/line/U-b-1",
+            Some(&ctx.agent_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"], "Customer not found");
@@ -169,20 +251,37 @@ async fn get_customer_by_platform_identity() {
 #[tokio::test]
 async fn available_tags_applies_team_scoping() {
     let ctx = setup().await;
-    ctx.app.seed_tag_full("global", &ctx.admin_id, None, true).await;
-    ctx.app.seed_tag_full("team-a", &ctx.admin_id, Some(ctx.team_a), true).await;
-    ctx.app.seed_tag_full("team-b", &ctx.admin_id, Some(ctx.team_b), true).await;
-    ctx.app.seed_tag_full("dormant", &ctx.admin_id, None, false).await;
+    ctx.app
+        .seed_tag_full("global", &ctx.admin_id, None, true)
+        .await;
+    ctx.app
+        .seed_tag_full("team-a", &ctx.admin_id, Some(ctx.team_a), true)
+        .await;
+    ctx.app
+        .seed_tag_full("team-b", &ctx.admin_id, Some(ctx.team_b), true)
+        .await;
+    ctx.app
+        .seed_tag_full("dormant", &ctx.admin_id, None, false)
+        .await;
 
     // Non-admin default: own team + global, active only, alphabetical.
     let (status, body, _) = ctx
         .app
-        .request("GET", "/api/customers/tags/available", Some(&ctx.agent_token), None)
+        .request(
+            "GET",
+            "/api/customers/tags/available",
+            Some(&ctx.agent_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["success"], true);
-    let names: Vec<&str> =
-        body["data"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+    let names: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
     assert_eq!(names, vec!["global", "team-a"]);
     assert_eq!(body["pagination"]["page"], 1);
     assert_eq!(body["pagination"]["limit"], 100);
@@ -190,8 +289,19 @@ async fn available_tags_applies_team_scoping() {
     assert_eq!(body["pagination"]["totalPages"], 1);
     assert!(body["message"].is_string());
     let tag = &body["data"][0];
-    for key in ["id", "name", "color", "description", "teamId", "isActive", "createdBy",
-                "createdAt", "updatedAt", "customerCount", "conversationCount"] {
+    for key in [
+        "id",
+        "name",
+        "color",
+        "description",
+        "teamId",
+        "isActive",
+        "createdBy",
+        "createdAt",
+        "updatedAt",
+        "customerCount",
+        "conversationCount",
+    ] {
         assert!(tag.get(key).is_some(), "missing field {key}: {tag}");
     }
 
@@ -205,14 +315,23 @@ async fn available_tags_applies_team_scoping() {
             None,
         )
         .await;
-    let names: Vec<&str> =
-        body["data"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+    let names: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
     assert_eq!(names, vec!["team-a"]);
 
     // Admin default: all active tags.
     let (_, body, _) = ctx
         .app
-        .request("GET", "/api/customers/tags/available", Some(&ctx.admin_token), None)
+        .request(
+            "GET",
+            "/api/customers/tags/available",
+            Some(&ctx.admin_token),
+            None,
+        )
         .await;
     assert_eq!(body["pagination"]["total"], 3);
 
@@ -232,8 +351,12 @@ async fn available_tags_applies_team_scoping() {
 #[tokio::test]
 async fn available_tags_search_matches_wildcards_literally() {
     let ctx = setup().await;
-    ctx.app.seed_tag_full("100%done", &ctx.admin_id, None, true).await;
-    ctx.app.seed_tag_full("100xdone", &ctx.admin_id, None, true).await;
+    ctx.app
+        .seed_tag_full("100%done", &ctx.admin_id, None, true)
+        .await;
+    ctx.app
+        .seed_tag_full("100xdone", &ctx.admin_id, None, true)
+        .await;
 
     let (status, body, _) = ctx
         .app
@@ -245,9 +368,17 @@ async fn available_tags_search_matches_wildcards_literally() {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    let names: Vec<&str> =
-        body["data"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, vec!["100%done"], "% must not act as a wildcard: {body}");
+    let names: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["100%done"],
+        "% must not act as a wildcard: {body}"
+    );
 }
 
 // ------------------------------------------------------------ customer tag reads
@@ -255,15 +386,30 @@ async fn available_tags_search_matches_wildcards_literally() {
 #[tokio::test]
 async fn get_customer_tags_returns_active_tags_only() {
     let ctx = setup().await;
-    let customer = ctx.app.seed_customer("line", "U-tags", "Tagged", None).await;
+    let customer = ctx
+        .app
+        .seed_customer("line", "U-tags", "Tagged", None)
+        .await;
     let active = ctx.app.seed_tag("active-tag", &ctx.admin_id).await;
-    let inactive = ctx.app.seed_tag_full("inactive-tag", &ctx.admin_id, None, false).await;
-    ctx.app.add_customer_tag(customer, active, &ctx.admin_id).await;
-    ctx.app.add_customer_tag(customer, inactive, &ctx.admin_id).await;
+    let inactive = ctx
+        .app
+        .seed_tag_full("inactive-tag", &ctx.admin_id, None, false)
+        .await;
+    ctx.app
+        .add_customer_tag(customer, active, &ctx.admin_id)
+        .await;
+    ctx.app
+        .add_customer_tag(customer, inactive, &ctx.admin_id)
+        .await;
 
     let (status, body, _) = ctx
         .app
-        .request("GET", &format!("/api/customers/{customer}/tags"), Some(&ctx.agent_token), None)
+        .request(
+            "GET",
+            &format!("/api/customers/{customer}/tags"),
+            Some(&ctx.agent_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let tags = body["data"].as_array().unwrap();
@@ -277,7 +423,12 @@ async fn get_customer_tags_returns_active_tags_only() {
     // Unknown customer -> 404.
     let (status, _, _) = ctx
         .app
-        .request("GET", "/api/customers/99999/tags", Some(&ctx.agent_token), None)
+        .request(
+            "GET",
+            "/api/customers/99999/tags",
+            Some(&ctx.agent_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -333,9 +484,15 @@ async fn add_customer_tags_is_idempotent_per_tag() {
 #[tokio::test]
 async fn add_customer_tags_error_conditions() {
     let ctx = setup().await;
-    let customer = ctx.app.seed_customer("line", "U-add-err", "AddErr", None).await;
+    let customer = ctx
+        .app
+        .seed_customer("line", "U-add-err", "AddErr", None)
+        .await;
     let active = ctx.app.seed_tag("ok-tag", &ctx.admin_id).await;
-    let inactive = ctx.app.seed_tag_full("off-tag", &ctx.admin_id, None, false).await;
+    let inactive = ctx
+        .app
+        .seed_tag_full("off-tag", &ctx.admin_id, None, false)
+        .await;
 
     // Empty tagIds -> 422 on tagIds.
     let (status, body, _) = ctx
@@ -422,7 +579,10 @@ async fn remove_customer_tags_detaches_and_is_noop_for_absent() {
 #[tokio::test]
 async fn remove_customer_tags_error_conditions() {
     let ctx = setup().await;
-    let customer = ctx.app.seed_customer("line", "U-rm-err", "RmErr", None).await;
+    let customer = ctx
+        .app
+        .seed_customer("line", "U-rm-err", "RmErr", None)
+        .await;
     let tag = ctx.app.seed_tag("rm-err", &ctx.admin_id).await;
 
     let (status, body, _) = ctx
@@ -505,9 +665,15 @@ async fn replace_customer_tags_sets_exact_set_and_clears_with_empty() {
 #[tokio::test]
 async fn replace_customer_tags_error_conditions() {
     let ctx = setup().await;
-    let customer = ctx.app.seed_customer("line", "U-set-err", "SetErr", None).await;
+    let customer = ctx
+        .app
+        .seed_customer("line", "U-set-err", "SetErr", None)
+        .await;
     let tag = ctx.app.seed_tag("set-err", &ctx.admin_id).await;
-    let inactive = ctx.app.seed_tag_full("set-off", &ctx.admin_id, None, false).await;
+    let inactive = ctx
+        .app
+        .seed_tag_full("set-off", &ctx.admin_id, None, false)
+        .await;
 
     // tagIds not an array -> 422 "Tag IDs must be an array".
     for bad_body in [json!({}), json!({ "tagIds": "nope" })] {

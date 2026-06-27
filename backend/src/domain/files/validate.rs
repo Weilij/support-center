@@ -11,7 +11,13 @@ pub const ADMIN_MAX: usize = 50 * 1024 * 1024;
 
 pub const IMAGE_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
 pub const VIDEO_TYPES: &[&str] = &["video/mp4", "video/webm", "video/quicktime"];
-pub const AUDIO_TYPES: &[&str] = &["audio/mpeg", "audio/mp4", "audio/ogg", "audio/wav", "audio/x-m4a"];
+pub const AUDIO_TYPES: &[&str] = &[
+    "audio/mpeg",
+    "audio/mp4",
+    "audio/ogg",
+    "audio/wav",
+    "audio/x-m4a",
+];
 pub const DOCUMENT_TYPES: &[&str] = &[
     "application/pdf",
     "application/msword",
@@ -21,12 +27,62 @@ pub const DOCUMENT_TYPES: &[&str] = &[
     "text/plain",
     "text/csv",
 ];
-pub const ARCHIVE_TYPES: &[&str] = &["application/zip", "application/gzip", "application/x-rar-compressed"];
+pub const ARCHIVE_TYPES: &[&str] = &[
+    "application/zip",
+    "application/gzip",
+    "application/x-rar-compressed",
+];
 
 const BLOCKED_EXTENSIONS: &[&str] = &[
     "exe", "bat", "cmd", "com", "sh", "ps1", "msi", "scr", "dll", "js", "vbs", "jar", "app",
 ];
 const RESERVED_NAMES: &[&str] = &["con", "prn", "aux", "nul", "com1", "com2", "lpt1", "lpt2"];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileValidationError {
+    FilenameRequired,
+    FilenameTooLong,
+    FilenameInvalidCharacters,
+    FilenameReservedDeviceName,
+    BlockedExtension(String),
+    ContentTypeNotAllowed {
+        content_type: String,
+        platform: String,
+    },
+    EmptyFile,
+    FileTooLarge {
+        max_bytes: usize,
+    },
+    SignatureMismatch,
+}
+
+impl std::fmt::Display for FileValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FilenameRequired => f.write_str("Filename is required"),
+            Self::FilenameTooLong => f.write_str("Filename exceeds 255 characters"),
+            Self::FilenameInvalidCharacters => f.write_str("Filename contains invalid characters"),
+            Self::FilenameReservedDeviceName => f.write_str("Filename uses a reserved device name"),
+            Self::BlockedExtension(ext) => write!(f, "File extension '.{ext}' is not allowed"),
+            Self::ContentTypeNotAllowed {
+                content_type,
+                platform,
+            } => write!(
+                f,
+                "Content type '{content_type}' is not allowed for platform '{platform}'"
+            ),
+            Self::EmptyFile => f.write_str("File is empty"),
+            Self::FileTooLarge { max_bytes } => write!(f, "File too large (max {max_bytes} bytes)"),
+            Self::SignatureMismatch => {
+                f.write_str("File content does not match its declared type (corrupted file)")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FileValidationError {}
+
+pub type FileValidationResult<T = ()> = std::result::Result<T, FileValidationError>;
 
 /// Allowed content types for one platform context (CRD 3192).
 pub fn allowed_types(platform: &str) -> Vec<&'static str> {
@@ -81,31 +137,33 @@ pub fn size_cap(content_type: &str, platform: &str) -> usize {
 }
 
 pub fn extension_of(filename: &str) -> Option<String> {
-    filename.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase())
+    filename
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
 }
 
 /// Filename rules: required, <=255 chars, no path/control/reserved characters,
 /// no reserved device names, no blocked extensions (CRD 3193-3194).
-pub fn validate_filename(name: &str) -> Result<(), String> {
+pub fn validate_filename(name: &str) -> FileValidationResult {
     if name.trim().is_empty() {
-        return Err("Filename is required".into());
+        return Err(FileValidationError::FilenameRequired);
     }
     if name.chars().count() > 255 {
-        return Err("Filename exceeds 255 characters".into());
+        return Err(FileValidationError::FilenameTooLong);
     }
     if name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
         || name.chars().any(|c| c.is_control())
         || name.contains("..")
     {
-        return Err("Filename contains invalid characters".into());
+        return Err(FileValidationError::FilenameInvalidCharacters);
     }
     let stem = name.split('.').next().unwrap_or("").to_ascii_lowercase();
     if RESERVED_NAMES.contains(&stem.as_str()) {
-        return Err("Filename uses a reserved device name".into());
+        return Err(FileValidationError::FilenameReservedDeviceName);
     }
     if let Some(ext) = extension_of(name) {
         if BLOCKED_EXTENSIONS.contains(&ext.as_str()) {
-            return Err(format!("File extension '.{ext}' is not allowed"));
+            return Err(FileValidationError::BlockedExtension(ext));
         }
     }
     Ok(())
@@ -130,9 +188,9 @@ pub fn sanitize_filename(name: &str) -> String {
 
 /// Leading-byte signature check against the declared content type; unknown
 /// signatures fail closed and empty files are rejected (CRD 3195).
-pub fn check_signature(content_type: &str, bytes: &[u8]) -> Result<(), String> {
+pub fn check_signature(content_type: &str, bytes: &[u8]) -> FileValidationResult {
     if bytes.is_empty() {
-        return Err("File is empty".into());
+        return Err(FileValidationError::EmptyFile);
     }
     let ok = match content_type {
         "image/jpeg" => bytes.starts_with(&[0xFF, 0xD8, 0xFF]),
@@ -143,7 +201,11 @@ pub fn check_signature(content_type: &str, bytes: &[u8]) -> Result<(), String> {
             bytes.len() > 11 && &bytes[4..8] == b"ftyp"
         }
         "video/webm" => bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]),
-        "audio/mpeg" => bytes.starts_with(b"ID3") || bytes.starts_with(&[0xFF, 0xFB]) || bytes.starts_with(&[0xFF, 0xF3]),
+        "audio/mpeg" => {
+            bytes.starts_with(b"ID3")
+                || bytes.starts_with(&[0xFF, 0xFB])
+                || bytes.starts_with(&[0xFF, 0xF3])
+        }
         "audio/ogg" => bytes.starts_with(b"OggS"),
         "audio/wav" => bytes.len() > 11 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WAVE",
         "application/pdf" => bytes.starts_with(b"%PDF"),
@@ -155,15 +217,13 @@ pub fn check_signature(content_type: &str, bytes: &[u8]) -> Result<(), String> {
         | "application/zip" => bytes.starts_with(b"PK"),
         "application/gzip" => bytes.starts_with(&[0x1F, 0x8B]),
         "application/x-rar-compressed" => bytes.starts_with(b"Rar!"),
-        "text/plain" | "text/csv" => {
-            std::str::from_utf8(bytes).is_ok() && !bytes.contains(&0)
-        }
+        "text/plain" | "text/csv" => std::str::from_utf8(bytes).is_ok() && !bytes.contains(&0),
         _ => false, // unknown signatures fail closed
     };
     if ok {
         Ok(())
     } else {
-        Err("File content does not match its declared type (corrupted file)".into())
+        Err(FileValidationError::SignatureMismatch)
     }
 }
 
@@ -188,7 +248,7 @@ pub fn extension_for_type(content_type: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_filename;
+    use super::{check_signature, validate_filename, FileValidationError};
 
     #[test]
     fn validate_filename_rejects_paths_and_parent_segments() {
@@ -199,7 +259,10 @@ mod tests {
 
     #[test]
     fn validate_filename_rejects_blocked_extensions() {
-        assert!(validate_filename("run.sh").is_err());
+        let err = validate_filename("run.sh").unwrap_err();
+
+        assert_eq!(err, FileValidationError::BlockedExtension("sh".into()));
+        assert_eq!(err.to_string(), "File extension '.sh' is not allowed");
         assert!(validate_filename("payload.js").is_err());
     }
 
@@ -207,5 +270,24 @@ mod tests {
     fn validate_filename_accepts_safe_names() {
         assert!(validate_filename("report.csv").is_ok());
         assert!(validate_filename("photo 1.png").is_ok());
+    }
+
+    #[test]
+    fn check_signature_returns_typed_empty_file_error() {
+        let err = check_signature("image/png", b"").unwrap_err();
+
+        assert_eq!(err, FileValidationError::EmptyFile);
+        assert_eq!(err.to_string(), "File is empty");
+    }
+
+    #[test]
+    fn check_signature_returns_typed_mismatch_error() {
+        let err = check_signature("image/png", b"not a png").unwrap_err();
+
+        assert_eq!(err, FileValidationError::SignatureMismatch);
+        assert_eq!(
+            err.to_string(),
+            "File content does not match its declared type (corrupted file)"
+        );
     }
 }

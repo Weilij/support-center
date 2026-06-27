@@ -4,9 +4,8 @@
 //!
 //! Delivery is routed through [`OutboundGateway`], which holds the configured
 //! per-platform tokens. With a token, the platform calls its real API (LINE
-//! Messaging API push, Facebook Send API); without one, `line` preserves the
-//! documented stub success (no network call in dev/tests) and other platforms
-//! report "not supported" (CRD 773).
+//! Messaging API push, Facebook Send API); without one, the gateway returns a
+//! delivery error so callers do not mark unsent external messages as delivered.
 
 use sqlx::PgPool;
 
@@ -63,6 +62,7 @@ pub fn classify_mime(mime: &str) -> MediaKind {
 pub const BATCH_CAP: usize = 5;
 
 use serde_json::json;
+use std::fmt;
 use std::sync::OnceLock;
 
 /// Shared HTTP client (connection pooling) for all outbound platform calls.
@@ -121,15 +121,92 @@ pub fn fb_send_body(recipient: &str, content: &str) -> serde_json::Value {
     })
 }
 
-pub fn parse_shopee_recipient(recipient: &str) -> Result<(i64, String), String> {
+#[derive(Debug)]
+pub enum OutboundError {
+    InvalidRecipient(&'static str),
+    RequestFailed {
+        platform: &'static str,
+        source: reqwest::Error,
+    },
+    PlatformRejected {
+        platform: &'static str,
+        status: reqwest::StatusCode,
+        body: String,
+    },
+    DeleteRequestFailed {
+        platform: &'static str,
+        source: reqwest::Error,
+    },
+    DeleteRejected {
+        platform: &'static str,
+        status: reqwest::StatusCode,
+        body: String,
+    },
+    TokenStore(crate::domain::shopee::store::StoreError),
+    MissingCredentials(&'static str),
+    MissingTokenStore,
+    UnsupportedPlatform(String),
+}
+
+impl fmt::Display for OutboundError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidRecipient(message) => f.write_str(message),
+            Self::RequestFailed { platform, source } => {
+                write!(f, "{platform} request failed: {source}")
+            }
+            Self::PlatformRejected {
+                platform,
+                status,
+                body,
+            } => write!(f, "{platform} send failed ({status}): {body}"),
+            Self::DeleteRequestFailed { platform, source } => {
+                write!(f, "{platform} delete request failed: {source}")
+            }
+            Self::DeleteRejected {
+                platform,
+                status,
+                body,
+            } => write!(f, "{platform} delete failed ({status}): {body}"),
+            Self::TokenStore(error) => write!(f, "{error}"),
+            Self::MissingCredentials(platform) => {
+                write!(f, "{platform} delivery requires configured credentials")
+            }
+            Self::MissingTokenStore => f.write_str("Shopee delivery requires shop token storage"),
+            Self::UnsupportedPlatform(platform) => write!(
+                f,
+                "Outbound delivery is not supported for platform '{platform}'"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OutboundError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::RequestFailed { source, .. } => Some(source),
+            Self::DeleteRequestFailed { source, .. } => Some(source),
+            Self::TokenStore(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+pub type OutboundResult<T> = std::result::Result<T, OutboundError>;
+
+pub fn parse_shopee_recipient(recipient: &str) -> OutboundResult<(i64, String)> {
     let Some((shop, buyer)) = recipient.split_once(':') else {
-        return Err("Shopee recipient must be encoded as shop_id:buyer_id".into());
+        return Err(OutboundError::InvalidRecipient(
+            "Shopee recipient must be encoded as shop_id:buyer_id",
+        ));
     };
     let shop_id = shop
         .parse::<i64>()
-        .map_err(|_| "Shopee recipient has invalid shop_id".to_string())?;
+        .map_err(|_| OutboundError::InvalidRecipient("Shopee recipient has invalid shop_id"))?;
     if shop_id <= 0 || buyer.trim().is_empty() {
-        return Err("Shopee recipient must include a positive shop_id and buyer_id".into());
+        return Err(OutboundError::InvalidRecipient(
+            "Shopee recipient must include a positive shop_id and buyer_id",
+        ));
     }
     Ok((shop_id, buyer.trim().to_string()))
 }
@@ -164,7 +241,7 @@ async fn line_push(
     token: &str,
     recipient: &str,
     items: &[OutboundItem],
-) -> Result<String, String> {
+) -> OutboundResult<String> {
     let body = build_push_body(recipient, items);
     let resp = http_client()
         .post(url)
@@ -172,11 +249,18 @@ async fn line_push(
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("LINE request failed: {e}"))?;
+        .map_err(|source| OutboundError::RequestFailed {
+            platform: "LINE",
+            source,
+        })?;
     if !resp.status().is_success() {
         let status = resp.status();
         let txt = resp.text().await.unwrap_or_default();
-        return Err(format!("LINE push failed ({status}): {txt}"));
+        return Err(OutboundError::PlatformRejected {
+            platform: "LINE",
+            status,
+            body: txt,
+        });
     }
     let v: serde_json::Value = resp.json().await.unwrap_or_else(|_| json!({}));
     Ok(v["sentMessages"][0]["id"]
@@ -186,7 +270,7 @@ async fn line_push(
 }
 
 /// FB has no batch endpoint — send one message per item, return the last id.
-async fn fb_send(token: &str, recipient: &str, items: &[OutboundItem]) -> Result<String, String> {
+async fn fb_send(token: &str, recipient: &str, items: &[OutboundItem]) -> OutboundResult<String> {
     let url = format!("https://graph.facebook.com/v21.0/me/messages?access_token={token}");
     let mut last_id = String::new();
     for it in items {
@@ -199,11 +283,18 @@ async fn fb_send(token: &str, recipient: &str, items: &[OutboundItem]) -> Result
             .json(&fb_send_body(recipient, &content))
             .send()
             .await
-            .map_err(|e| format!("Facebook request failed: {e}"))?;
+            .map_err(|source| OutboundError::RequestFailed {
+                platform: "Facebook",
+                source,
+            })?;
         if !resp.status().is_success() {
             let status = resp.status();
             let txt = resp.text().await.unwrap_or_default();
-            return Err(format!("Facebook send failed ({status}): {txt}"));
+            return Err(OutboundError::PlatformRejected {
+                platform: "Facebook",
+                status,
+                body: txt,
+            });
         }
         let v: serde_json::Value = resp.json().await.unwrap_or_else(|_| json!({}));
         last_id = v["message_id"]
@@ -214,16 +305,42 @@ async fn fb_send(token: &str, recipient: &str, items: &[OutboundItem]) -> Result
     Ok(last_id)
 }
 
+async fn meta_delete_message(
+    graph_url: &str,
+    platform: &'static str,
+    token: &str,
+    message_id: &str,
+) -> OutboundResult<()> {
+    let url = format!("{}/{}", graph_url.trim_end_matches('/'), message_id);
+    let resp = http_client()
+        .delete(&url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|source| OutboundError::DeleteRequestFailed { platform, source })?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let txt = resp.text().await.unwrap_or_default();
+        return Err(OutboundError::DeleteRejected {
+            platform,
+            status,
+            body: txt,
+        });
+    }
+    Ok(())
+}
+
 async fn shopee_send(
     client: &crate::domain::shopee::client::ShopeeClient,
     db: &PgPool,
     enc_key: Option<&str>,
     recipient: &str,
     items: &[OutboundItem],
-) -> Result<String, String> {
+) -> OutboundResult<String> {
     let (shop_id, buyer_id) = parse_shopee_recipient(recipient)?;
-    let token =
-        crate::domain::shopee::store::valid_access_token(db, client, enc_key, shop_id).await?;
+    let token = crate::domain::shopee::store::valid_access_token(db, client, enc_key, shop_id)
+        .await
+        .map_err(OutboundError::TokenStore)?;
     let path = "/api/v2/sellerchat/send_message";
     let query = client.signed_query(
         path,
@@ -239,11 +356,18 @@ async fn shopee_send(
             .json(&shopee_send_body(&buyer_id, it))
             .send()
             .await
-            .map_err(|e| format!("Shopee send failed: {e}"))?;
+            .map_err(|source| OutboundError::RequestFailed {
+                platform: "Shopee",
+                source,
+            })?;
         if !resp.status().is_success() {
             let status = resp.status();
             let txt = resp.text().await.unwrap_or_default();
-            return Err(format!("Shopee send failed ({status}): {txt}"));
+            return Err(OutboundError::PlatformRejected {
+                platform: "Shopee",
+                status,
+                body: txt,
+            });
         }
         let v: serde_json::Value = resp.json().await.unwrap_or_else(|_| json!({}));
         last_id = v["message_id"]
@@ -326,14 +450,14 @@ async fn meta_profile(token: &str, user_id: &str) -> Profile {
     }
 }
 
-/// Outbound delivery gateway holding the configured per-platform tokens. With no
-/// token for a platform, `line` preserves the documented stub success and other
-/// platforms report "not supported" (so dev/tests make no network calls).
+/// Outbound delivery gateway holding the configured per-platform tokens. Missing
+/// credentials fail delivery instead of reporting a synthetic platform id.
 pub struct OutboundGateway {
     line: Option<String>,
     line_push_url: String,
     facebook: Option<String>,
     instagram: Option<String>,
+    meta_graph_url: String,
     shopee: Option<crate::domain::shopee::client::ShopeeClient>,
     shopee_db: Option<PgPool>,
     encryption_key: Option<String>,
@@ -361,6 +485,7 @@ impl OutboundGateway {
                         .clone()
                         .filter(|t| !t.is_empty())
                 }),
+            meta_graph_url: config.meta_graph_url.clone(),
             shopee: crate::domain::shopee::client::ShopeeClient::from_config(config),
             shopee_db: None,
             encryption_key: config.encryption_key.clone(),
@@ -379,30 +504,54 @@ impl OutboundGateway {
         platform: &str,
         recipient: &str,
         items: &[OutboundItem],
-    ) -> Result<String, String> {
+    ) -> OutboundResult<String> {
         match platform {
             "line" => match &self.line {
                 Some(tok) => line_push(&self.line_push_url, tok, recipient, items).await,
-                None => Ok(format!("stub-line-{}", uuid::Uuid::new_v4())),
+                None => Err(OutboundError::MissingCredentials("LINE")),
             },
             "facebook" => match &self.facebook {
                 Some(tok) => fb_send(tok, recipient, items).await,
-                None => Err("Outbound delivery is not supported for platform 'facebook'".into()),
+                None => Err(OutboundError::UnsupportedPlatform("facebook".into())),
             },
             "instagram" => match &self.instagram {
                 Some(tok) => fb_send(tok, recipient, items).await,
-                None => Err("Outbound delivery is not supported for platform 'instagram'".into()),
+                None => Err(OutboundError::UnsupportedPlatform("instagram".into())),
             },
             "shopee" => match (&self.shopee, &self.shopee_db) {
                 (Some(client), Some(db)) => {
                     shopee_send(client, db, self.encryption_key.as_deref(), recipient, items).await
                 }
-                (Some(_), None) => Err("Shopee delivery requires shop token storage".into()),
-                _ => Err("Outbound delivery is not supported for platform 'shopee'".into()),
+                (Some(_), None) => Err(OutboundError::MissingTokenStore),
+                _ => Err(OutboundError::UnsupportedPlatform("shopee".into())),
             },
-            other => Err(format!(
-                "Outbound delivery is not supported for platform '{other}'"
-            )),
+            other => Err(OutboundError::UnsupportedPlatform(other.to_string())),
+        }
+    }
+
+    /// Best-effort remote deletion for platforms that expose a message delete
+    /// endpoint. Local recall state is owned by the caller and should not be
+    /// reverted if this fails.
+    pub async fn delete_message(&self, platform: &str, message_id: &str) -> OutboundResult<()> {
+        if message_id.trim().is_empty() {
+            return Err(OutboundError::InvalidRecipient(
+                "Platform message id is required for delete",
+            ));
+        }
+        match platform {
+            "facebook" => match &self.facebook {
+                Some(tok) => {
+                    meta_delete_message(&self.meta_graph_url, "Facebook", tok, message_id).await
+                }
+                None => Err(OutboundError::UnsupportedPlatform("facebook".into())),
+            },
+            "instagram" => match &self.instagram {
+                Some(tok) => {
+                    meta_delete_message(&self.meta_graph_url, "Instagram", tok, message_id).await
+                }
+                None => Err(OutboundError::UnsupportedPlatform("instagram".into())),
+            },
+            other => Err(OutboundError::UnsupportedPlatform(other.to_string())),
         }
     }
 
@@ -469,7 +618,7 @@ pub async fn deliver_pending(input: PendingDelivery) {
             }
             Err(e) => {
                 failed += 1;
-                last_error = Some(e);
+                last_error = Some(e.to_string());
             }
         }
     }
@@ -530,8 +679,20 @@ pub(crate) async fn fetch_line_media(
     message_id: &str,
     preview: bool,
 ) -> Option<(Vec<u8>, String)> {
+    fetch_line_media_from_base("https://api-data.line.me", token, message_id, preview).await
+}
+
+pub(crate) async fn fetch_line_media_from_base(
+    base_url: &str,
+    token: &str,
+    message_id: &str,
+    preview: bool,
+) -> Option<(Vec<u8>, String)> {
     let suffix = if preview { "/preview" } else { "" };
-    let url = format!("https://api-data.line.me/v2/bot/message/{message_id}/content{suffix}");
+    let url = format!(
+        "{}/v2/bot/message/{message_id}/content{suffix}",
+        base_url.trim_end_matches('/')
+    );
     let resp = http_client()
         .get(&url)
         .bearer_auth(token)
@@ -651,6 +812,89 @@ mod gateway_tests {
         assert!(parse_shopee_recipient("9001").is_err());
         assert!(parse_shopee_recipient("x:9001").is_err());
         assert!(parse_shopee_recipient("42:").is_err());
+    }
+
+    #[test]
+    fn outbound_error_messages_match_delivery_contract() {
+        assert_eq!(
+            parse_shopee_recipient("9001").unwrap_err().to_string(),
+            "Shopee recipient must be encoded as shop_id:buyer_id"
+        );
+        assert_eq!(
+            OutboundError::UnsupportedPlatform("facebook".into()).to_string(),
+            "Outbound delivery is not supported for platform 'facebook'"
+        );
+        assert_eq!(
+            OutboundError::MissingTokenStore.to_string(),
+            "Shopee delivery requires shop token storage"
+        );
+        assert_eq!(
+            OutboundError::MissingCredentials("LINE").to_string(),
+            "LINE delivery requires configured credentials"
+        );
+        assert_eq!(
+            OutboundError::PlatformRejected {
+                platform: "LINE",
+                status: reqwest::StatusCode::UNAUTHORIZED,
+                body: "bad token".into(),
+            }
+            .to_string(),
+            "LINE send failed (401 Unauthorized): bad token"
+        );
+        assert_eq!(
+            OutboundError::DeleteRejected {
+                platform: "Facebook",
+                status: reqwest::StatusCode::BAD_REQUEST,
+                body: "too old".into(),
+            }
+            .to_string(),
+            "Facebook delete failed (400 Bad Request): too old"
+        );
+    }
+
+    #[tokio::test]
+    async fn line_send_without_token_fails_instead_of_stubbing_success() {
+        let mut c = crate::config::test_config();
+        c.line_channel_access_token = None;
+        let g = OutboundGateway::from_config(&c);
+
+        assert_eq!(
+            g.send_batch("line", "U1", &[OutboundItem::text("hello")])
+                .await
+                .unwrap_err()
+                .to_string(),
+            "LINE delivery requires configured credentials"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_message_rejects_missing_id_and_missing_token_without_network() {
+        let mut c = crate::config::test_config();
+        c.facebook_page_access_token = None;
+        c.instagram_access_token = None;
+        let g = OutboundGateway::from_config(&c);
+
+        assert_eq!(
+            g.delete_message("facebook", "")
+                .await
+                .unwrap_err()
+                .to_string(),
+            "Platform message id is required for delete"
+        );
+        assert_eq!(
+            g.delete_message("facebook", "mid.1")
+                .await
+                .unwrap_err()
+                .to_string(),
+            "Outbound delivery is not supported for platform 'facebook'"
+        );
+        assert_eq!(
+            g.delete_message("line", "mid.1")
+                .await
+                .unwrap_err()
+                .to_string(),
+            "Outbound delivery is not supported for platform 'line'"
+        );
     }
 
     #[test]
@@ -784,5 +1028,49 @@ mod gateway_tests {
         assert_eq!(g.fetch_profile("facebook", "P1").await, Profile::default());
         assert_eq!(g.fetch_profile("instagram", "I1").await, Profile::default());
         assert_eq!(g.fetch_profile("shopee", "S1").await, Profile::default());
+    }
+
+    #[tokio::test]
+    async fn fetch_line_media_from_base_uses_bearer_token_and_content_type() {
+        use axum::body::Bytes;
+        use axum::extract::Path;
+        use axum::http::{header, HeaderMap, StatusCode};
+        use axum::response::IntoResponse;
+        use axum::routing::get;
+        use axum::Router;
+        use std::net::SocketAddr;
+
+        async fn content(Path(id): Path<String>, headers: HeaderMap) -> axum::response::Response {
+            let token = headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default();
+            if token == "Bearer media-ok" && id == "mid-1" {
+                (
+                    [(header::CONTENT_TYPE, "image/png")],
+                    Bytes::from_static(b"png-bytes"),
+                )
+                    .into_response()
+            } else {
+                StatusCode::UNAUTHORIZED.into_response()
+            }
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        let app = Router::new().route("/v2/bot/message/{id}/content", get(content));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base = format!("http://{addr}");
+
+        let (bytes, content_type) = fetch_line_media_from_base(&base, "media-ok", "mid-1", false)
+            .await
+            .unwrap();
+        assert_eq!(bytes, b"png-bytes");
+        assert_eq!(content_type, "image/png");
+        assert!(fetch_line_media_from_base(&base, "bad", "mid-1", false)
+            .await
+            .is_none());
     }
 }

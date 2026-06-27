@@ -84,8 +84,12 @@ pub fn verify(token: &str, secret: &str) -> Result<Claims, jsonwebtoken::errors:
     validation.leeway = 0;
     validation.set_issuer(&[ISSUER]);
     validation.set_audience(&[AUDIENCE]);
-    decode::<Claims>(token, &DecodingKey::from_secret(secret.as_bytes()), &validation)
-        .map(|d| d.claims)
+    decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(secret.as_bytes()),
+        &validation,
+    )
+    .map(|d| d.claims)
 }
 
 #[cfg(test)]

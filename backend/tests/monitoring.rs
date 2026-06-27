@@ -17,8 +17,14 @@ async fn users(app: &TestApp) -> (String, String) {
 #[tokio::test]
 async fn public_probe_reports_composite_health() {
     let app = spawn_app().await;
-    let (status, body, _) = app.request("GET", "/api/monitoring/health", None, None).await;
-    assert_eq!(status, StatusCode::OK, "all in-process instances healthy -> 200");
+    let (status, body, _) = app
+        .request("GET", "/api/monitoring/health", None, None)
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "all in-process instances healthy -> 200"
+    );
     assert_eq!(body["status"], "healthy");
     assert!(body["timestamp"].is_i64(), "epoch milliseconds");
     assert_eq!(body["components"]["infrastructure"]["total"], 4);
@@ -46,7 +52,9 @@ async fn admin_gates_use_the_documented_rejection() {
         assert_eq!(body["error"], "Admin access required", "{path}");
     }
     // Unauthenticated -> 401 everywhere.
-    let (status, _, _) = app.request("GET", "/api/monitoring/alerts", None, None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/monitoring/alerts", None, None)
+        .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -55,7 +63,9 @@ async fn metrics_detail_and_instances_by_type() {
     let app = spawn_app().await;
     let (admin, _) = users(&app).await;
 
-    let (status, body, _) = app.request("GET", "/api/monitoring/metrics", Some(&admin), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/monitoring/metrics", Some(&admin), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     let instances = body["infrastructure"]["instances"].as_array().unwrap();
     assert_eq!(instances.len(), 4);
@@ -64,14 +74,24 @@ async fn metrics_detail_and_instances_by_type() {
     assert_eq!(body["circuitBreaker"]["state"], "closed");
 
     let (status, body, _) = app
-        .request("GET", "/api/monitoring/instances/message-broadcaster", Some(&admin), None)
+        .request(
+            "GET",
+            "/api/monitoring/instances/message-broadcaster",
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["count"], 1);
 
     // Unrecognized type: empty list, not an error (CRD 4775).
     let (status, body, _) = app
-        .request("GET", "/api/monitoring/instances/quantum-router", Some(&admin), None)
+        .request(
+            "GET",
+            "/api/monitoring/instances/quantum-router",
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["count"], 0);
@@ -83,13 +103,23 @@ async fn circuit_breaker_open_reset_cycle_with_audit() {
     let (admin, agent) = users(&app).await;
 
     let (status, body, _) = app
-        .request("GET", "/api/monitoring/circuit-breaker/status", Some(&agent), None)
+        .request(
+            "GET",
+            "/api/monitoring/circuit-breaker/status",
+            Some(&agent),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "any authenticated role may read");
     assert_eq!(body["state"], "closed");
 
     let (status, body, _) = app
-        .request("POST", "/api/monitoring/circuit-breaker/open", Some(&admin), None)
+        .request(
+            "POST",
+            "/api/monitoring/circuit-breaker/open",
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], true);
@@ -97,12 +127,22 @@ async fn circuit_breaker_open_reset_cycle_with_audit() {
     assert_eq!(body["message"], "Circuit breaker opened (emergency stop)");
 
     let (_, body, _) = app
-        .request("GET", "/api/monitoring/circuit-breaker/status", Some(&agent), None)
+        .request(
+            "GET",
+            "/api/monitoring/circuit-breaker/status",
+            Some(&agent),
+            None,
+        )
         .await;
     assert_eq!(body["state"], "open", "gating state observable to all");
 
     let (status, body, _) = app
-        .request("POST", "/api/monitoring/circuit-breaker/reset", Some(&admin), None)
+        .request(
+            "POST",
+            "/api/monitoring/circuit-breaker/reset",
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["newState"], "closed");
@@ -123,7 +163,9 @@ async fn alerts_and_manual_sweep() {
     let app = spawn_app().await;
     let (admin, agent) = users(&app).await;
 
-    let (status, body, _) = app.request("GET", "/api/monitoring/alerts", Some(&agent), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/monitoring/alerts", Some(&agent), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["count"], 0, "no breaching instances in-process");
 
@@ -136,7 +178,12 @@ async fn alerts_and_manual_sweep() {
     assert_eq!(body["stats"]["healthyInstances"], 4);
 
     let (status, body, _) = app
-        .request("GET", "/api/monitoring/alerts/history?limit=5", Some(&admin), None)
+        .request(
+            "GET",
+            "/api/monitoring/alerts/history?limit=5",
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["limit"], 5);
@@ -147,15 +194,23 @@ async fn dashboard_history_config_and_stats() {
     let app = spawn_app().await;
     let (admin, _) = users(&app).await;
 
-    let (status, body, _) = app.request("GET", "/api/monitoring/dashboard", Some(&admin), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/monitoring/dashboard", Some(&admin), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     let data = &body["data"];
     assert_eq!(data["system"]["status"], "healthy");
     assert!(data["system"]["uptime"].as_str().unwrap().ends_with('%'));
-    assert!(data["system"]["averageResponseTime"].as_str().unwrap().ends_with("ms"));
+    assert!(data["system"]["averageResponseTime"]
+        .as_str()
+        .unwrap()
+        .ends_with("ms"));
     assert_eq!(data["components"].as_array().unwrap().len(), 2);
     assert_eq!(data["infrastructure"]["database"]["status"], "healthy");
-    assert_eq!(data["performance"]["databaseQueryTime"], 0, "boundary placeholder");
+    assert_eq!(
+        data["performance"]["databaseQueryTime"], 0,
+        "boundary placeholder"
+    );
 
     // Health-check + history round trip.
     let (status, body, _) = app
@@ -166,23 +221,42 @@ async fn dashboard_history_config_and_stats() {
     let (_, body, _) = app
         .request("GET", "/api/monitoring/health/history", Some(&admin), None)
         .await;
-    assert!(body["data"]["total"].as_i64().unwrap() >= 2, "dashboard + manual check recorded");
+    assert!(
+        body["data"]["total"].as_i64().unwrap() >= 2,
+        "dashboard + manual check recorded"
+    );
 
     // Config validation: interval bounds 10s-5min (CRD 4806).
     let (status, body, _) = app
-        .request("PUT", "/api/monitoring/config", Some(&admin),
-            Some(json!({"checkInterval": 5000})))
+        .request(
+            "PUT",
+            "/api/monitoring/config",
+            Some(&admin),
+            Some(json!({"checkInterval": 5000})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"], "Check interval must be between 10 seconds and 5 minutes");
+    assert_eq!(
+        body["error"],
+        "Check interval must be between 10 seconds and 5 minutes"
+    );
     let (status, body, _) = app
-        .request("PUT", "/api/monitoring/config", Some(&admin),
-            Some(json!({"checkInterval": 60000, "alertThresholds": {"responseTime": 2500}})))
+        .request(
+            "PUT",
+            "/api/monitoring/config",
+            Some(&admin),
+            Some(json!({"checkInterval": 60000, "alertThresholds": {"responseTime": 2500}})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["updated"], true);
 
-    let (_, body, _) = app.request("GET", "/api/monitoring/stats", Some(&admin), None).await;
-    assert_eq!(body["data"]["monitoring"]["checkIntervalMs"], 60000, "merged config visible");
+    let (_, body, _) = app
+        .request("GET", "/api/monitoring/stats", Some(&admin), None)
+        .await;
+    assert_eq!(
+        body["data"]["monitoring"]["checkIntervalMs"], 60000,
+        "merged config visible"
+    );
     assert!(body["data"]["monitoring"]["totalChecks"].as_i64().unwrap() >= 1);
 }

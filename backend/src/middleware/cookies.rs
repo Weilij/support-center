@@ -33,7 +33,14 @@ fn build_cookie(
 /// - `mcss_csrf`    — **NOT** HttpOnly (JS must read it), `Path=/`, TTL = REFRESH_TTL_SECS
 pub fn auth_cookies(access: &str, refresh: &str, csrf: &str, secure: bool) -> Vec<String> {
     vec![
-        build_cookie("mcss_access", access, tokens::ACCESS_TTL_SECS, true, "/", secure),
+        build_cookie(
+            "mcss_access",
+            access,
+            tokens::ACCESS_TTL_SECS,
+            true,
+            "/",
+            secure,
+        ),
         build_cookie(
             "mcss_refresh",
             refresh,
@@ -42,7 +49,14 @@ pub fn auth_cookies(access: &str, refresh: &str, csrf: &str, secure: bool) -> Ve
             "/api/auth",
             secure,
         ),
-        build_cookie("mcss_csrf", csrf, tokens::REFRESH_TTL_SECS, false, "/", secure),
+        build_cookie(
+            "mcss_csrf",
+            csrf,
+            tokens::REFRESH_TTL_SECS,
+            false,
+            "/",
+            secure,
+        ),
     ]
 }
 

@@ -86,7 +86,9 @@ pub fn encrypt(key: &str, plaintext: &str) -> Result<String, CryptoError> {
 /// protected prefix; use [`reveal`] for mixed-format reads.
 pub fn decrypt(key: &str, stored: &str) -> Result<String, CryptoError> {
     let key_bytes = parse_key(key)?;
-    let encoded = stored.strip_prefix(PROTECTED_PREFIX).ok_or(CryptoError::Tampered)?;
+    let encoded = stored
+        .strip_prefix(PROTECTED_PREFIX)
+        .ok_or(CryptoError::Tampered)?;
     let blob = B64.decode(encoded).map_err(|_| CryptoError::Tampered)?;
     if blob.len() < 12 {
         return Err(CryptoError::Tampered);
@@ -175,7 +177,10 @@ mod tests {
         let tampered: String = chars.into_iter().collect();
         assert_eq!(decrypt(&k, &tampered).unwrap_err(), CryptoError::Tampered);
         // Truncated blob also fails cleanly.
-        assert_eq!(decrypt(&k, "enc:v1:AAAA").unwrap_err(), CryptoError::Tampered);
+        assert_eq!(
+            decrypt(&k, "enc:v1:AAAA").unwrap_err(),
+            CryptoError::Tampered
+        );
     }
 
     // Guarantee 4: authorized read returns the original.
@@ -193,8 +198,14 @@ mod tests {
     fn legacy_plaintext_remains_readable() {
         let k = key();
         // Historical plaintext passes through with or without a key.
-        assert_eq!(reveal(Some(&k), "legacy-plain-token").unwrap(), "legacy-plain-token");
-        assert_eq!(reveal(None, "legacy-plain-token").unwrap(), "legacy-plain-token");
+        assert_eq!(
+            reveal(Some(&k), "legacy-plain-token").unwrap(),
+            "legacy-plain-token"
+        );
+        assert_eq!(
+            reveal(None, "legacy-plain-token").unwrap(),
+            "legacy-plain-token"
+        );
         // Without configured protection, protect() stores unprotected (warned).
         let stored = protect(None, "new-secret").unwrap();
         assert_eq!(stored, "new-secret");
@@ -211,12 +222,24 @@ mod tests {
         let k = key();
         let stored = encrypt(&k, "secret").unwrap();
         // Protected value but no key configured.
-        assert_eq!(reveal(None, &stored).unwrap_err(), CryptoError::NotConfigured);
+        assert_eq!(
+            reveal(None, &stored).unwrap_err(),
+            CryptoError::NotConfigured
+        );
         // Not valid base64.
-        assert!(matches!(encrypt("not base64 !!!", "x").unwrap_err(), CryptoError::InvalidKey(_)));
+        assert!(matches!(
+            encrypt("not base64 !!!", "x").unwrap_err(),
+            CryptoError::InvalidKey(_)
+        ));
         // Valid base64 of the wrong length.
-        assert!(matches!(encrypt(&B64.encode([1u8; 16]), "x").unwrap_err(), CryptoError::InvalidKey(_)));
-        assert!(matches!(decrypt("not base64 !!!", &stored).unwrap_err(), CryptoError::InvalidKey(_)));
+        assert!(matches!(
+            encrypt(&B64.encode([1u8; 16]), "x").unwrap_err(),
+            CryptoError::InvalidKey(_)
+        ));
+        assert!(matches!(
+            decrypt("not base64 !!!", &stored).unwrap_err(),
+            CryptoError::InvalidKey(_)
+        ));
         // Correct format but a *different* key: tamper-evident failure, no partial result.
         let other = generate_key();
         assert_eq!(decrypt(&other, &stored).unwrap_err(), CryptoError::Tampered);

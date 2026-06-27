@@ -281,6 +281,30 @@ async fn logout_requires_session_and_revokes_credentials() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
+#[tokio::test]
+async fn logout_fails_when_revocation_cannot_be_persisted() {
+    let app = spawn_app().await;
+    app.seed_agent("out-fail@test.dev", "pw123456", "agent")
+        .await;
+    let (token, _, session) = app.login("out-fail@test.dev", "pw123456").await;
+
+    sqlx::query("DROP TABLE revoked_tokens")
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+
+    let (status, _, _) = app
+        .request_with_headers(
+            "POST",
+            "/api/auth/logout",
+            Some(&token),
+            None,
+            &[("X-Session-ID", session.as_str())],
+        )
+        .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+}
+
 // ---------------------------------------------------------------- Renew Credentials
 
 #[tokio::test]
