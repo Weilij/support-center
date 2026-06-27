@@ -2,7 +2,6 @@
 //! user-experience telemetry, data migrations (CRD 5395-5450).
 
 use axum::extract::{Path, Query, State};
-use axum::response::Response;
 use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -11,11 +10,9 @@ use std::sync::Arc;
 use crate::crypto;
 use crate::db::now_iso;
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
-
-type Result<T = Response> = std::result::Result<T, AppError>;
 
 fn require_admin(user: &AuthUser) -> Result<()> {
     if user.is_admin() {
@@ -26,16 +23,28 @@ fn require_admin(user: &AuthUser) -> Result<()> {
 }
 
 async fn put_setting(state: &AppState, key: &str, value: &Value) {
-    let _ = sqlx::query(
+    if let Err(error) = sqlx::query(
         "INSERT INTO system_settings (key, value, updated_at) VALUES ($1, $2, $3)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
     )
-    .bind(key).bind(value.to_string()).bind(now_iso()).execute(&state.db).await;
+    .bind(key)
+    .bind(value.to_string())
+    .bind(now_iso())
+    .execute(&state.db)
+    .await
+    {
+        tracing::warn!(error = %error, key, "system admin setting write failed");
+    }
 }
 
 async fn get_setting(state: &AppState, key: &str) -> Option<Value> {
     sqlx::query_scalar::<_, Option<String>>("SELECT value FROM system_settings WHERE key = $1")
-        .bind(key).fetch_optional(&state.db).await.ok().flatten().flatten()
+        .bind(key)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
         .and_then(|v| serde_json::from_str(&v).ok())
 }
 
@@ -65,11 +74,19 @@ pub async fn config_slack(
     require_admin(&user)?;
     let url = body.webhook_url.as_deref().unwrap_or("");
     if !url.starts_with("https://hooks.slack.com/") {
-        return Err(AppError::BadRequest("webhookUrl must be a Slack webhook URL".into()));
+        return Err(AppError::BadRequest(
+            "webhookUrl must be a Slack webhook URL".into(),
+        ));
     }
     put_setting(&state, "alert.slack", &json!({"webhookUrl": url})).await;
-    let test = body.send_test.unwrap_or(false).then(|| json!({"sent": false, "error": "not configured for live dispatch"}));
-    Ok(envelope::ok_msg(json!({"configured": true, "testResult": test}), "Slack channel configured"))
+    let test = body
+        .send_test
+        .unwrap_or(false)
+        .then(|| json!({"sent": false, "error": "not configured for live dispatch"}));
+    Ok(envelope::ok_msg(
+        json!({"configured": true, "testResult": test}),
+        "Slack channel configured",
+    ))
 }
 
 pub async fn config_email(
@@ -82,14 +99,20 @@ pub async fn config_email(
     let sender = body.sender.as_deref().unwrap_or("");
     let password = body.password.as_deref().unwrap_or("");
     if host.is_empty() || sender.is_empty() || password.is_empty() {
-        return Err(AppError::BadRequest("host, sender and password are required".into()));
+        return Err(AppError::BadRequest(
+            "host, sender and password are required".into(),
+        ));
     }
     let recipients = body.recipients.clone().unwrap_or_default();
     if recipients.is_empty() {
-        return Err(AppError::BadRequest("recipients must be a non-empty array".into()));
+        return Err(AppError::BadRequest(
+            "recipients must be a non-empty array".into(),
+        ));
     }
     if !sender.contains('@') || recipients.iter().any(|r| !r.contains('@')) {
-        return Err(AppError::BadRequest("sender and recipients must be valid emails".into()));
+        return Err(AppError::BadRequest(
+            "sender and recipients must be valid emails".into(),
+        ));
     }
     let port = body.port.unwrap_or(587);
     let protected_password = crypto::protect(state.config.encryption_key.as_deref(), password)
@@ -113,10 +136,20 @@ pub async fn config_webhook(
     require_admin(&user)?;
     let url = body.webhook_url.as_deref().unwrap_or("");
     if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err(AppError::BadRequest("webhookUrl must be a valid URL".into()));
+        return Err(AppError::BadRequest(
+            "webhookUrl must be a valid URL".into(),
+        ));
     }
-    put_setting(&state, "alert.webhook", &json!({"url": url, "headers": body.headers})).await;
-    Ok(envelope::ok_msg(json!({"configured": true}), "Webhook channel configured"))
+    put_setting(
+        &state,
+        "alert.webhook",
+        &json!({"url": url, "headers": body.headers}),
+    )
+    .await;
+    Ok(envelope::ok_msg(
+        json!({"configured": true}),
+        "Webhook channel configured",
+    ))
 }
 
 pub async fn channel_status(
@@ -165,9 +198,12 @@ pub async fn test_alert(
         return Err(AppError::BadRequest("Invalid alert level".into()));
     }
     let alert = crate::domain::notifications::alerts::send_monitoring_alert(
-        &state, level,
+        &state,
+        level,
         body.title.as_deref().unwrap_or("Test alert"),
-        body.description.as_deref().unwrap_or("Synthetic test alert"),
+        body.description
+            .as_deref()
+            .unwrap_or("Synthetic test alert"),
         Some(json!({"test": true})),
     )
     .await;
@@ -188,7 +224,9 @@ pub async fn opt_get_config(
     Extension(user): Extension<AuthUser>,
 ) -> Result {
     require_admin(&user)?;
-    let config = get_setting(&state, "optimization.config").await.unwrap_or_else(default_optimization);
+    let config = get_setting(&state, "optimization.config")
+        .await
+        .unwrap_or_else(default_optimization);
     Ok(envelope::ok(config))
 }
 
@@ -212,14 +250,19 @@ pub async fn opt_put_config(
             }
         }
     }
-    let mut config = get_setting(&state, "optimization.config").await.unwrap_or_else(default_optimization);
+    let mut config = get_setting(&state, "optimization.config")
+        .await
+        .unwrap_or_else(default_optimization);
     if let (Some(base), Some(patch)) = (config.as_object_mut(), body.as_object()) {
         for (k, v) in patch {
             base.insert(k.clone(), v.clone());
         }
     }
     put_setting(&state, "optimization.config", &config).await;
-    Ok(envelope::ok_msg(config, "Optimization configuration updated"))
+    Ok(envelope::ok_msg(
+        config,
+        "Optimization configuration updated",
+    ))
 }
 
 pub async fn opt_stats(Extension(user): Extension<AuthUser>) -> Result {
@@ -262,7 +305,9 @@ pub async fn opt_cleanup(
 ) -> Result {
     require_admin(&user)?;
     let force = body.as_ref().and_then(|b| b.force).unwrap_or(false);
-    let config = get_setting(&state, "optimization.config").await.unwrap_or_else(default_optimization);
+    let config = get_setting(&state, "optimization.config")
+        .await
+        .unwrap_or_else(default_optimization);
     let auto = config["autoCleanup"].as_bool().unwrap_or(true);
     if !auto && !force {
         return Err(AppError::BadRequest(
@@ -281,9 +326,14 @@ pub async fn opt_test_batch(
     if !(10..=500).contains(&count) {
         return Err(AppError::BadRequest("operationCount must be 10-500".into()));
     }
-    let kind = body.as_ref().and_then(|b| b.operation_type.clone()).unwrap_or_else(|| "mixed".into());
+    let kind = body
+        .as_ref()
+        .and_then(|b| b.operation_type.clone())
+        .unwrap_or_else(|| "mixed".into());
     if !["set", "get", "delete", "mixed"].contains(&kind.as_str()) {
-        return Err(AppError::BadRequest("operationType must be set/get/delete/mixed".into()));
+        return Err(AppError::BadRequest(
+            "operationType must be set/get/delete/mixed".into(),
+        ));
     }
     Ok(envelope::ok(json!({
         "operations": count, "type": kind, "durationMs": 1, "successRate": 100.0,
@@ -308,10 +358,19 @@ pub async fn opt_create_index(
     let field = body.field.as_deref().unwrap_or("");
     let data = body.sample_data.clone().unwrap_or_default();
     if name.is_empty() || field.is_empty() || data.is_empty() {
-        return Err(AppError::BadRequest("name, field and non-empty sampleData are required".into()));
+        return Err(AppError::BadRequest(
+            "name, field and non-empty sampleData are required".into(),
+        ));
     }
-    put_setting(&state, &format!("optimization.index.{name}.{field}"), &json!(data)).await;
-    Ok(envelope::ok(json!({"index": name, "field": field, "entries": data.len()})))
+    put_setting(
+        &state,
+        &format!("optimization.index.{name}.{field}"),
+        &json!(data),
+    )
+    .await;
+    Ok(envelope::ok(
+        json!({"index": name, "field": field, "entries": data.len()}),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -326,16 +385,26 @@ pub async fn opt_query_index(
     Query(q): Query<IndexQuery>,
 ) -> Result {
     require_admin(&user)?;
-    let value = q.value.as_deref().filter(|v| !v.is_empty())
+    let value = q
+        .value
+        .as_deref()
+        .filter(|v| !v.is_empty())
         .ok_or_else(|| AppError::BadRequest("value query parameter is required".into()))?;
-    let data = get_setting(&state, &format!("optimization.index.{name}.{field}")).await
+    let data = get_setting(&state, &format!("optimization.index.{name}.{field}"))
+        .await
         .and_then(|d| d.as_array().cloned())
         .unwrap_or_default();
     let matches: Vec<Value> = data
         .into_iter()
-        .filter(|item| item.get(&field).map(|v| v == &json!(value) || v.as_str() == Some(value)).unwrap_or(false))
+        .filter(|item| {
+            item.get(&field)
+                .map(|v| v == &json!(value) || v.as_str() == Some(value))
+                .unwrap_or(false)
+        })
         .collect();
-    Ok(envelope::ok(json!({"records": matches, "count": matches.len()})))
+    Ok(envelope::ok(
+        json!({"records": matches, "count": matches.len()}),
+    ))
 }
 
 pub async fn opt_health(State(state): State<Arc<AppState>>) -> Result {
@@ -358,8 +427,16 @@ pub async fn opt_init_baseline(
             "Baseline statistics already exist",
         ));
     }
-    put_setting(&state, "optimization.baseline", &json!({"createdAt": now_iso()})).await;
-    Ok(envelope::ok_msg(json!({"initialized": true}), "Baseline statistics seeded"))
+    put_setting(
+        &state,
+        "optimization.baseline",
+        &json!({"createdAt": now_iso()}),
+    )
+    .await;
+    Ok(envelope::ok_msg(
+        json!({"initialized": true}),
+        "Baseline statistics seeded",
+    ))
 }
 
 // ---------------------------------------------------------------- KV monitoring
@@ -396,7 +473,10 @@ pub async fn kv_health(Extension(user): Extension<AuthUser>) -> Result {
 
 pub async fn kv_reset(Extension(user): Extension<AuthUser>) -> Result {
     require_admin(&user)?;
-    Ok(envelope::ok_msg(json!({"reset": true}), "Monitoring counters reset"))
+    Ok(envelope::ok_msg(
+        json!({"reset": true}),
+        "Monitoring counters reset",
+    ))
 }
 
 // ---------------------------------------------------------------- user experience
@@ -415,12 +495,11 @@ pub struct UxBody {
     pub value: Option<Value>,
 }
 
-pub async fn ux_metrics(
-    Extension(_user): Extension<AuthUser>,
-    Json(body): Json<UxBody>,
-) -> Result {
+pub async fn ux_metrics(Extension(_user): Extension<AuthUser>, Json(body): Json<UxBody>) -> Result {
     if body.session_id.as_deref().unwrap_or("").is_empty() || body.timestamp.is_none() {
-        return Err(AppError::BadRequest("sessionId and timestamp are required".into()));
+        return Err(AppError::BadRequest(
+            "sessionId and timestamp are required".into(),
+        ));
     }
     Ok(envelope::message_only("UX metrics recorded"))
 }
@@ -430,7 +509,9 @@ pub async fn ux_behavior(
     Json(body): Json<UxBody>,
 ) -> Result {
     if body.event_type.as_deref().unwrap_or("").is_empty() || body.timestamp.is_none() {
-        return Err(AppError::BadRequest("eventType and timestamp are required".into()));
+        return Err(AppError::BadRequest(
+            "eventType and timestamp are required".into(),
+        ));
     }
     Ok(envelope::message_only("Behavior event recorded"))
 }
@@ -458,26 +539,29 @@ pub async fn ux_survey_submit(
     Json(body): Json<UxBody>,
 ) -> Result {
     if body.session_id.as_deref().unwrap_or("").is_empty() || body.overall_satisfaction.is_none() {
-        return Err(AppError::BadRequest("sessionId and overallSatisfaction are required".into()));
+        return Err(AppError::BadRequest(
+            "sessionId and overallSatisfaction are required".into(),
+        ));
     }
     if let Some(scores) = &body.scores {
         if scores.iter().any(|s| !(1..=5).contains(s)) {
-            return Err(AppError::BadRequest("all satisfaction scores must be 1-5".into()));
+            return Err(AppError::BadRequest(
+                "all satisfaction scores must be 1-5".into(),
+            ));
         }
     }
     Ok(envelope::message_only("感謝您的回饋"))
 }
 
-pub async fn ux_report(
-    Extension(user): Extension<AuthUser>,
-    Query(q): Query<UxQuery>,
-) -> Result {
+pub async fn ux_report(Extension(user): Extension<AuthUser>, Query(q): Query<UxQuery>) -> Result {
     require_admin(&user)?;
     let hours = q.time_range.unwrap_or(24);
     if !(1..=720).contains(&hours) {
         return Err(AppError::BadRequest("timeRange must be 1-720 hours".into()));
     }
-    Ok(envelope::ok(json!({"windowHours": hours, "sessions": 0, "metrics": {}})))
+    Ok(envelope::ok(
+        json!({"windowHours": hours, "sessions": 0, "metrics": {}}),
+    ))
 }
 
 pub async fn ux_ab_assignment(
@@ -485,7 +569,11 @@ pub async fn ux_ab_assignment(
     Path(test_id): Path<String>,
 ) -> Result {
     // Deterministic assignment per user+test.
-    let variant = if (user.id.len() + test_id.len()) % 2 == 0 { "A" } else { "B" };
+    let variant = if (user.id.len() + test_id.len()) % 2 == 0 {
+        "A"
+    } else {
+        "B"
+    };
     Ok(envelope::ok(json!({"testId": test_id, "variant": variant})))
 }
 
@@ -497,17 +585,18 @@ pub async fn ux_ab_metrics(
     let name_ok = body.name.as_deref().map(|n| !n.is_empty()).unwrap_or(false);
     let value_ok = body.value.as_ref().map(|v| v.is_number()).unwrap_or(false);
     if !name_ok || !value_ok {
-        return Err(AppError::BadRequest("name (string) and numeric value are required".into()));
+        return Err(AppError::BadRequest(
+            "name (string) and numeric value are required".into(),
+        ));
     }
     Ok(envelope::ok(json!({"testId": test_id, "recorded": true})))
 }
 
-pub async fn ux_ab_create(
-    Extension(user): Extension<AuthUser>,
-    Json(body): Json<Value>,
-) -> Result {
+pub async fn ux_ab_create(Extension(user): Extension<AuthUser>, Json(body): Json<Value>) -> Result {
     require_admin(&user)?;
-    Ok(envelope::ok(json!({"testId": uuid::Uuid::new_v4().to_string(), "config": body})))
+    Ok(envelope::ok(
+        json!({"testId": uuid::Uuid::new_v4().to_string(), "config": body}),
+    ))
 }
 
 pub async fn ux_personal_dashboard(Extension(user): Extension<AuthUser>) -> Result {
@@ -520,7 +609,9 @@ pub async fn ux_personal_dashboard(Extension(user): Extension<AuthUser>) -> Resu
 
 pub async fn ux_health(Extension(user): Extension<AuthUser>) -> Result {
     require_admin(&user)?;
-    Ok(envelope::ok(json!({"status": "healthy", "component": "user-experience"})))
+    Ok(envelope::ok(
+        json!({"status": "healthy", "component": "user-experience"}),
+    ))
 }
 
 // ---------------------------------------------------------------- migrations
@@ -545,11 +636,13 @@ pub async fn backfill_legacy_filenames(
     let limit: i64 = match q.limit.as_deref() {
         None => 50,
         Some(raw) => {
-            let parsed: i64 = raw.parse().map_err(|_| {
-                AppError::BadRequest("limit must be a positive integer".into())
-            })?;
+            let parsed: i64 = raw
+                .parse()
+                .map_err(|_| AppError::BadRequest("limit must be a positive integer".into()))?;
             if parsed < 1 {
-                return Err(AppError::BadRequest("limit must be a positive integer".into()));
+                return Err(AppError::BadRequest(
+                    "limit must be a positive integer".into(),
+                ));
             }
             parsed.min(200)
         }
@@ -562,7 +655,10 @@ pub async fn backfill_legacy_filenames(
          WHERE id > $1 AND file_name IS NOT NULL AND file_name NOT LIKE '%.%'
          ORDER BY id LIMIT $2",
     )
-    .bind(&cursor).bind(limit).fetch_all(&state.db).await?;
+    .bind(&cursor)
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await?;
 
     let mut fixed = 0;
     let mut skipped = 0;
@@ -594,7 +690,11 @@ pub async fn backfill_legacy_filenames(
         }
         if !dry_run {
             sqlx::query("UPDATE attachments SET file_name = $1, updated_at = $2 WHERE id = $3")
-                .bind(&new_name).bind(now_iso()).bind(id).execute(&state.db).await?;
+                .bind(&new_name)
+                .bind(now_iso())
+                .bind(id)
+                .execute(&state.db)
+                .await?;
         }
         fixed += 1;
     }
