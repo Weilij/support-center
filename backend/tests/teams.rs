@@ -379,6 +379,26 @@ async fn search_teams_matches_name_or_description() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
+#[tokio::test]
+async fn search_teams_is_scoped_for_non_admins() {
+    let app = spawn_app().await;
+    let visible = app.seed_team("Visible Lunar").await;
+    app.seed_team("Hidden Lunar").await;
+    let agent = app
+        .seed_agent("scoped-search@test.com", "password1", "agent")
+        .await;
+    app.add_membership(&agent, visible, "member", true).await;
+    let token = app.login("scoped-search@test.com", "password1").await.0;
+
+    let (status, body, _) = app
+        .request("GET", "/api/teams/search/LUNAR", Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["data"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], visible);
+}
+
 // ------------------------------------------------------------------------- statistics
 
 #[tokio::test]
@@ -731,6 +751,37 @@ async fn update_team_member_updates_global_account() {
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn update_team_member_global_account_fields_require_admin() {
+    let app = spawn_app().await;
+    let team = app.seed_team("Crew").await;
+    let lead = app
+        .seed_agent("team-lead@test.com", "password1", "agent")
+        .await;
+    let target = app
+        .seed_agent("target-global@test.com", "password1", "agent")
+        .await;
+    app.add_membership(&lead, team, "lead", true).await;
+    app.add_membership(&target, team, "member", true).await;
+    let token = app.login("team-lead@test.com", "password1").await.0;
+
+    let (status, _, _) = app
+        .request(
+            "PUT",
+            &format!("/api/teams/{team}/members/{target}"),
+            Some(&token),
+            Some(json!({"role": "admin", "isActive": false})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let row: (String, i64) = sqlx::query_as("SELECT role, is_active FROM agents WHERE id = $1")
+        .bind(&target)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+    assert_eq!(row, ("agent".to_string(), 1));
 }
 
 #[tokio::test]
@@ -1462,6 +1513,43 @@ async fn team_members_detail_includes_multi_team_info() {
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["teams"].as_array().unwrap().len(), 2);
     assert_eq!(items[0]["primaryTeamId"], a);
+}
+
+#[tokio::test]
+async fn team_members_detail_requires_team_access() {
+    let app = spawn_app().await;
+    let team = app.seed_team("Private").await;
+    let member = app
+        .seed_agent("private-member@test.com", "password1", "agent")
+        .await;
+    app.add_membership(&member, team, "member", true).await;
+    let outsider = app
+        .seed_agent("private-outsider@test.com", "password1", "agent")
+        .await;
+    let outsider_token = app.login("private-outsider@test.com", "password1").await.0;
+    let member_token = app.login("private-member@test.com", "password1").await.0;
+
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &format!("/api/teams/agent-teams/team/{team}/members"),
+            Some(&outsider_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/teams/agent-teams/team/{team}/members"),
+            Some(&member_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"].as_array().unwrap().len(), 1);
+    let _ = outsider;
 }
 
 #[tokio::test]

@@ -16,8 +16,8 @@ use crate::domain::teams::store::{self, MemberRow};
 
 use super::{
     agent_exists, emit_member_added, enriched_member_view, live_member_count,
-    memberships_with_names, parse_json, parse_team_id, require_admin, require_team_rank,
-    team_exists, JsonBody, TEAM_ROLES,
+    memberships_with_names, parse_json, parse_team_id, require_admin, require_team_access,
+    require_team_rank, team_exists, JsonBody, TEAM_ROLES,
 };
 
 pub async fn agent_teams(
@@ -71,10 +71,11 @@ pub async fn agent_teams(
 
 pub async fn team_members_detail(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(raw_team_id): Path<String>,
 ) -> Result {
     let team_id = parse_team_id(&raw_team_id)?;
+    require_team_access(&user, team_id)?;
     let members: Vec<MemberRow> = sqlx::query_as(&crate::db::pg_params(&format!(
         "SELECT {} FROM agents a WHERE a.deleted_at IS NULL
          AND EXISTS (SELECT 1 FROM team_members m WHERE m.agent_id = a.id AND m.team_id = $1)

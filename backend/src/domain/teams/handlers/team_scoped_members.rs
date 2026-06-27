@@ -15,7 +15,7 @@ use crate::state::AppState;
 use crate::domain::teams::store::{self, MembershipRow};
 
 use super::{
-    agent_exists, emit_member_added, parse_json, parse_team_id, require_team_access,
+    agent_exists, emit_member_added, parse_json, parse_team_id, require_admin, require_team_access,
     require_team_rank, string_array, team_exists, JsonBody, GLOBAL_ROLES, TEAM_ROLES,
 };
 
@@ -247,8 +247,8 @@ pub async fn update_team_member(
     Path((raw_id, raw_agent)): Path<(String, String)>,
     body: JsonBody<UpdateTeamMemberBody>,
 ) -> Result {
-    let id = parse_team_id(&raw_id)?;
-    require_team_rank(&user, id, "lead")?;
+    let _ = parse_team_id(&raw_id)?;
+    require_admin(&user)?;
     let agent_id = raw_agent.trim().to_string();
     if agent_id.is_empty() {
         return Err(AppError::BadRequest("agentId is required".into()));

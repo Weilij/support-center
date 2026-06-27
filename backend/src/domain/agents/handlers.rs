@@ -77,9 +77,22 @@ fn require_scope(user: &AuthUser, agent_id: &str) -> Result<()> {
 fn agent_event_payload(agent: &OperatorRow, actor: &AuthUser) -> Value {
     json!({
         "agentId": agent.id,
-        "agent": store::operator_view(agent),
+        "agent": realtime_operator_view(agent),
         "actor": { "id": actor.id, "name": actor.display_name },
         "timestamp": now_iso(),
+    })
+}
+
+fn realtime_operator_view(o: &OperatorRow) -> Value {
+    json!({
+        "id": o.id,
+        "displayName": o.display_name,
+        "role": o.role,
+        "isActive": o.is_active != 0,
+        "teamId": o.primary_team_id,
+        "teamName": o.team_name,
+        "updatedAt": o.updated_at,
+        "position": o.position,
     })
 }
 
@@ -1190,7 +1203,7 @@ mod realtime_event_tests {
     }
 
     #[test]
-    fn operator_event_payload_contains_actor_and_operator_view() {
+    fn operator_event_payload_contains_actor_and_redacted_operator_view() {
         let row = crate::domain::agents::store::OperatorRow {
             id: "agent-1".into(),
             email: "agent@example.com".into(),
@@ -1210,6 +1223,11 @@ mod realtime_event_tests {
         let payload = agent_event_payload(&row, &actor());
         assert_eq!(payload["agentId"], "agent-1");
         assert_eq!(payload["agent"]["displayName"], "Agent One");
+        assert_eq!(payload["agent"]["teamId"], 7);
+        assert!(payload["agent"].get("email").is_none());
+        assert!(payload["agent"].get("lastLoginAt").is_none());
+        assert!(payload["agent"].get("lastActiveAt").is_none());
+        assert!(payload["agent"].get("passwordPolicy").is_none());
         assert_eq!(payload["actor"], json!({"id": "admin-1", "name": "Admin"}));
         assert!(payload["timestamp"].is_string());
     }
