@@ -27,15 +27,30 @@ struct Seeded {
 }
 
 async fn seed(app: &TestApp) -> Seeded {
-    let admin_id = app.seed_agent("admin@rooms.io", "Secret123!", "admin").await;
-    let agent_id = app.seed_agent("agent@rooms.io", "Secret123!", "agent").await;
+    let admin_id = app
+        .seed_agent("admin@rooms.io", "Secret123!", "admin")
+        .await;
+    let agent_id = app
+        .seed_agent("agent@rooms.io", "Secret123!", "agent")
+        .await;
     let team_id = app.seed_team("Rooms Team").await;
     app.add_membership(&agent_id, team_id, "member", true).await;
-    let customer = app.seed_customer("line", "U-rooms-1", "Rooms Customer", Some(team_id)).await;
-    let team_conv = app.seed_conversation(customer, Some(team_id), "assigned").await;
+    let customer = app
+        .seed_customer("line", "U-rooms-1", "Rooms Customer", Some(team_id))
+        .await;
+    let team_conv = app
+        .seed_conversation(customer, Some(team_id), "assigned")
+        .await;
     let (admin_token, _, _) = app.login("admin@rooms.io", "Secret123!").await;
     let (agent_token, _, _) = app.login("agent@rooms.io", "Secret123!").await;
-    Seeded { admin_id, admin_token, agent_id, agent_token, team_id, team_conv }
+    Seeded {
+        admin_id,
+        admin_token,
+        agent_id,
+        agent_token,
+        team_id,
+        team_conv,
+    }
 }
 
 fn room_ws(conv: &str, query: &str) -> String {
@@ -57,11 +72,13 @@ async fn room_ws_rejects_missing_or_invalid_auth() {
     // Missing both auth methods in full mode -> 400 (CRD 3503).
     let (status, body) = connect_rejected(addr, &room_ws(&s.team_conv, "")).await;
     assert_eq!(status, 400);
-    assert!(body["error"].as_str().unwrap().contains("token or challengeId"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("token or challengeId"));
 
     // Invalid token -> 401 "Invalid token" (CRD 3504).
-    let (status, body) =
-        connect_rejected(addr, &room_ws(&s.team_conv, "?token=garbage")).await;
+    let (status, body) = connect_rejected(addr, &room_ws(&s.team_conv, "?token=garbage")).await;
     assert_eq!(status, 401);
     assert_eq!(body["error"], "Invalid token");
 
@@ -81,16 +98,22 @@ async fn room_ws_full_mode_welcome_join_and_leave() {
     let s = seed(&app).await;
     let addr = serve(&app).await;
 
-    let mut a = ws_connect(addr, &room_ws(&s.team_conv, &format!("?token={}", s.admin_token)))
-        .await
-        .unwrap();
+    let mut a = ws_connect(
+        addr,
+        &room_ws(&s.team_conv, &format!("?token={}", s.admin_token)),
+    )
+    .await
+    .unwrap();
     // Welcome only to the new socket: conversation id, connection id,
     // participants, room mode, last-message timestamp (CRD 3498, 3683).
     let welcome = wait_for_event(&mut a, "connection_established").await;
     assert_eq!(welcome["payload"]["conversationId"], json!(s.team_conv));
     assert_eq!(welcome["payload"]["roomMode"], "full");
     assert!(welcome["payload"]["connectionId"].is_string());
-    assert!(welcome["payload"]["participants"].as_array().unwrap().contains(&json!(s.admin_id)));
+    assert!(welcome["payload"]["participants"]
+        .as_array()
+        .unwrap()
+        .contains(&json!(s.admin_id)));
     assert!(welcome["payload"]["lastMessageAt"].is_null());
 
     // user_joined goes to everyone including the joiner (CRD 3497, 3684).
@@ -99,9 +122,12 @@ async fn room_ws_full_mode_welcome_join_and_leave() {
     assert_eq!(joined["payload"]["role"], "admin");
     assert_eq!(joined["payload"]["participantCount"], 1);
 
-    let mut b = ws_connect(addr, &room_ws(&s.team_conv, &format!("?token={}", s.agent_token)))
-        .await
-        .unwrap();
+    let mut b = ws_connect(
+        addr,
+        &room_ws(&s.team_conv, &format!("?token={}", s.agent_token)),
+    )
+    .await
+    .unwrap();
     wait_for_event(&mut b, "connection_established").await;
     let joined = wait_for_event(&mut a, "user_joined").await;
     assert_eq!(joined["payload"]["userId"], json!(s.agent_id));
@@ -119,17 +145,27 @@ async fn room_message_ordering_is_strictly_increasing() {
     let app = spawn_app().await;
     let s = seed(&app).await;
     let addr = serve(&app).await;
-    let mut a = ws_connect(addr, &room_ws(&s.team_conv, &format!("?token={}", s.admin_token)))
-        .await
-        .unwrap();
+    let mut a = ws_connect(
+        addr,
+        &room_ws(&s.team_conv, &format!("?token={}", s.admin_token)),
+    )
+    .await
+    .unwrap();
     wait_for_event(&mut a, "connection_established").await;
-    let mut b = ws_connect(addr, &room_ws(&s.team_conv, &format!("?token={}", s.agent_token)))
-        .await
-        .unwrap();
+    let mut b = ws_connect(
+        addr,
+        &room_ws(&s.team_conv, &format!("?token={}", s.agent_token)),
+    )
+    .await
+    .unwrap();
     wait_for_event(&mut b, "connection_established").await;
 
     for i in 1..=3 {
-        send_json(&mut a, json!({ "type": "message", "content": format!("m{i}") })).await;
+        send_json(
+            &mut a,
+            json!({ "type": "message", "content": format!("m{i}") }),
+        )
+        .await;
     }
     // The receiver observes the canonical order with strictly increasing
     // sequence numbers (CRD 3559, 3567).
@@ -149,12 +185,20 @@ async fn room_reconnection_sync_recovers_missed_messages() {
     let addr = serve(&app).await;
     let q_admin = format!("?token={}", s.admin_token);
     let q_agent = format!("?token={}", s.agent_token);
-    let mut a = ws_connect(addr, &room_ws(&s.team_conv, &q_admin)).await.unwrap();
+    let mut a = ws_connect(addr, &room_ws(&s.team_conv, &q_admin))
+        .await
+        .unwrap();
     wait_for_event(&mut a, "connection_established").await;
-    let mut b = ws_connect(addr, &room_ws(&s.team_conv, &q_agent)).await.unwrap();
+    let mut b = ws_connect(addr, &room_ws(&s.team_conv, &q_agent))
+        .await
+        .unwrap();
     wait_for_event(&mut b, "connection_established").await;
 
-    send_json(&mut a, json!({ "type": "message", "content": "before-drop" })).await;
+    send_json(
+        &mut a,
+        json!({ "type": "message", "content": "before-drop" }),
+    )
+    .await;
     let m1 = wait_for_event(&mut b, "message_sent").await;
     let since = m1["payload"]["timestamp"].as_str().unwrap().to_string();
 
@@ -162,12 +206,18 @@ async fn room_reconnection_sync_recovers_missed_messages() {
     b.close(None).await.unwrap();
     wait_for_event(&mut a, "user_left").await;
     tokio::time::sleep(Duration::from_millis(10)).await;
-    send_json(&mut a, json!({ "type": "message", "content": "while-away" })).await;
+    send_json(
+        &mut a,
+        json!({ "type": "message", "content": "while-away" }),
+    )
+    .await;
     wait_for_event(&mut a, "message_sent").await;
 
     // B reconnects: the welcome advertises the last-message time and a sync
     // returns exactly the missed message (CRD 3569-3572, 3688).
-    let mut b = ws_connect(addr, &room_ws(&s.team_conv, &q_agent)).await.unwrap();
+    let mut b = ws_connect(addr, &room_ws(&s.team_conv, &q_agent))
+        .await
+        .unwrap();
     let welcome = wait_for_event(&mut b, "connection_established").await;
     assert!(welcome["payload"]["lastMessageAt"].is_string());
     send_json(&mut b, json!({ "type": "sync", "since": since })).await;
@@ -191,13 +241,19 @@ async fn room_full_mode_denies_unrecognized_sender_role() {
     // Full mode takes identity and role from the credential (CRD 3488); a
     // non-staff role may connect but is denied chat sends (CRD 3557).
     let customer_token = mint("cust-77", "customer", 3600);
-    let mut ws = ws_connect(addr, &room_ws(&s.team_conv, &format!("?token={customer_token}")))
-        .await
-        .unwrap();
+    let mut ws = ws_connect(
+        addr,
+        &room_ws(&s.team_conv, &format!("?token={customer_token}")),
+    )
+    .await
+    .unwrap();
     wait_for_event(&mut ws, "connection_established").await;
     send_json(&mut ws, json!({ "type": "message", "content": "nope" })).await;
     let err = wait_for_event(&mut ws, "error").await;
-    assert_eq!(err["payload"]["message"], "Permission denied to send messages");
+    assert_eq!(
+        err["payload"]["message"],
+        "Permission denied to send messages"
+    );
 }
 
 #[tokio::test]
@@ -205,13 +261,19 @@ async fn room_typing_indicator_relayed_only_and_never_stored() {
     let app = spawn_app().await;
     let s = seed(&app).await;
     let addr = serve(&app).await;
-    let mut a = ws_connect(addr, &room_ws(&s.team_conv, &format!("?token={}", s.admin_token)))
-        .await
-        .unwrap();
+    let mut a = ws_connect(
+        addr,
+        &room_ws(&s.team_conv, &format!("?token={}", s.admin_token)),
+    )
+    .await
+    .unwrap();
     wait_for_event(&mut a, "connection_established").await;
-    let mut b = ws_connect(addr, &room_ws(&s.team_conv, &format!("?token={}", s.agent_token)))
-        .await
-        .unwrap();
+    let mut b = ws_connect(
+        addr,
+        &room_ws(&s.team_conv, &format!("?token={}", s.agent_token)),
+    )
+    .await
+    .unwrap();
     wait_for_event(&mut b, "connection_established").await;
     // Drain A's pending events (its own join, B's join, and B's first-session
     // presence event delivered to administrators) before asserting silence.
@@ -220,13 +282,21 @@ async fn room_typing_indicator_relayed_only_and_never_stored() {
     wait_for_event(&mut a, "user_connected").await;
 
     // A typing-flagged chat frame is relayed to others only (CRD 3560, 3687).
-    send_json(&mut a, json!({ "type": "message", "messageType": "typing" })).await;
+    send_json(
+        &mut a,
+        json!({ "type": "message", "messageType": "typing" }),
+    )
+    .await;
     let typing = wait_for_event(&mut b, "typing").await;
     assert_eq!(typing["payload"]["userId"], json!(s.admin_id));
     expect_silence(&mut a, Duration::from_millis(300)).await;
 
     // Typing indicators are never stored (CRD 3567): nothing to sync.
-    send_json(&mut b, json!({ "type": "sync", "since": "1970-01-01T00:00:00.000Z" })).await;
+    send_json(
+        &mut b,
+        json!({ "type": "sync", "since": "1970-01-01T00:00:00.000Z" }),
+    )
+    .await;
     let sync = wait_for_event(&mut b, "sync_response").await;
     assert_eq!(sync["payload"]["missedCount"], 0);
 }
@@ -261,8 +331,16 @@ async fn simplified_room_semantics() {
 
     // Subscribe / unsubscribe / sync / generic events are ignored entirely in
     // simplified mode (CRD 3548, 3550, 3551).
-    send_json(&mut a, json!({ "type": "subscribe", "conversationId": conv })).await;
-    send_json(&mut a, json!({ "type": "sync", "since": "1970-01-01T00:00:00.000Z" })).await;
+    send_json(
+        &mut a,
+        json!({ "type": "subscribe", "conversationId": conv }),
+    )
+    .await;
+    send_json(
+        &mut a,
+        json!({ "type": "sync", "since": "1970-01-01T00:00:00.000Z" }),
+    )
+    .await;
     send_json(&mut a, json!({ "type": "event", "event": "custom" })).await;
     expect_silence(&mut a, Duration::from_millis(300)).await;
     // Heartbeat still answered (CRD 3547).
@@ -322,7 +400,10 @@ async fn challenge_flow_is_single_use_and_signature_checked() {
     // A wrong signature is rejected (CRD 3505).
     let (status, body) = connect_rejected(
         addr,
-        &room_ws(&s.team_conv, &format!("?challengeId={challenge_id}&signature=forged")),
+        &room_ws(
+            &s.team_conv,
+            &format!("?challengeId={challenge_id}&signature=forged"),
+        ),
     )
     .await;
     assert_eq!(status, 401);
@@ -335,7 +416,10 @@ async fn challenge_flow_is_single_use_and_signature_checked() {
     let signature = challenge_signature("test-secret", &challenge_id, &s.agent_token);
     let mut ws = ws_connect(
         addr,
-        &room_ws(&s.team_conv, &format!("?challengeId={challenge_id}&signature={signature}")),
+        &room_ws(
+            &s.team_conv,
+            &format!("?challengeId={challenge_id}&signature={signature}"),
+        ),
     )
     .await
     .expect("challenge handshake should succeed");
@@ -345,7 +429,10 @@ async fn challenge_flow_is_single_use_and_signature_checked() {
     // Replaying the consumed challenge fails (CRD 3518).
     let (status, body) = connect_rejected(
         addr,
-        &room_ws(&s.team_conv, &format!("?challengeId={challenge_id}&signature={signature}")),
+        &room_ws(
+            &s.team_conv,
+            &format!("?challengeId={challenge_id}&signature={signature}"),
+        ),
     )
     .await;
     assert_eq!(status, 401);
@@ -357,33 +444,57 @@ async fn room_http_status_participants_metrics_broadcast_and_disconnect() {
     let app = spawn_app().await;
     let s = seed(&app).await;
     let addr = serve(&app).await;
-    let mut ws = ws_connect(addr, &room_ws(&s.team_conv, &format!("?token={}", s.admin_token)))
-        .await
-        .unwrap();
+    let mut ws = ws_connect(
+        addr,
+        &room_ws(&s.team_conv, &format!("?token={}", s.admin_token)),
+    )
+    .await
+    .unwrap();
     let welcome = wait_for_event(&mut ws, "connection_established").await;
-    let connection_id = welcome["payload"]["connectionId"].as_str().unwrap().to_string();
+    let connection_id = welcome["payload"]["connectionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
     send_json(&mut ws, json!({ "type": "message", "content": "one" })).await;
     wait_for_event(&mut ws, "message_sent").await;
 
     // POST /connect — status, no state change (CRD 3520-3522).
     let base = format!("/api/realtime/rooms/{}", s.team_conv);
-    let (status, body, _) =
-        app.request("POST", &format!("{base}/connect"), Some(&s.agent_token), None).await;
+    let (status, body, _) = app
+        .request(
+            "POST",
+            &format!("{base}/connect"),
+            Some(&s.agent_token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["activeConnections"], 1);
     assert_eq!(body["data"]["mode"], "full");
 
     // POST /participants (CRD 3536-3537).
-    let (status, body, _) =
-        app.request("POST", &format!("{base}/participants"), Some(&s.agent_token), None).await;
+    let (status, body, _) = app
+        .request(
+            "POST",
+            &format!("{base}/participants"),
+            Some(&s.agent_token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["participants"], json!([s.admin_id]));
     assert_eq!(body["data"]["activeConnections"], 1);
     assert!(body["data"]["lastActivity"].is_string());
 
     // POST /metrics (CRD 3539-3540): full mode reports history and uptime.
-    let (status, body, _) =
-        app.request("POST", &format!("{base}/metrics"), Some(&s.agent_token), None).await;
+    let (status, body, _) = app
+        .request(
+            "POST",
+            &format!("{base}/metrics"),
+            Some(&s.agent_token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["mode"], "full");
     assert_eq!(body["data"]["messageSequence"], 1);
@@ -444,7 +555,12 @@ async fn room_http_status_participants_metrics_broadcast_and_disconnect() {
         .await;
     assert_eq!(status, StatusCode::OK);
     let (status, _, _) = app
-        .request("POST", &format!("{base}/disconnect"), Some(&s.admin_token), None)
+        .request(
+            "POST",
+            &format!("{base}/disconnect"),
+            Some(&s.admin_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _, _) = app
@@ -466,7 +582,10 @@ async fn room_http_status_participants_metrics_broadcast_and_disconnect() {
         }
     })
     .await;
-    assert!(closed.is_ok(), "socket was not closed after forced disconnect");
+    assert!(
+        closed.is_ok(),
+        "socket was not closed after forced disconnect"
+    );
 }
 
 // ------------------------------------------- routed delivery (CRD 3581-3660)
@@ -478,7 +597,10 @@ async fn queue_event_validates_routes_by_priority_and_flushes() {
     let addr = serve(&app).await;
     let mut ws = ws_connect(
         addr,
-        &format!("/api/realtime/session/websocket?token={}&role=agent&userId={}", s.agent_token, s.agent_id),
+        &format!(
+            "/api/realtime/session/websocket?token={}&role=agent&userId={}",
+            s.agent_token, s.agent_id
+        ),
     )
     .await
     .unwrap();
@@ -566,17 +688,26 @@ async fn normal_queue_overflow_evicts_oldest_entries() {
 
     // Bulk insert one past the cap under a single lock: the oldest entry is
     // evicted and counted (CRD 3585, 3588, 3678).
-    let depth = app.state.realtime.queue.enqueue_batch((0..=NORMAL_QUEUE_CAP).map(|i| {
-        (
-            event(&format!("ev-{i}"), "bulk", json!({})),
-            vec![json!({ "type": "user", "ids": [] })],
-            json!({}),
-        )
-    }));
+    let depth = app
+        .state
+        .realtime
+        .queue
+        .enqueue_batch((0..=NORMAL_QUEUE_CAP).map(|i| {
+            (
+                event(&format!("ev-{i}"), "bulk", json!({})),
+                vec![json!({ "type": "user", "ids": [] })],
+                json!({}),
+            )
+        }));
     assert_eq!(depth, NORMAL_QUEUE_CAP);
 
     let (status, body, _) = app
-        .request("POST", "/api/realtime/broadcaster/metrics", Some(&s.admin_token), None)
+        .request(
+            "POST",
+            "/api/realtime/broadcaster/metrics",
+            Some(&s.admin_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["data"]["evicted"].as_u64().unwrap() >= 1);
@@ -588,9 +719,12 @@ async fn routed_broadcaster_events_relay_across_instances() {
     let app = spawn_app().await;
     let s = seed(&app).await;
     let addr = serve(&app).await;
-    let mut room = ws_connect(addr, &room_ws(&s.team_conv, &format!("?token={}", s.admin_token)))
-        .await
-        .unwrap();
+    let mut room = ws_connect(
+        addr,
+        &room_ws(&s.team_conv, &format!("?token={}", s.admin_token)),
+    )
+    .await
+    .unwrap();
     wait_for_event(&mut room, "connection_established").await;
 
     sqlx::query(
@@ -600,7 +734,14 @@ async fn routed_broadcaster_events_relay_across_instances() {
     )
     .bind("broadcast-peer-1")
     .bind("peer-instance")
-    .bind(event("remote-broadcast-1", "remote_conv_event", json!({ "k": "remote" })).to_string())
+    .bind(
+        event(
+            "remote-broadcast-1",
+            "remote_conv_event",
+            json!({ "k": "remote" }),
+        )
+        .to_string(),
+    )
     .bind(json!([{ "type": "conversation", "ids": [s.team_conv] }]).to_string())
     .bind(json!({ "priority": "normal" }).to_string())
     .bind(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
@@ -668,14 +809,19 @@ async fn broadcast_to_conversations_and_users() {
     let app = spawn_app().await;
     let s = seed(&app).await;
     let addr = serve(&app).await;
-    let mut room = ws_connect(addr, &room_ws(&s.team_conv, &format!("?token={}", s.admin_token)))
-        .await
-        .unwrap();
+    let mut room = ws_connect(
+        addr,
+        &room_ws(&s.team_conv, &format!("?token={}", s.admin_token)),
+    )
+    .await
+    .unwrap();
     wait_for_event(&mut room, "connection_established").await;
-    let mut personal =
-        ws_connect(addr, &format!("/api/websocket/connect?token={}", s.agent_token))
-            .await
-            .unwrap();
+    let mut personal = ws_connect(
+        addr,
+        &format!("/api/websocket/connect?token={}", s.agent_token),
+    )
+    .await
+    .unwrap();
     wait_for_event(&mut personal, "user_connected").await;
 
     // Missing event or non-array targets -> 400 (CRD 3594).
@@ -741,15 +887,19 @@ async fn broadcast_to_teams_and_admin_inclusion() {
     let app = spawn_app().await;
     let s = seed(&app).await;
     let addr = serve(&app).await;
-    let mut agent_ws =
-        ws_connect(addr, &format!("/api/websocket/connect?token={}", s.agent_token))
-            .await
-            .unwrap();
+    let mut agent_ws = ws_connect(
+        addr,
+        &format!("/api/websocket/connect?token={}", s.agent_token),
+    )
+    .await
+    .unwrap();
     wait_for_event(&mut agent_ws, "user_connected").await;
-    let mut admin_ws =
-        ws_connect(addr, &format!("/api/websocket/connect?token={}", s.admin_token))
-            .await
-            .unwrap();
+    let mut admin_ws = ws_connect(
+        addr,
+        &format!("/api/websocket/connect?token={}", s.admin_token),
+    )
+    .await
+    .unwrap();
     wait_for_event(&mut admin_ws, "user_connected").await;
 
     // Team delivery resolves active members from storage (CRD 3600-3603).
@@ -813,15 +963,19 @@ async fn broadcast_global_batch_and_system_notification() {
     let app = spawn_app().await;
     let s = seed(&app).await;
     let addr = serve(&app).await;
-    let mut agent_ws =
-        ws_connect(addr, &format!("/api/websocket/connect?token={}", s.agent_token))
-            .await
-            .unwrap();
+    let mut agent_ws = ws_connect(
+        addr,
+        &format!("/api/websocket/connect?token={}", s.agent_token),
+    )
+    .await
+    .unwrap();
     wait_for_event(&mut agent_ws, "user_connected").await;
-    let mut admin_ws =
-        ws_connect(addr, &format!("/api/websocket/connect?token={}", s.admin_token))
-            .await
-            .unwrap();
+    let mut admin_ws = ws_connect(
+        addr,
+        &format!("/api/websocket/connect?token={}", s.admin_token),
+    )
+    .await
+    .unwrap();
     wait_for_event(&mut admin_ws, "user_connected").await;
 
     // Global delivery reaches everyone (CRD 3611-3614).
@@ -890,9 +1044,12 @@ async fn reachability_registry_filters_metrics_and_health() {
     let app = spawn_app().await;
     let s = seed(&app).await;
     let addr = serve(&app).await;
-    let mut ws = ws_connect(addr, &format!("/api/websocket/connect?token={}", s.agent_token))
-        .await
-        .unwrap();
+    let mut ws = ws_connect(
+        addr,
+        &format!("/api/websocket/connect?token={}", s.agent_token),
+    )
+    .await
+    .unwrap();
     wait_for_event(&mut ws, "user_connected").await;
 
     // Register / unregister reachable endpoints (CRD 3623-3633).
@@ -928,8 +1085,14 @@ async fn reachability_registry_filters_metrics_and_health() {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body["data"]["conversations"].as_array().unwrap().contains(&json!("conv-A")));
-    assert!(body["data"]["users"].as_array().unwrap().contains(&json!(s.agent_id)));
+    assert!(body["data"]["conversations"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("conv-A")));
+    assert!(body["data"]["users"]
+        .as_array()
+        .unwrap()
+        .contains(&json!(s.agent_id)));
 
     let (status, body, _) = app
         .request(
@@ -940,7 +1103,10 @@ async fn reachability_registry_filters_metrics_and_health() {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["data"]["activeConnections"].as_i64().unwrap(), after_register - 1);
+    assert_eq!(
+        body["data"]["activeConnections"].as_i64().unwrap(),
+        after_register - 1
+    );
 
     // Subscription filters are replaced wholesale (CRD 3635-3638).
     let (status, _, _) = app
@@ -964,7 +1130,12 @@ async fn reachability_registry_filters_metrics_and_health() {
 
     // Metrics & health (CRD 3650-3654): staff-accessible snapshots.
     let (status, body, _) = app
-        .request("POST", "/api/realtime/broadcaster/metrics", Some(&s.agent_token), None)
+        .request(
+            "POST",
+            "/api/realtime/broadcaster/metrics",
+            Some(&s.agent_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["data"]["totalEvents"].is_number());
@@ -973,7 +1144,10 @@ async fn reachability_registry_filters_metrics_and_health() {
     assert!(body["data"]["uptimeSeconds"].is_number());
     assert!(body["data"]["reachableUsers"].is_number());
 
-    for path in ["/api/realtime/broadcaster/status", "/api/realtime/broadcaster/health"] {
+    for path in [
+        "/api/realtime/broadcaster/status",
+        "/api/realtime/broadcaster/health",
+    ] {
         let (status, body, _) = app.request("POST", path, Some(&s.agent_token), None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["data"]["healthy"], true);

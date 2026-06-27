@@ -98,18 +98,26 @@ pub async fn connect(
         let user_id = outcome.identity.user_id.clone();
         let connection_id = registration.connection_id.clone();
         tokio::spawn(async move {
-            let _ = sqlx::query(
+            if let Err(error) = sqlx::query(
                 "INSERT INTO realtime_quality_samples (id, timestamp, user_id, connection_id, details, created_at)
                  VALUES ($1, $2, $3, $4, $5, $6)",
             )
             .bind(uuid::Uuid::new_v4().to_string())
             .bind(crate::db::now_iso())
-            .bind(user_id)
-            .bind(connection_id)
+            .bind(&user_id)
+            .bind(&connection_id)
             .bind(json!({ "event": "handshake_authenticated" }).to_string())
             .bind(crate::db::now_iso())
             .execute(&db)
-            .await;
+            .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    user_id,
+                    connection_id,
+                    "realtime quality sample insert failed"
+                );
+            }
         });
     }
 
