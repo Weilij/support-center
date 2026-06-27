@@ -6,6 +6,19 @@ use super::client::ShopeeClient;
 use crate::crypto;
 use crate::db::now_iso;
 
+#[derive(Debug, thiserror::Error)]
+pub enum StoreError {
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+    #[error(transparent)]
+    Crypto(#[from] crypto::CryptoError),
+    #[error("Shopee shop is not connected")]
+    NotConnected,
+    #[error(transparent)]
+    Client(#[from] super::client::ClientError),
+}
+
+#[derive(Debug)]
 pub struct ShopTokens {
     pub access_token: String,
     pub refresh_token: String,
@@ -30,9 +43,9 @@ pub async fn save_tokens(
     access: &str,
     refresh: &str,
     expires_at: &str,
-) -> Result<(), String> {
-    let access_enc = crypto::protect(enc_key, access).map_err(|e| e.to_string())?;
-    let refresh_enc = crypto::protect(enc_key, refresh).map_err(|e| e.to_string())?;
+) -> Result<(), StoreError> {
+    let access_enc = crypto::protect(enc_key, access)?;
+    let refresh_enc = crypto::protect(enc_key, refresh)?;
     sqlx::query(
         "INSERT INTO shopee_shops (shop_id, access_token, refresh_token, expires_at, updated_at)
          VALUES ($1, $2, $3, $4, $5)
@@ -49,22 +62,27 @@ pub async fn save_tokens(
     .bind(now_iso())
     .execute(db)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(StoreError::Database)?;
     Ok(())
 }
 
-pub async fn load(db: &PgPool, enc_key: Option<&str>, shop_id: i64) -> Result<Option<ShopTokens>, String> {
+pub async fn load(
+    db: &PgPool,
+    enc_key: Option<&str>,
+    shop_id: i64,
+) -> Result<Option<ShopTokens>, StoreError> {
     let row: Option<(String, String, String)> = sqlx::query_as(
         "SELECT access_token, refresh_token, expires_at FROM shopee_shops WHERE shop_id = $1",
     )
     .bind(shop_id)
     .fetch_optional(db)
-    .await
-    .map_err(|e| e.to_string())?;
-    let Some((a, r, exp)) = row else { return Ok(None) };
+    .await?;
+    let Some((a, r, exp)) = row else {
+        return Ok(None);
+    };
     Ok(Some(ShopTokens {
-        access_token: crypto::reveal(enc_key, &a).map_err(|e| e.to_string())?,
-        refresh_token: crypto::reveal(enc_key, &r).map_err(|e| e.to_string())?,
+        access_token: crypto::reveal(enc_key, &a)?,
+        refresh_token: crypto::reveal(enc_key, &r)?,
         expires_at: exp,
     }))
 }
@@ -75,13 +93,31 @@ pub async fn valid_access_token(
     client: &ShopeeClient,
     enc_key: Option<&str>,
     shop_id: i64,
-) -> Result<String, String> {
-    let tokens = load(db, enc_key, shop_id).await?.ok_or("Shopee shop is not connected")?;
+) -> Result<String, StoreError> {
+    let tokens = load(db, enc_key, shop_id)
+        .await?
+        .ok_or(StoreError::NotConnected)?;
     if needs_refresh(&tokens.expires_at, &now_iso(), 300) {
-        let fresh = client.refresh(&tokens.refresh_token, shop_id).await?;
-        let new_refresh = if fresh.refresh_token.is_empty() { tokens.refresh_token } else { fresh.refresh_token };
-        let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(fresh.expire_in)).to_rfc3339();
-        save_tokens(db, enc_key, shop_id, &fresh.access_token, &new_refresh, &expires_at).await?;
+        let fresh = client
+            .refresh(&tokens.refresh_token, shop_id)
+            .await
+            .map_err(StoreError::Client)?;
+        let new_refresh = if fresh.refresh_token.is_empty() {
+            tokens.refresh_token
+        } else {
+            fresh.refresh_token
+        };
+        let expires_at =
+            (chrono::Utc::now() + chrono::Duration::seconds(fresh.expire_in)).to_rfc3339();
+        save_tokens(
+            db,
+            enc_key,
+            shop_id,
+            &fresh.access_token,
+            &new_refresh,
+            &expires_at,
+        )
+        .await?;
         Ok(fresh.access_token)
     } else {
         Ok(tokens.access_token)
@@ -94,12 +130,20 @@ mod tests {
 
     #[test]
     fn needs_refresh_true_within_buffer() {
-        assert!(needs_refresh("2030-01-01T00:01:00Z", "2030-01-01T00:00:00Z", 300));
+        assert!(needs_refresh(
+            "2030-01-01T00:01:00Z",
+            "2030-01-01T00:00:00Z",
+            300
+        ));
     }
 
     #[test]
     fn needs_refresh_false_when_fresh() {
-        assert!(!needs_refresh("2030-01-01T01:00:00Z", "2030-01-01T00:00:00Z", 300));
+        assert!(!needs_refresh(
+            "2030-01-01T01:00:00Z",
+            "2030-01-01T00:00:00Z",
+            300
+        ));
     }
 
     #[test]
