@@ -52,7 +52,11 @@ pub fn with_status(status: StatusCode, data: Option<Value>, message: Option<&str
 /// Success envelope whose `pagination` block sits beside `data` (teams/agents listings,
 /// CRD 1828, 2168).
 pub fn ok_with_pagination(items: Vec<Value>, page: i64, limit: i64, total: i64) -> Response {
-    let total_pages = if total == 0 { 0 } else { (total + limit - 1) / limit };
+    let total_pages = if total == 0 {
+        0
+    } else {
+        (total + limit - 1) / limit
+    };
     let body = json!({
         "success": true,
         "data": items,
@@ -89,7 +93,11 @@ pub fn clamp_page(page: Option<i64>, page_size: Option<i64>) -> (i64, i64) {
 /// Canonical paginated envelope (CRD line 5652): items + page/pageSize/limit/total/totalPages
 /// + hasNext/hasPrev, wrapped in the success envelope.
 pub fn paginated<T: Serialize>(items: &[T], page: i64, page_size: i64, total: i64) -> Response {
-    let total_pages = if total == 0 { 0 } else { (total + page_size - 1) / page_size };
+    let total_pages = if total == 0 {
+        0
+    } else {
+        (total + page_size - 1) / page_size
+    };
     ok(json!({
         "items": items,
         "page": page,

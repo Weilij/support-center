@@ -35,7 +35,11 @@ impl RatePolicy {
     }
 
     const fn new(scope: &'static str, max_requests: u32, window_secs: u64) -> Self {
-        Self { scope, max_requests, window: Duration::from_secs(window_secs) }
+        Self {
+            scope,
+            max_requests,
+            window: Duration::from_secs(window_secs),
+        }
     }
 }
 
@@ -73,7 +77,8 @@ impl RateLimiter {
             .buckets
             .lock()
             .map(|b| {
-                let callers: std::collections::HashSet<&String> = b.keys().map(|(_, c)| c).collect();
+                let callers: std::collections::HashSet<&String> =
+                    b.keys().map(|(_, c)| c).collect();
                 (callers.len(), b.len())
             })
             .unwrap_or((0, 0));
@@ -124,15 +129,31 @@ impl RateLimiter {
         hits.retain(|t| now.duration_since(*t) < policy.window);
         let reset_secs = hits
             .first()
-            .map(|t| policy.window.saturating_sub(now.duration_since(*t)).as_secs() + 1)
+            .map(|t| {
+                policy
+                    .window
+                    .saturating_sub(now.duration_since(*t))
+                    .as_secs()
+                    + 1
+            })
             .unwrap_or(policy.window.as_secs());
         if hits.len() as u32 >= policy.max_requests {
             self.total_blocked.fetch_add(1, Ordering::Relaxed);
-            return RateDecision { allowed: false, limit: policy.max_requests, remaining: 0, reset_secs };
+            return RateDecision {
+                allowed: false,
+                limit: policy.max_requests,
+                remaining: 0,
+                reset_secs,
+            };
         }
         hits.push(now);
         let remaining = policy.max_requests - hits.len() as u32;
-        RateDecision { allowed: true, limit: policy.max_requests, remaining, reset_secs }
+        RateDecision {
+            allowed: true,
+            limit: policy.max_requests,
+            remaining,
+            reset_secs,
+        }
     }
 }
 
@@ -163,7 +184,10 @@ pub async fn trusted_client_ip_layer(
     mut req: Request<Body>,
     next: Next,
 ) -> Response {
-    let peer = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0);
+    let peer = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0);
     let ip = resolve_client_ip(req.headers(), peer, &state.config.trusted_proxies);
     req.extensions_mut().insert(TrustedClientIp(ip));
     next.run(req).await
@@ -172,7 +196,10 @@ pub async fn trusted_client_ip_layer(
 /// Caller identity: trust forwarded headers only when the socket peer is a
 /// configured reverse proxy. Otherwise use the real peer socket address.
 pub fn caller_ip(req: &Request<Body>, trusted_proxies: &[IpAddr]) -> String {
-    let peer = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0);
+    let peer = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0);
     match resolve_client_ip(req.headers(), peer, trusted_proxies) {
         Some(ip) => ip,
         None => "unknown".to_string(),
@@ -196,7 +223,10 @@ fn decorate(resp: &mut Response, d: &RateDecision) {
 pub fn limit(
     state: std::sync::Arc<AppState>,
     policy: RatePolicy,
-) -> impl Fn(Request<Body>, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>
+) -> impl Fn(
+    Request<Body>,
+    Next,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>
        + Clone
        + Send
        + 'static {
@@ -228,8 +258,8 @@ pub fn limit(
                     "retryAfter": retry_after,
                     "timestamp": crate::db::now_iso(),
                 });
-                let mut resp = (axum::http::StatusCode::TOO_MANY_REQUESTS, axum::Json(body))
-                    .into_response();
+                let mut resp =
+                    (axum::http::StatusCode::TOO_MANY_REQUESTS, axum::Json(body)).into_response();
                 if let Ok(v) = retry_after.to_string().parse() {
                     resp.headers_mut().insert("Retry-After", v);
                 }
@@ -270,7 +300,10 @@ mod tests {
 
     #[test]
     fn trusts_forwarded_headers_from_trusted_peer() {
-        let req = request(Some("127.0.0.1"), &[("x-forwarded-for", "198.51.100.1, 10.0.0.2")]);
+        let req = request(
+            Some("127.0.0.1"),
+            &[("x-forwarded-for", "198.51.100.1, 10.0.0.2")],
+        );
         let trusted = ["127.0.0.1".parse().unwrap()];
         assert_eq!(caller_ip(&req, &trusted), "198.51.100.1");
     }

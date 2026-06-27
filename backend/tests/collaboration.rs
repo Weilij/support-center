@@ -35,8 +35,12 @@ async fn seed_agent_with_id(app: &TestApp, id: &str, email: &str, role: &str) {
 
 async fn seed(app: &TestApp) -> Seeded {
     seed_agent_with_id(app, "101", "num@collab.io", "agent").await;
-    let uuid_id = app.seed_agent("uuid@collab.io", "Secret123!", "agent").await;
-    let admin_id = app.seed_agent("admin@collab.io", "Secret123!", "admin").await;
+    let uuid_id = app
+        .seed_agent("uuid@collab.io", "Secret123!", "agent")
+        .await;
+    let admin_id = app
+        .seed_agent("admin@collab.io", "Secret123!", "admin")
+        .await;
     Seeded {
         num_token: mint("101", "agent", 3600),
         uuid_token: mint(&uuid_id, "agent", 3600),
@@ -136,7 +140,12 @@ async fn join_view_state_and_leave_lifecycle_with_events() {
     // Empty/degraded snapshot rather than an error before anyone joins
     // (CRD 2335).
     let (status, body, _) = app
-        .request("GET", "/api/collaboration/conversations/88/state", Some(&s.num_token), None)
+        .request(
+            "GET",
+            "/api/collaboration/conversations/88/state",
+            Some(&s.num_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["viewers"], json!([]));
@@ -145,7 +154,12 @@ async fn join_view_state_and_leave_lifecycle_with_events() {
 
     // Join: identity comes from the session, body optional (CRD 2360).
     let (status, body, _) = app
-        .request("POST", "/api/collaboration/conversations/88/join", Some(&s.num_token), None)
+        .request(
+            "POST",
+            "/api/collaboration/conversations/88/join",
+            Some(&s.num_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], json!(true));
@@ -158,7 +172,12 @@ async fn join_view_state_and_leave_lifecycle_with_events() {
     // Viewer listing is normalized (CRD 2349): numeric user id, username and
     // display label fallbacks, role, transport, typing flag, timestamps.
     let (_, body, _) = app
-        .request("GET", "/api/collaboration/conversations/88/viewers", Some(&s.num_token), None)
+        .request(
+            "GET",
+            "/api/collaboration/conversations/88/viewers",
+            Some(&s.num_token),
+            None,
+        )
         .await;
     let viewers = body["data"]["viewers"].as_array().unwrap();
     assert_eq!(viewers.len(), 1);
@@ -175,19 +194,34 @@ async fn join_view_state_and_leave_lifecycle_with_events() {
     // A viewer whose identifier is not a finite number is omitted from
     // listings (CRD 2352) while still occupying the room.
     let (status, _, _) = app
-        .request("POST", "/api/collaboration/conversations/88/join", Some(&s.uuid_token), None)
+        .request(
+            "POST",
+            "/api/collaboration/conversations/88/join",
+            Some(&s.uuid_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     let ev = wait_for_event(&mut listener, "user_joined").await;
     assert_eq!(ev["payload"]["userId"], json!(s.uuid_id));
     let (_, body, _) = app
-        .request("GET", "/api/collaboration/conversations/88/viewers", Some(&s.num_token), None)
+        .request(
+            "GET",
+            "/api/collaboration/conversations/88/viewers",
+            Some(&s.num_token),
+            None,
+        )
         .await;
     assert_eq!(body["data"]["viewers"].as_array().unwrap().len(), 1);
 
     // State snapshot aggregates viewers/typing/connection count (CRD 2336).
     let (_, body, _) = app
-        .request("GET", "/api/collaboration/conversations/88/state", Some(&s.num_token), None)
+        .request(
+            "GET",
+            "/api/collaboration/conversations/88/state",
+            Some(&s.num_token),
+            None,
+        )
         .await;
     let d = &body["data"];
     assert_eq!(d["conversationId"], json!(88));
@@ -198,7 +232,12 @@ async fn join_view_state_and_leave_lifecycle_with_events() {
     // Leave: inverse of join, idempotent (CRD 2369-2374).
     for _ in 0..2 {
         let (status, body, _) = app
-            .request("POST", "/api/collaboration/conversations/88/leave", Some(&s.num_token), None)
+            .request(
+                "POST",
+                "/api/collaboration/conversations/88/leave",
+                Some(&s.num_token),
+                None,
+            )
             .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["success"], json!(true));
@@ -206,7 +245,12 @@ async fn join_view_state_and_leave_lifecycle_with_events() {
         assert_eq!(ev["payload"]["userId"], "101");
     }
     let (_, body, _) = app
-        .request("GET", "/api/collaboration/conversations/88/viewers", Some(&s.num_token), None)
+        .request(
+            "GET",
+            "/api/collaboration/conversations/88/viewers",
+            Some(&s.num_token),
+            None,
+        )
         .await;
     assert_eq!(body["data"]["viewers"], json!([]));
 }
@@ -225,7 +269,12 @@ async fn join_rejects_when_the_room_is_full() {
             .unwrap();
     }
     let (status, body, _) = app
-        .request("POST", "/api/collaboration/conversations/99/join", Some(&s.num_token), None)
+        .request(
+            "POST",
+            "/api/collaboration/conversations/99/join",
+            Some(&s.num_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["code"], "ROOM_FULL");
@@ -242,12 +291,24 @@ async fn typing_indicator_contract_and_events() {
     let mut listener = room_listener(&app, addr, "70").await;
 
     // Missing fields -> 400 (CRD 2381).
-    for body in [json!({}), json!({ "conversationId": 70 }), json!({ "status": "start" })] {
+    for body in [
+        json!({}),
+        json!({ "conversationId": 70 }),
+        json!({ "status": "start" }),
+    ] {
         let (status, resp, _) = app
-            .request("POST", "/api/collaboration/typing", Some(&s.num_token), Some(body))
+            .request(
+                "POST",
+                "/api/collaboration/typing",
+                Some(&s.num_token),
+                Some(body),
+            )
             .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(resp["error"].as_str().unwrap().contains("Missing required fields"));
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("Missing required fields"));
     }
     // Invalid status -> 400 (CRD 2381).
     let (status, resp, _) = app
@@ -276,7 +337,12 @@ async fn typing_indicator_contract_and_events() {
     let ev = wait_for_event(&mut listener, "typing_start").await;
     assert_eq!(ev["payload"]["userId"], "101");
     let (_, body, _) = app
-        .request("GET", "/api/collaboration/conversations/70/state", Some(&s.num_token), None)
+        .request(
+            "GET",
+            "/api/collaboration/conversations/70/state",
+            Some(&s.num_token),
+            None,
+        )
         .await;
     let typing = body["data"]["typingUsers"].as_array().unwrap();
     assert_eq!(typing.len(), 1);
@@ -298,7 +364,12 @@ async fn typing_indicator_contract_and_events() {
     let ev = wait_for_event(&mut listener, "typing_stop").await;
     assert_eq!(ev["payload"]["userId"], "101");
     let (_, body, _) = app
-        .request("GET", "/api/collaboration/conversations/70/state", Some(&s.num_token), None)
+        .request(
+            "GET",
+            "/api/collaboration/conversations/70/state",
+            Some(&s.num_token),
+            None,
+        )
         .await;
     assert_eq!(body["data"]["typingUsers"], json!([]));
 }
@@ -314,7 +385,12 @@ async fn presence_contract_and_room_notification() {
 
     // Missing status -> 400 (CRD 2389).
     let (status, body, _) = app
-        .request("POST", "/api/collaboration/presence", Some(&s.num_token), Some(json!({})))
+        .request(
+            "POST",
+            "/api/collaboration/presence",
+            Some(&s.num_token),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body["error"].as_str().unwrap().contains("status"));
@@ -329,7 +405,10 @@ async fn presence_contract_and_room_notification() {
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body["error"].as_str().unwrap().contains("online, away, busy, offline"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("online, away, busy, offline"));
 
     // Plain update without a focused conversation: recorded, no room event
     // (CRD 2386).
@@ -375,15 +454,34 @@ async fn stats_aggregate_and_rank_active_conversations() {
 
     // Two viewers in room 1, one in rooms 2-7 (ranking capped to a small
     // top-N, CRD 2404).
-    app.state.realtime.collab.join(1, "201", "a", "A", "agent").ok().unwrap();
-    app.state.realtime.collab.join(1, "202", "b", "B", "agent").ok().unwrap();
+    app.state
+        .realtime
+        .collab
+        .join(1, "201", "a", "A", "agent")
+        .ok()
+        .unwrap();
+    app.state
+        .realtime
+        .collab
+        .join(1, "202", "b", "B", "agent")
+        .ok()
+        .unwrap();
     for room in 2..=7 {
-        app.state.realtime.collab.join(room, "203", "c", "C", "agent").ok().unwrap();
+        app.state
+            .realtime
+            .collab
+            .join(room, "203", "c", "C", "agent")
+            .ok()
+            .unwrap();
     }
-    app.state.realtime.collab.set_typing(1, "201", "a", "A", "agent", true);
+    app.state
+        .realtime
+        .collab
+        .set_typing(1, "201", "a", "A", "agent", true);
 
-    let (status, body, _) =
-        app.request("GET", "/api/collaboration/stats", Some(&s.num_token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/collaboration/stats", Some(&s.num_token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     let d = &body["data"];
     assert_eq!(d["totalViewers"], json!(8));
@@ -396,7 +494,12 @@ async fn stats_aggregate_and_rank_active_conversations() {
 
     // Unsupported explicit transport (CRD 2405).
     let (status, body, _) = app
-        .request("GET", "/api/collaboration/stats?protocol=sse", Some(&s.num_token), None)
+        .request(
+            "GET",
+            "/api/collaboration/stats?protocol=sse",
+            Some(&s.num_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["code"], "PROTOCOL_NOT_SUPPORTED");
@@ -410,15 +513,27 @@ async fn cleanup_is_admin_only_and_reports_removed_count() {
     let s = seed(&app).await;
 
     // Authenticated non-administrator -> 403 (CRD 2428).
-    let (status, body, _) =
-        app.request("POST", "/api/collaboration/cleanup", Some(&s.num_token), None).await;
+    let (status, body, _) = app
+        .request(
+            "POST",
+            "/api/collaboration/cleanup",
+            Some(&s.num_token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"], "Insufficient permissions");
 
     // Administrator: safe to invoke repeatedly (CRD 2429).
     for _ in 0..2 {
-        let (status, body, _) =
-            app.request("POST", "/api/collaboration/cleanup", Some(&s.admin_token), None).await;
+        let (status, body, _) = app
+            .request(
+                "POST",
+                "/api/collaboration/cleanup",
+                Some(&s.admin_token),
+                None,
+            )
+            .await;
         assert_eq!(status, StatusCode::OK);
         assert!(body["data"]["cleanedCount"].is_number());
     }
@@ -432,8 +547,9 @@ async fn health_reports_lazy_initialization() {
     // Cold path: not yet initialized, with an explanatory note (CRD 2433);
     // the probe itself never initializes (CRD 2435).
     for _ in 0..2 {
-        let (status, body, _) =
-            app.request("GET", "/api/collaboration/health", Some(&s.num_token), None).await;
+        let (status, body, _) = app
+            .request("GET", "/api/collaboration/health", Some(&s.num_token), None)
+            .await;
         assert_eq!(status, StatusCode::OK);
         let d = &body["data"];
         assert_eq!(d["status"], "not_initialized");
@@ -446,11 +562,17 @@ async fn health_reports_lazy_initialization() {
 
     // First business request initializes lazily (CRD 2391, 2421).
     let (status, _, _) = app
-        .request("POST", "/api/collaboration/conversations/5/join", Some(&s.num_token), None)
+        .request(
+            "POST",
+            "/api/collaboration/conversations/5/join",
+            Some(&s.num_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
-    let (_, body, _) =
-        app.request("GET", "/api/collaboration/health", Some(&s.num_token), None).await;
+    let (_, body, _) = app
+        .request("GET", "/api/collaboration/health", Some(&s.num_token), None)
+        .await;
     assert_eq!(body["data"]["status"], "healthy");
     assert!(body["data"]["note"].is_null());
 }
