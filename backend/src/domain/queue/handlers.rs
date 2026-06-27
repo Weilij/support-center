@@ -2,24 +2,27 @@
 //! current behavioral boundary except where the live stats snapshot applies.
 
 use axum::extract::State;
-use axum::response::{IntoResponse, Response};
+use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::db::now_iso;
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::HandlerResult as Result;
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
-
-type Result<T = Response> = std::result::Result<T, AppError>;
 
 pub async fn stats(
     State(state): State<Arc<AppState>>,
     Extension(_user): Extension<AuthUser>,
 ) -> Result {
-    let snapshot = state.queue.stats.lock().map(|s| s.clone()).unwrap_or_default();
+    let snapshot = state
+        .queue
+        .stats
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or_default();
     Ok(envelope::ok(json!({
         "summary": {
             "totalQueues": 2,
