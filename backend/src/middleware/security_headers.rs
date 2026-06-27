@@ -15,9 +15,15 @@ pub async fn security_headers_layer(req: Request<Body>, next: Next) -> Response 
 
     let mut resp = next.run(req).await;
     let h = resp.headers_mut();
-    h.insert("X-Content-Type-Options", HeaderValue::from_static("nosniff"));
+    h.insert(
+        "X-Content-Type-Options",
+        HeaderValue::from_static("nosniff"),
+    );
     h.insert("X-Frame-Options", HeaderValue::from_static("DENY"));
-    h.insert("X-XSS-Protection", HeaderValue::from_static("1; mode=block"));
+    h.insert(
+        "X-XSS-Protection",
+        HeaderValue::from_static("1; mode=block"),
+    );
     h.insert(
         "Referrer-Policy",
         HeaderValue::from_static("strict-origin-when-cross-origin"),

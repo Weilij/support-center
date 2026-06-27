@@ -11,25 +11,29 @@ use std::sync::Arc;
 
 use crate::domain::auth::store::log_activity;
 use crate::envelope;
-use crate::error::{AppError, FieldProblem};
+use crate::error::{AppError, FieldProblem, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
 
 use super::store::{self, total_pages, TagWithCounts};
 
-type Result<T = Response> = std::result::Result<T, AppError>;
 type JsonBody<T> = std::result::Result<Json<T>, JsonRejection>;
 
 pub(crate) fn validation(field: &str, message: &str) -> AppError {
     AppError::Validation(
         message.to_string(),
-        vec![FieldProblem { field: field.into(), message: message.into(), value: None }],
+        vec![FieldProblem {
+            field: field.into(),
+            message: message.into(),
+            value: None,
+        }],
     )
 }
 
 /// Malformed JSON bodies are reported as 400 "Invalid JSON" (CRD 1490, 1525).
 pub(crate) fn parse_json<T>(body: JsonBody<T>) -> Result<T> {
-    body.map(|Json(b)| b).map_err(|_| AppError::BadRequest("Invalid JSON".into()))
+    body.map(|Json(b)| b)
+        .map_err(|_| AppError::BadRequest("Invalid JSON".into()))
 }
 
 /// Path id must be a positive integer (CRD 1507, 1516: 400 "Invalid tag id").
@@ -49,7 +53,10 @@ fn normalize_color(raw: &str) -> Option<String> {
     match rest.len() {
         3 => Some(format!(
             "#{}",
-            rest.chars().flat_map(|c| [c, c]).collect::<String>().to_uppercase()
+            rest.chars()
+                .flat_map(|c| [c, c])
+                .collect::<String>()
+                .to_uppercase()
         )),
         6 => Some(format!("#{}", rest.to_uppercase())),
         _ => None,
@@ -141,12 +148,19 @@ pub async fn create_tag(
     if name.is_empty() {
         return Err(AppError::BadRequest("Tag name is required".into()));
     }
-    let color = match body.color.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+    let color = match body
+        .color
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    {
         None => DEFAULT_COLOR.to_string(),
         Some(c) => normalize_color(c).ok_or_else(|| validation("color", INVALID_COLOR_MSG))?,
     };
     if store::name_in_use(&state.db, &name, None).await? {
-        return Err(AppError::Conflict("A tag with this name already exists".into()));
+        return Err(AppError::Conflict(
+            "A tag with this name already exists".into(),
+        ));
     }
 
     let now = crate::db::now_iso();
@@ -327,12 +341,18 @@ pub async fn update_tag(
             customer_count: 0,
             conversation_count: 0,
         };
-        return Ok(envelope::ok_msg(updated_tag_view(&view, 0, 0), "No changes made"));
+        return Ok(envelope::ok_msg(
+            updated_tag_view(&view, 0, 0),
+            "No changes made",
+        ));
     }
 
     let now = crate::db::now_iso();
-    let assignments =
-        sets.iter().map(|(col, _)| format!("{col} = ?")).collect::<Vec<_>>().join(", ");
+    let assignments = sets
+        .iter()
+        .map(|(col, _)| format!("{col} = ?"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let sql = format!("UPDATE tags SET {assignments}, updated_at = $1 WHERE id = $2");
     let sql = crate::db::pg_params(&sql);
     let mut q = sqlx::query(&sql);
@@ -346,10 +366,16 @@ pub async fn update_tag(
 
     // Reversible audit entry capturing only the changed fields (CRD 1506).
     log_activity(
-        &state.db, &user.id, &user.display_name, &user.role,
-        "tag update", "tag", Some(&id.to_string()),
+        &state.db,
+        &user.id,
+        &user.display_name,
+        &user.role,
+        "tag update",
+        "tag",
+        Some(&id.to_string()),
         Some(json!({ "reversible": true, "old": old, "new": new })),
-        None, None,
+        None,
+        None,
     )
     .await;
 
@@ -357,7 +383,10 @@ pub async fn update_tag(
         .await?
         .ok_or_else(|| AppError::Internal("Failed to reload tag after update".into()))?;
     let (cc, vc) = (updated.customer_count, updated.conversation_count);
-    Ok(envelope::ok_msg(updated_tag_view(&updated, cc, vc), "Tag updated successfully"))
+    Ok(envelope::ok_msg(
+        updated_tag_view(&updated, cc, vc),
+        "Tag updated successfully",
+    ))
 }
 
 // -------------------------------------------------------- Soft-delete label (CRD 1509-1516)
@@ -382,14 +411,20 @@ pub async fn delete_tag(
 
     // Reversible audit entry capturing prior active/deleted state (CRD 1515).
     log_activity(
-        &state.db, &user.id, &user.display_name, &user.role,
-        "tag delete", "tag", Some(&id.to_string()),
+        &state.db,
+        &user.id,
+        &user.display_name,
+        &user.role,
+        "tag delete",
+        "tag",
+        Some(&id.to_string()),
         Some(json!({
             "reversible": true,
             "old": { "isActive": current.is_active != 0, "deletedAt": null },
             "new": { "isActive": false, "deletedAt": now },
         })),
-        None, None,
+        None,
+        None,
     )
     .await;
 
@@ -433,9 +468,7 @@ pub async fn bulk_operation(
             }
             _ => None,
         };
-        ids.push(id.ok_or_else(|| {
-            AppError::BadRequest("Invalid tag ID format detected".into())
-        })?);
+        ids.push(id.ok_or_else(|| AppError::BadRequest("Invalid tag ID format detected".into()))?);
     }
 
     let placeholders = vec!["?"; ids.len()].join(", ");
@@ -589,7 +622,9 @@ async fn require_active_tag(state: &AppState, id: i64) -> Result<()> {
     .bind(id)
     .fetch_optional(&state.db)
     .await?;
-    found.map(|_| ()).ok_or_else(|| AppError::NotFound("Tag not found".into()))
+    found
+        .map(|_| ())
+        .ok_or_else(|| AppError::NotFound("Tag not found".into()))
 }
 
 pub async fn tag_customers(
@@ -751,7 +786,9 @@ async fn require_conversation(state: &AppState, id: &str) -> Result<()> {
             .bind(id)
             .fetch_optional(&state.db)
             .await?;
-    found.map(|_| ()).ok_or_else(|| AppError::NotFound("Conversation not found".into()))
+    found
+        .map(|_| ())
+        .ok_or_else(|| AppError::NotFound("Conversation not found".into()))
 }
 
 #[derive(Deserialize)]
@@ -803,14 +840,16 @@ pub async fn conversation_tags(
 
     Ok(envelope::ok_msg(
         rows.iter()
-            .map(|r| json!({
-                "id": r.id,
-                "name": r.name,
-                "color": r.color,
-                "description": r.description,
-                "assignedBy": r.assigned_by,
-                "assignedAt": r.assigned_at,
-            }))
+            .map(|r| {
+                json!({
+                    "id": r.id,
+                    "name": r.name,
+                    "color": r.color,
+                    "description": r.description,
+                    "assignedBy": r.assigned_by,
+                    "assignedAt": r.assigned_at,
+                })
+            })
             .collect::<Vec<_>>(),
         "Conversation tags retrieved successfully",
     ))
@@ -857,7 +896,9 @@ pub async fn add_conversation_tags(
             "timestamp": crate::db::now_iso(),
         }),
     );
-    Ok(envelope::message_only("Tags added to conversation successfully"))
+    Ok(envelope::message_only(
+        "Tags added to conversation successfully",
+    ))
 }
 
 pub async fn remove_conversation_tags(
@@ -896,5 +937,7 @@ pub async fn remove_conversation_tags(
             "timestamp": crate::db::now_iso(),
         }),
     );
-    Ok(envelope::message_only("Tags removed from conversation successfully"))
+    Ok(envelope::message_only(
+        "Tags removed from conversation successfully",
+    ))
 }

@@ -10,8 +10,93 @@ use crate::state::AppState;
 
 use super::handlers::{next_run, GENERATABLE, GENERATABLE_FORMATS};
 
+#[derive(Debug, thiserror::Error)]
+enum ReportRunError {
+    #[error("type '{kind}' / format '{format}' is not generatable")]
+    NotGeneratable { kind: String, format: String },
+    #[error("report object write failed: {0}")]
+    ObjectWrite(#[from] std::io::Error),
+    #[error("database write failed: {0}")]
+    Database(#[from] sqlx::Error),
+}
+
+fn log_db_write(
+    result: sqlx::Result<sqlx::postgres::PgQueryResult>,
+    schedule_id: &str,
+    run_id: Option<&str>,
+    operation: &'static str,
+) {
+    if let Err(error) = result {
+        tracing::warn!(
+            error = %error,
+            schedule_id,
+            run_id,
+            operation,
+            "scheduled report database write failed"
+        );
+    }
+}
+
+async fn generate_report_run(
+    state: &AppState,
+    schedule_id: &str,
+    name: &str,
+    kind: &str,
+    format: &str,
+) -> Result<String, ReportRunError> {
+    if !GENERATABLE.contains(&kind) || !GENERATABLE_FORMATS.contains(&format) {
+        return Err(ReportRunError::NotGeneratable {
+            kind: kind.to_string(),
+            format: format.to_string(),
+        });
+    }
+
+    // Date-stamped title over a last-24h window (CRD 4660).
+    let report_id = uuid::Uuid::new_v4().to_string();
+    let title = format!("{name} — {}", chrono::Utc::now().format("%Y-%m-%d"));
+    let content =
+        json!({"dataset": kind, "window": "last_24_hours", "generatedAt": now_iso()}).to_string();
+    let key = format!("reports/{report_id}.{format}");
+
+    crate::domain::files::store::put_object(&state.config.upload_dir, &key, content.as_bytes())
+        .await?;
+
+    let creator: String =
+        sqlx::query_scalar("SELECT created_by FROM scheduled_reports WHERE id = $1")
+            .bind(schedule_id)
+            .fetch_one(&state.db)
+            .await?;
+
+    sqlx::query(
+        "INSERT INTO reports (id, title, report_type, format, status, created_by,
+                              time_range, output_url, output_size, completed_at, created_at)
+         VALUES ($1, $2, $3, $4, 'completed', $5, 'last_24_hours', $6, $7, $8, $9)",
+    )
+    .bind(&report_id)
+    .bind(&title)
+    .bind(kind)
+    .bind(format)
+    .bind(&creator)
+    .bind(&key)
+    .bind(content.len() as i64)
+    .bind(now_iso())
+    .bind(now_iso())
+    .execute(&state.db)
+    .await?;
+
+    Ok(report_id)
+}
+
 pub async fn run_due(state: &AppState) -> usize {
-    type DueRow = (String, String, Option<String>, Option<String>, Option<String>, i64, i64);
+    type DueRow = (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i64,
+        i64,
+    );
     let due: Vec<DueRow> = sqlx::query_as(
         "SELECT id, name, report_type, format, schedule_type, max_retries, run_count
          FROM scheduled_reports
@@ -26,66 +111,32 @@ pub async fn run_due(state: &AppState) -> usize {
     for (id, name, kind, format, frequency, max_retries, _) in &due {
         let run_id = uuid::Uuid::new_v4().to_string();
         let started = std::time::Instant::now();
-        let _ = sqlx::query(
+        if let Err(error) = sqlx::query(
             "INSERT INTO scheduled_report_runs (id, schedule_id, started_at, status) VALUES ($1, $2, $3, 'running')",
         )
         .bind(&run_id)
         .bind(id)
         .bind(now_iso())
         .execute(&state.db)
-        .await;
+        .await
+        {
+            tracing::warn!(
+                error = %error,
+                schedule_id = id,
+                run_id,
+                operation = "insert scheduled_report_runs",
+                "scheduled report run skipped because execution row could not be created"
+            );
+            continue;
+        }
 
         let kind = kind.as_deref().unwrap_or("conversation_summary");
         let format = format.as_deref().unwrap_or("json");
-        let outcome: Result<String, String> = if GENERATABLE.contains(&kind)
-            && GENERATABLE_FORMATS.contains(&format)
-        {
-            // Date-stamped title over a last-24h window (CRD 4660).
-            let report_id = uuid::Uuid::new_v4().to_string();
-            let title = format!("{name} — {}", chrono::Utc::now().format("%Y-%m-%d"));
-            let content = json!({"dataset": kind, "window": "last_24_hours", "generatedAt": now_iso()})
-                .to_string();
-            let key = format!("reports/{report_id}.{format}");
-            match crate::domain::files::store::put_object(
-                &state.config.upload_dir, &key, content.as_bytes(),
-            )
-            .await
-            {
-                Ok(()) => {
-                    let creator: String = sqlx::query_scalar(
-                        "SELECT created_by FROM scheduled_reports WHERE id = $1",
-                    )
-                    .bind(id)
-                    .fetch_one(&state.db)
-                    .await
-                    .unwrap_or_default();
-                    let _ = sqlx::query(
-                        "INSERT INTO reports (id, title, report_type, format, status, created_by,
-                                              time_range, output_url, output_size, completed_at, created_at)
-                         VALUES ($1, $2, $3, $4, 'completed', $5, 'last_24_hours', $6, $7, $8, $9)",
-                    )
-                    .bind(&report_id)
-                    .bind(&title)
-                    .bind(kind)
-                    .bind(format)
-                    .bind(&creator)
-                    .bind(&key)
-                    .bind(content.len() as i64)
-                    .bind(now_iso())
-                    .bind(now_iso())
-                    .execute(&state.db)
-                    .await;
-                    Ok(report_id)
-                }
-                Err(e) => Err(e.to_string()),
-            }
-        } else {
-            Err(format!("type '{kind}' / format '{format}' is not generatable"))
-        };
+        let outcome = generate_report_run(state, id, name, kind, format).await;
 
         match outcome {
             Ok(report_id) => {
-                let _ = sqlx::query(
+                let result = sqlx::query(
                     "UPDATE scheduled_report_runs SET status = 'success', completed_at = $1, duration_ms = $2, report_id = $3 WHERE id = $4",
                 )
                 .bind(now_iso())
@@ -94,7 +145,13 @@ pub async fn run_due(state: &AppState) -> usize {
                 .bind(&run_id)
                 .execute(&state.db)
                 .await;
-                let _ = sqlx::query(
+                log_db_write(
+                    result,
+                    id,
+                    Some(&run_id),
+                    "mark scheduled_report_runs success",
+                );
+                let result = sqlx::query(
                     "UPDATE scheduled_reports SET next_run_at = $1, last_run_at = $2, last_status = 'success', run_count = run_count + 1 WHERE id = $3",
                 )
                 .bind(next_run(frequency.as_deref().unwrap_or("daily")))
@@ -102,9 +159,16 @@ pub async fn run_due(state: &AppState) -> usize {
                 .bind(id)
                 .execute(&state.db)
                 .await;
+                log_db_write(
+                    result,
+                    id,
+                    Some(&run_id),
+                    "advance scheduled_reports success",
+                );
             }
             Err(error) => {
-                let _ = sqlx::query(
+                let error = error.to_string();
+                let result = sqlx::query(
                     "UPDATE scheduled_report_runs SET status = 'failed', completed_at = $1, error_message = $2 WHERE id = $3",
                 )
                 .bind(now_iso())
@@ -112,6 +176,12 @@ pub async fn run_due(state: &AppState) -> usize {
                 .bind(&run_id)
                 .execute(&state.db)
                 .await;
+                log_db_write(
+                    result,
+                    id,
+                    Some(&run_id),
+                    "mark scheduled_report_runs failed",
+                );
                 let failures: i64 = sqlx::query_scalar(
                     "SELECT COUNT(*) FROM scheduled_report_runs WHERE schedule_id = $1 AND status = 'failed'",
                 )
@@ -121,21 +191,28 @@ pub async fn run_due(state: &AppState) -> usize {
                 .unwrap_or(0);
                 if failures >= *max_retries {
                     // Retry ceiling exhausted: deactivate (CRD 4660).
-                    let _ = sqlx::query(
+                    let result = sqlx::query(
                         "UPDATE scheduled_reports SET is_active = 0, last_status = 'failed' WHERE id = $1",
                     )
                     .bind(id)
                     .execute(&state.db)
                     .await;
+                    log_db_write(result, id, Some(&run_id), "deactivate scheduled_reports");
                 } else {
                     let retry_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
-                    let _ = sqlx::query(
+                    let result = sqlx::query(
                         "UPDATE scheduled_reports SET next_run_at = $1, last_status = 'failed' WHERE id = $2",
                     )
                     .bind(retry_at)
                     .bind(id)
                     .execute(&state.db)
                     .await;
+                    log_db_write(
+                        result,
+                        id,
+                        Some(&run_id),
+                        "schedule scheduled_reports retry",
+                    );
                 }
             }
         }

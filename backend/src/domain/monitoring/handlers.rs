@@ -10,13 +10,11 @@ use std::sync::Arc;
 
 use crate::db::now_iso;
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
 
 use super::center;
-
-type Result<T = Response> = std::result::Result<T, AppError>;
 
 /// The monitoring family's documented admin rejection body (CRD 4725).
 fn admin_only(user: &AuthUser) -> Result<()> {
@@ -30,16 +28,33 @@ fn admin_only(user: &AuthUser) -> Result<()> {
 /// GET /api/monitoring/health — public probe; 200 healthy / 207 degraded (CRD 4708-4716).
 pub async fn public_health(State(state): State<Arc<AppState>>) -> Response {
     let sweep = center::sweep(&state);
-    let aggregate = sweep["aggregate"].as_str().unwrap_or("degraded").to_string();
+    let aggregate = sweep["aggregate"]
+        .as_str()
+        .unwrap_or("degraded")
+        .to_string();
     let breaker = state
         .monitoring
         .breaker
         .lock()
         .map(|b| json!({"status": b.state, "stats": b.stats()}))
         .unwrap_or_else(|_| json!({"status": "unknown"}));
-    let active = state.monitoring.active_alerts.lock().map(|a| a.len()).unwrap_or(0);
-    let total_alerts = state.monitoring.alert_history.lock().map(|a| a.len()).unwrap_or(0);
-    let status_code = if aggregate == "healthy" { StatusCode::OK } else { StatusCode::MULTI_STATUS };
+    let active = state
+        .monitoring
+        .active_alerts
+        .lock()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let total_alerts = state
+        .monitoring
+        .alert_history
+        .lock()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let status_code = if aggregate == "healthy" {
+        StatusCode::OK
+    } else {
+        StatusCode::MULTI_STATUS
+    };
     (
         status_code,
         Json(json!({
@@ -77,9 +92,16 @@ pub async fn metrics(
     let avg_latency = if instances.is_empty() {
         0.0
     } else {
-        instances.iter().filter_map(|i| i["latency"].as_f64()).sum::<f64>() / instances.len() as f64
+        instances
+            .iter()
+            .filter_map(|i| i["latency"].as_f64())
+            .sum::<f64>()
+            / instances.len() as f64
     };
-    let total_connections: i64 = instances.iter().filter_map(|i| i["connections"].as_i64()).sum();
+    let total_connections: i64 = instances
+        .iter()
+        .filter_map(|i| i["connections"].as_i64())
+        .sum();
     let breaker = state
         .monitoring
         .breaker
@@ -183,13 +205,25 @@ pub async fn breaker_reset(
 ) -> Result {
     admin_only(&user)?;
     let new_state = {
-        let mut b = state.monitoring.breaker.lock().map_err(|_| AppError::Internal("breaker".into()))?;
+        let mut b = state
+            .monitoring
+            .breaker
+            .lock()
+            .map_err(|_| AppError::Internal("breaker".into()))?;
         b.reset(&user.id);
         b.state
     };
     crate::domain::auth::store::log_activity(
-        &state.db, &user.id, &user.display_name, &user.role,
-        "circuit_breaker_reset", "monitoring", None, None, None, None,
+        &state.db,
+        &user.id,
+        &user.display_name,
+        &user.role,
+        "circuit_breaker_reset",
+        "monitoring",
+        None,
+        None,
+        None,
+        None,
     )
     .await;
     Ok((
@@ -210,14 +244,25 @@ pub async fn breaker_open(
 ) -> Result {
     admin_only(&user)?;
     let new_state = {
-        let mut b = state.monitoring.breaker.lock().map_err(|_| AppError::Internal("breaker".into()))?;
+        let mut b = state
+            .monitoring
+            .breaker
+            .lock()
+            .map_err(|_| AppError::Internal("breaker".into()))?;
         b.open(&user.id);
         b.state
     };
     crate::domain::auth::store::log_activity(
-        &state.db, &user.id, &user.display_name, &user.role,
-        "circuit_breaker_open", "monitoring", None,
-        Some(json!({"level": "critical"})), None, None,
+        &state.db,
+        &user.id,
+        &user.display_name,
+        &user.role,
+        "circuit_breaker_open",
+        "monitoring",
+        None,
+        Some(json!({"level": "critical"})),
+        None,
+        None,
     )
     .await;
     Ok((
@@ -243,7 +288,12 @@ pub async fn instances_by_type(
     let sweep = center::sweep(&state);
     let instances: Vec<Value> = sweep["instances"]
         .as_array()
-        .map(|a| a.iter().filter(|i| i["type"] == kind.as_str()).cloned().collect())
+        .map(|a| {
+            a.iter()
+                .filter(|i| i["type"] == kind.as_str())
+                .cloned()
+                .collect()
+        })
         .unwrap_or_default();
     Ok((
         StatusCode::OK,
@@ -285,14 +335,21 @@ pub async fn dashboard(
         .monitoring
         .monitor
         .lock()
-        .map(|m| json!({
-            "running": m.running,
-            "checkIntervalMs": m.check_interval_ms,
-            "totalChecks": m.total_checks,
-            "recentChecks": m.recent_checks,
-        }))
+        .map(|m| {
+            json!({
+                "running": m.running,
+                "checkIntervalMs": m.check_interval_ms,
+                "totalChecks": m.total_checks,
+                "recentChecks": m.recent_checks,
+            })
+        })
         .unwrap_or_else(|_| json!({}));
-    let history_len = state.monitoring.health_history.lock().map(|h| h.len()).unwrap_or(0);
+    let history_len = state
+        .monitoring
+        .health_history
+        .lock()
+        .map(|h| h.len())
+        .unwrap_or(0);
     let healthy_rate = 100.0; // single-process healthy-rate over the bounded history
     Ok(envelope::ok(json!({
         "timestamp": now_iso(),
@@ -341,7 +398,12 @@ pub async fn health_history(
         .monitoring
         .health_history
         .lock()
-        .map(|h| (h.iter().rev().take(limit).cloned().collect::<Vec<_>>(), h.len()))
+        .map(|h| {
+            (
+                h.iter().rev().take(limit).cloned().collect::<Vec<_>>(),
+                h.len(),
+            )
+        })
         .unwrap_or_default();
     Ok(envelope::ok(json!({ "history": history, "total": total })))
 }
@@ -413,12 +475,14 @@ pub async fn monitor_stats(
         .monitoring
         .monitor
         .lock()
-        .map(|m| json!({
-            "running": m.running,
-            "checkIntervalMs": m.check_interval_ms,
-            "totalChecks": m.total_checks,
-            "recentChecks": m.recent_checks,
-        }))
+        .map(|m| {
+            json!({
+                "running": m.running,
+                "checkIntervalMs": m.check_interval_ms,
+                "totalChecks": m.total_checks,
+                "recentChecks": m.recent_checks,
+            })
+        })
         .unwrap_or_else(|_| json!({}));
     Ok(envelope::ok(json!({
         "monitoring": monitor,

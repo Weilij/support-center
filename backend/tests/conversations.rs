@@ -863,18 +863,18 @@ async fn send_message_returns_pending_then_delivers_on_line() {
     assert!(body["data"]["platformMessageId"].is_null());
     assert!(body["data"]["createdAt"].is_i64());
 
-    // The send response returns before delivery confirms; the pending -> sent
-    // transition is observable on later reads (CRD 773).
+    // The send response returns before delivery confirms; without a configured
+    // LINE token the pending -> failed transition is observable on later reads.
     let message_id = body["data"]["id"].as_str().unwrap().to_string();
-    assert_eq!(wait_for_delivery(&app, &message_id).await, "sent");
+    assert_eq!(wait_for_delivery(&app, &message_id).await, "failed");
     let (is_sent, pmid): (i64, Option<String>) =
         sqlx::query_as("SELECT is_sent, platform_message_id FROM messages WHERE id = $1")
             .bind(&message_id)
             .fetch_one(&app.state.db)
             .await
             .unwrap();
-    assert_eq!(is_sent, 1);
-    assert!(pmid.unwrap().starts_with("stub-line-"));
+    assert_eq!(is_sent, 0);
+    assert!(pmid.is_none());
 
     // Conversation last-message/update times advanced (CRD 769).
     let last: Option<String> =

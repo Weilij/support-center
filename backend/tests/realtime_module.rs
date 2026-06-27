@@ -59,7 +59,11 @@ fn auth_user(id: &str, role: &str, team_role: Option<(i64, &str)>) -> AuthUser {
         primary_team_id: team_role.map(|(t, _)| t),
         teams: team_role
             .map(|(team_id, role)| {
-                vec![TeamMembership { team_id, role: role.to_string(), is_primary: true }]
+                vec![TeamMembership {
+                    team_id,
+                    role: role.to_string(),
+                    is_primary: true,
+                }]
             })
             .unwrap_or_default(),
         jti: None,
@@ -92,12 +96,19 @@ async fn typing_and_broadcast_acknowledge_with_validation() {
     let s = seed(&app).await;
 
     // Bearer auth is required on the whole surface (CRD 3981).
-    let (status, _, _) = app.request("POST", "/api/realtime/typing", None, None).await;
+    let (status, _, _) = app
+        .request("POST", "/api/realtime/typing", None, None)
+        .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     // Missing conversation id -> 400 (CRD 3990).
     let (status, body, _) = app
-        .request("POST", "/api/realtime/typing", Some(&s.agent_token), Some(json!({})))
+        .request(
+            "POST",
+            "/api/realtime/typing",
+            Some(&s.agent_token),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], "Conversation ID is required");
@@ -148,7 +159,12 @@ async fn conversation_status_and_online_status_acknowledge() {
     // Static informational response with a server timestamp (CRD block
     // "Get conversation real-time status").
     let (status, body, _) = app
-        .request("GET", "/api/realtime/conversation/77/status", Some(&s.agent_token), None)
+        .request(
+            "GET",
+            "/api/realtime/conversation/77/status",
+            Some(&s.agent_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["message"].is_string());
@@ -184,8 +200,9 @@ async fn config_is_admin_only_and_merges_runtime_scoped() {
     }
 
     // Full configuration shape (CRD 4003).
-    let (status, body, _) =
-        app.request("GET", "/api/realtime/config", Some(&s.admin_token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/realtime/config", Some(&s.admin_token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     let cfg = &body["data"];
     for key in [
@@ -211,8 +228,9 @@ async fn config_is_admin_only_and_merges_runtime_scoped() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], json!(true));
-    let (_, body, _) =
-        app.request("GET", "/api/realtime/config", Some(&s.admin_token), None).await;
+    let (_, body, _) = app
+        .request("GET", "/api/realtime/config", Some(&s.admin_token), None)
+        .await;
     assert_eq!(body["data"]["deliveryVersion"], "current");
     assert_eq!(body["data"]["maxRetries"], json!(7));
     assert_eq!(body["data"]["queueProcessing"], json!(true)); // untouched
@@ -224,21 +242,24 @@ async fn stats_and_health_role_tiers() {
     let s = seed(&app).await;
 
     // Plain member -> "Insufficient permissions" (CRD 4014).
-    let (status, body, _) =
-        app.request("GET", "/api/realtime/stats", Some(&s.agent_token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/realtime/stats", Some(&s.agent_token), None)
+        .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["error"], "Insufficient permissions");
 
     // Elevated/team role admitted (CRD 4014).
-    let (status, body, _) =
-        app.request("GET", "/api/realtime/stats", Some(&s.lead_token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/realtime/stats", Some(&s.lead_token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["data"]["currentConfig"]["deliveryVersion"].is_string());
     assert!(body["data"]["timestamp"].is_string());
 
     // Health is open to any authenticated caller (CRD 4020).
-    let (status, body, _) =
-        app.request("GET", "/api/realtime/health", Some(&s.agent_token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/realtime/health", Some(&s.agent_token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     let d = &body["data"];
     assert_eq!(d["status"], "healthy");
@@ -270,7 +291,12 @@ async fn monitoring_dashboard_metrics_and_version_info() {
 
     // Dashboard blocks (CRD 4029): aggregate connection counters report zero.
     let (status, body, _) = app
-        .request("GET", "/api/realtime/monitoring/dashboard", Some(&s.lead_token), None)
+        .request(
+            "GET",
+            "/api/realtime/monitoring/dashboard",
+            Some(&s.lead_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     let d = &body["data"];
@@ -284,7 +310,12 @@ async fn monitoring_dashboard_metrics_and_version_info() {
 
     // Metrics: latest point plus bounded history (CRD 4034).
     let (_, body, _) = app
-        .request("GET", "/api/realtime/monitoring/metrics?limit=1", Some(&s.admin_token), None)
+        .request(
+            "GET",
+            "/api/realtime/monitoring/metrics?limit=1",
+            Some(&s.admin_token),
+            None,
+        )
         .await;
     let d = &body["data"];
     assert!(d["latest"]["connections"].is_object());
@@ -298,7 +329,12 @@ async fn monitoring_dashboard_metrics_and_version_info() {
 
     // Version info (CRD 4058).
     let (_, body, _) = app
-        .request("GET", "/api/realtime/monitoring/config", Some(&s.lead_token), None)
+        .request(
+            "GET",
+            "/api/realtime/monitoring/config",
+            Some(&s.lead_token),
+            None,
+        )
         .await;
     let d = &body["data"];
     assert!(d["currentVersion"].is_string());
@@ -307,7 +343,12 @@ async fn monitoring_dashboard_metrics_and_version_info() {
     assert!(d["recommendations"].is_object());
     // POST is accepted at the same path (CRD 4057).
     let (status, _, _) = app
-        .request("POST", "/api/realtime/monitoring/config", Some(&s.lead_token), None)
+        .request(
+            "POST",
+            "/api/realtime/monitoring/config",
+            Some(&s.lead_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
 }
@@ -317,12 +358,25 @@ async fn monitoring_alerts_listing_and_resolution() {
     let app = spawn_app().await;
     let s = seed(&app).await;
 
-    let a1 = app.state.realtime.module.raise_alert("warning", "errorRate", 0.05, 0.2, "high error rate");
-    let _a2 = app.state.realtime.module.raise_alert("critical", "latency", 1000.0, 5000.0, "slow");
+    let a1 =
+        app.state
+            .realtime
+            .module
+            .raise_alert("warning", "errorRate", 0.05, 0.2, "high error rate");
+    let _a2 = app
+        .state
+        .realtime
+        .module
+        .raise_alert("critical", "latency", 1000.0, 5000.0, "slow");
 
     // Listing with summary (CRD 4040-4042).
     let (status, body, _) = app
-        .request("GET", "/api/realtime/monitoring/alerts", Some(&s.lead_token), None)
+        .request(
+            "GET",
+            "/api/realtime/monitoring/alerts",
+            Some(&s.lead_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     let d = &body["data"];
@@ -331,13 +385,27 @@ async fn monitoring_alerts_listing_and_resolution() {
     assert_eq!(d["summary"]["byLevel"]["warning"], json!(1));
     assert_eq!(d["summary"]["last24Hours"], json!(2));
     let alert = &d["alerts"][0];
-    for key in ["id", "level", "metric", "threshold", "currentValue", "message", "timestamp", "resolved"] {
+    for key in [
+        "id",
+        "level",
+        "metric",
+        "threshold",
+        "currentValue",
+        "message",
+        "timestamp",
+        "resolved",
+    ] {
         assert!(!alert[key].is_null(), "alert missing {key}");
     }
 
     // Missing id -> 400 (CRD 4048).
     let (status, body, _) = app
-        .request("POST", "/api/realtime/monitoring/alerts", Some(&s.lead_token), Some(json!({})))
+        .request(
+            "POST",
+            "/api/realtime/monitoring/alerts",
+            Some(&s.lead_token),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], "Alert ID is required");
@@ -377,7 +445,12 @@ async fn monitoring_alerts_listing_and_resolution() {
 
     // active=true filters resolved alerts out (CRD 4039).
     let (_, body, _) = app
-        .request("GET", "/api/realtime/monitoring/alerts?active=true", Some(&s.lead_token), None)
+        .request(
+            "GET",
+            "/api/realtime/monitoring/alerts?active=true",
+            Some(&s.lead_token),
+            None,
+        )
         .await;
     let alerts = body["data"]["alerts"].as_array().unwrap();
     assert_eq!(alerts.len(), 1);
@@ -390,7 +463,12 @@ async fn monitoring_health_reports_dependency_checks() {
     let s = seed(&app).await;
 
     let (status, body, _) = app
-        .request("GET", "/api/realtime/monitoring/health", Some(&s.admin_token), None)
+        .request(
+            "GET",
+            "/api/realtime/monitoring/health",
+            Some(&s.admin_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     let d = &body["data"];
@@ -581,12 +659,17 @@ async fn publish_status_assignment_notification_and_system_events() {
 // ------------------------------------- latest-message cache (CRD 4129-4174)
 
 async fn seed_conv_with_messages(app: &TestApp, n: usize) -> (String, Vec<String>) {
-    let customer = app.seed_customer("line", &format!("U-{}", uuid()), "C", None).await;
+    let customer = app
+        .seed_customer("line", &format!("U-{}", uuid()), "C", None)
+        .await;
     let conv = app.seed_conversation(customer, None, "active").await;
     let mut ids = Vec::new();
     for i in 0..n {
         let at = format!("2026-06-01T10:0{i}:00.000Z");
-        ids.push(app.seed_message(&conv, "customer", &format!("msg {i}"), Some(&at)).await);
+        ids.push(
+            app.seed_message(&conv, "customer", &format!("msg {i}"), Some(&at))
+                .await,
+        );
     }
     (conv, ids)
 }

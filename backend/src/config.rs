@@ -1,3 +1,28 @@
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProductionConfigError {
+    InsecureDefaultJwtSecret,
+    JwtSecretTooShort,
+    MissingEncryptionKey,
+}
+
+impl std::fmt::Display for ProductionConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InsecureDefaultJwtSecret => {
+                f.write_str("JWT_SECRET must be set in production (refusing the insecure default)")
+            }
+            Self::JwtSecretTooShort => {
+                f.write_str("JWT_SECRET is too short for production (require >= 32 chars)")
+            }
+            Self::MissingEncryptionKey => f.write_str(
+                "ENCRYPTION_KEY must be set in production to protect integration credentials",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ProductionConfigError {}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub database_url: String,
@@ -38,8 +63,12 @@ pub struct Config {
     pub line_channel_access_token: Option<String>,
     /// LINE push endpoint; override only in tests/dev harnesses.
     pub line_push_url: String,
+    /// LINE bot-info endpoint used to verify Messaging API channel access tokens.
+    pub line_bot_info_url: String,
     /// LINE data API base URL used to retrieve message content.
     pub line_content_api_base_url: String,
+    /// Meta Graph API base URL used to verify Facebook/WhatsApp credentials.
+    pub meta_graph_url: String,
     /// Separate HMAC secret for signing/verifying file download URLs (review #8).
     /// Falls back to `jwt_secret` when unset so existing deployments keep working.
     pub file_signing_secret: Option<String>,
@@ -59,14 +88,18 @@ impl Config {
                 .unwrap_or_else(|_| "postgres://localhost/mcss".into()),
             jwt_secret: std::env::var("JWT_SECRET")
                 .unwrap_or_else(|_| "dev-only-insecure-secret".into()),
-            encryption_key: std::env::var("ENCRYPTION_KEY").ok().filter(|s| !s.is_empty()),
+            encryption_key: std::env::var("ENCRYPTION_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
             environment: std::env::var("ENVIRONMENT").unwrap_or_else(|_| "production".into()),
             frontend_url: std::env::var("FRONTEND_URL").ok().filter(|s| !s.is_empty()),
             backend_url: std::env::var("BACKEND_URL")
                 .ok()
                 .map(|s| s.trim_end_matches('/').to_string())
                 .filter(|s| !s.is_empty()),
-            public_storage_url: std::env::var("PUBLIC_STORAGE_URL").ok().filter(|s| !s.is_empty()),
+            public_storage_url: std::env::var("PUBLIC_STORAGE_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
             extra_origins: std::env::var("EXTRA_ORIGINS")
                 .map(|s| {
                     s.split(',')
@@ -92,12 +125,20 @@ impl Config {
             facebook_app_secret: std::env::var("FACEBOOK_APP_SECRET")
                 .ok()
                 .filter(|s| !s.is_empty())
-                .or_else(|| std::env::var("FB_APP_SECRET").ok().filter(|s| !s.is_empty())),
+                .or_else(|| {
+                    std::env::var("FB_APP_SECRET")
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                }),
             liff_id: std::env::var("LIFF_ID").ok().filter(|s| !s.is_empty()),
             line_login_channel_id: std::env::var("LINE_LOGIN_CHANNEL_ID")
                 .ok()
                 .filter(|s| !s.is_empty())
-                .or_else(|| std::env::var("LIFF_CHANNEL_ID").ok().filter(|s| !s.is_empty())),
+                .or_else(|| {
+                    std::env::var("LIFF_CHANNEL_ID")
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                }),
             line_id_token_verify_url: std::env::var("LINE_ID_TOKEN_VERIFY_URL")
                 .ok()
                 .filter(|s| !s.is_empty())
@@ -110,11 +151,20 @@ impl Config {
                 .ok()
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "https://api.line.me/v2/bot/message/push".into()),
+            line_bot_info_url: std::env::var("LINE_BOT_INFO_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "https://api.line.me/v2/bot/info".into()),
             line_content_api_base_url: std::env::var("LINE_CONTENT_API_BASE_URL")
                 .ok()
                 .map(|s| s.trim_end_matches('/').to_string())
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "https://api-data.line.me".into()),
+            meta_graph_url: std::env::var("META_GRAPH_URL")
+                .ok()
+                .map(|s| s.trim_end_matches('/').to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "https://graph.facebook.com/v20.0".into()),
             facebook_verify_token: std::env::var("FACEBOOK_VERIFY_TOKEN")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -127,8 +177,12 @@ impl Config {
             file_signing_secret: std::env::var("FILE_SIGNING_SECRET")
                 .ok()
                 .filter(|s| !s.is_empty()),
-            shopee_partner_id: std::env::var("SHOPEE_PARTNER_ID").ok().and_then(|s| s.parse().ok()),
-            shopee_partner_key: std::env::var("SHOPEE_PARTNER_KEY").ok().filter(|s| !s.is_empty()),
+            shopee_partner_id: std::env::var("SHOPEE_PARTNER_ID")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+            shopee_partner_key: std::env::var("SHOPEE_PARTNER_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
             shopee_host: std::env::var("SHOPEE_HOST").ok().filter(|s| !s.is_empty()),
         }
     }
@@ -143,23 +197,25 @@ impl Config {
     /// Key used to sign/verify file download URLs (review #8). Falls back to the
     /// JWT secret for backward compatibility when FILE_SIGNING_SECRET is unset.
     pub fn file_signing_key(&self) -> &str {
-        self.file_signing_secret.as_deref().unwrap_or(&self.jwt_secret)
+        self.file_signing_secret
+            .as_deref()
+            .unwrap_or(&self.jwt_secret)
     }
 
     /// Reject insecure production-like configuration. Unknown/missing environments
     /// fail closed as production; only explicit dev/test/local names are relaxed.
-    pub fn validate_for_production(&self) -> Result<(), String> {
+    pub fn validate_for_production(&self) -> Result<(), ProductionConfigError> {
         if !self.is_production() {
             return Ok(());
         }
         if self.jwt_secret == "dev-only-insecure-secret" {
-            return Err("JWT_SECRET must be set in production (refusing the insecure default)".into());
+            return Err(ProductionConfigError::InsecureDefaultJwtSecret);
         }
         if self.jwt_secret.len() < 32 {
-            return Err("JWT_SECRET is too short for production (require >= 32 chars)".into());
+            return Err(ProductionConfigError::JwtSecretTooShort);
         }
         if self.encryption_key.is_none() {
-            return Err("ENCRYPTION_KEY must be set in production to protect integration credentials".into());
+            return Err(ProductionConfigError::MissingEncryptionKey);
         }
         Ok(())
     }
@@ -175,9 +231,13 @@ impl Config {
                 }
             }
         }
-        for o in [&self.frontend_url, &self.backend_url, &self.public_storage_url]
-            .into_iter()
-            .flatten()
+        for o in [
+            &self.frontend_url,
+            &self.backend_url,
+            &self.public_storage_url,
+        ]
+        .into_iter()
+        .flatten()
         {
             origins.push(o.trim_end_matches('/').to_string());
         }
@@ -213,7 +273,9 @@ pub fn test_config() -> Config {
         line_bot_id: None,
         line_channel_access_token: None,
         line_push_url: "https://api.line.me/v2/bot/message/push".into(),
+        line_bot_info_url: "https://api.line.me/v2/bot/info".into(),
         line_content_api_base_url: "https://api-data.line.me".into(),
+        meta_graph_url: "https://graph.facebook.com/v20.0".into(),
         file_signing_secret: None,
         shopee_partner_id: None,
         shopee_partner_key: None,
@@ -257,7 +319,8 @@ mod validate_production_tests {
         };
         assert!(cfg.is_production());
         let err = cfg.validate_for_production().unwrap_err();
-        assert!(err.contains("JWT_SECRET must be set"), "unexpected error: {err}");
+        assert_eq!(err, ProductionConfigError::InsecureDefaultJwtSecret);
+        assert!(err.to_string().contains("JWT_SECRET must be set"));
     }
 
     /// Production config using the insecure default secret must be rejected.
@@ -270,7 +333,8 @@ mod validate_production_tests {
             ..test_config()
         };
         let err = cfg.validate_for_production().unwrap_err();
-        assert!(err.contains("JWT_SECRET must be set"), "unexpected error: {err}");
+        assert_eq!(err, ProductionConfigError::InsecureDefaultJwtSecret);
+        assert!(err.to_string().contains("JWT_SECRET must be set"));
     }
 
     /// Production config with a short (< 32 char) secret must be rejected.
@@ -283,7 +347,8 @@ mod validate_production_tests {
             ..test_config()
         };
         let err = cfg.validate_for_production().unwrap_err();
-        assert!(err.contains("too short"), "unexpected error: {err}");
+        assert_eq!(err, ProductionConfigError::JwtSecretTooShort);
+        assert!(err.to_string().contains("too short"));
     }
 
     /// Production config missing ENCRYPTION_KEY must be rejected.
@@ -296,7 +361,8 @@ mod validate_production_tests {
             ..test_config()
         };
         let err = cfg.validate_for_production().unwrap_err();
-        assert!(err.contains("ENCRYPTION_KEY"), "unexpected error: {err}");
+        assert_eq!(err, ProductionConfigError::MissingEncryptionKey);
+        assert!(err.to_string().contains("ENCRYPTION_KEY"));
     }
 
     /// Production config with a 32+ char secret AND an encryption key must pass.

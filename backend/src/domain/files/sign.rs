@@ -8,7 +8,11 @@ use sha2::Sha256;
 fn compute(secret: &str, key: &str, expires: i64) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("any key size");
     mac.update(format!("{key}:{expires}").as_bytes());
-    mac.finalize().into_bytes().iter().map(|b| format!("{b:02x}")).collect()
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Returns (signature, absolute expiry as unix seconds).
@@ -24,7 +28,9 @@ pub fn verify(secret: &str, key: &str, sig: &str, expires: i64) -> bool {
     // Constant-time-ish comparison via the hmac verify path.
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("any key size");
     mac.update(format!("{key}:{expires}").as_bytes());
-    let Ok(raw) = hex_decode(sig) else { return false };
+    let Ok(raw) = hex_decode(sig) else {
+        return false;
+    };
     mac.verify_slice(&raw).is_ok()
 }
 

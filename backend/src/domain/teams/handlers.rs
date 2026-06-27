@@ -526,7 +526,7 @@ pub async fn delete_team(
 
 pub async fn search_teams(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(raw_query): Path<String>,
 ) -> Result {
     let query = raw_query.trim().to_string();
@@ -534,16 +534,31 @@ pub async fn search_teams(
         return Err(AppError::BadRequest("Search query is required".into()));
     }
     let pattern = format!("%{}%", query.to_lowercase());
+    let visible_team_ids: Vec<i64> = user.teams.iter().map(|t| t.team_id).collect();
+    if !user.is_admin() && visible_team_ids.is_empty() {
+        return Ok(envelope::ok(Vec::<Value>::new()));
+    }
+
+    let scope_filter = if user.is_admin() {
+        String::new()
+    } else {
+        " AND t.id = ANY(?)".to_string()
+    };
     let sql = store::team_select(
-        "AND t.is_active = 1
-         AND (LOWER(t.name) LIKE ? OR LOWER(COALESCE(t.description,'')) LIKE ?)",
+        &format!(
+            "AND t.is_active = 1
+             AND (LOWER(t.name) LIKE ? OR LOWER(COALESCE(t.description,'')) LIKE ?){scope_filter}"
+        ),
         "ORDER BY t.created_at DESC, t.id DESC LIMIT 20",
     );
-    let rows: Vec<TeamWithCounts> = sqlx::query_as(&crate::db::pg_params(&sql))
+    let sql = crate::db::pg_params(&sql);
+    let mut query = sqlx::query_as::<_, TeamWithCounts>(&sql)
         .bind(&pattern)
-        .bind(&pattern)
-        .fetch_all(&state.db)
-        .await?;
+        .bind(&pattern);
+    if !user.is_admin() {
+        query = query.bind(visible_team_ids);
+    }
+    let rows = query.fetch_all(&state.db).await?;
     Ok(envelope::ok(
         rows.iter().map(store::team_view).collect::<Vec<_>>(),
     ))

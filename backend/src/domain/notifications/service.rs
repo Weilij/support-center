@@ -103,7 +103,10 @@ pub async fn create(state: &AppState, n: NewNotification<'_>) -> sqlx::Result<St
 }
 
 pub fn expiry(hours: i64) -> Option<String> {
-    Some((chrono::Utc::now() + chrono::Duration::hours(hours)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+    Some(
+        (chrono::Utc::now() + chrono::Duration::hours(hours))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+    )
 }
 
 /// All active (non-deleted, enabled) staff ids.

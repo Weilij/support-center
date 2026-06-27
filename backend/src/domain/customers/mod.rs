@@ -17,7 +17,10 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/customers", get(handlers::list_customers))
         // The spec mounts the listing at the trailing-slash path (CRD 1655).
         .route("/api/customers/", get(handlers::list_customers))
-        .route("/api/customers/tags/available", get(handlers::available_tags))
+        .route(
+            "/api/customers/tags/available",
+            get(handlers::available_tags),
+        )
         .route(
             "/api/customers/platform/{platform}/{platformUserId}",
             get(handlers::get_customer_by_platform),

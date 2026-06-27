@@ -14,7 +14,6 @@
 //! validation/authorization rules are part of this area's contract.
 
 use axum::extract::{Path, Query, State};
-use axum::response::Response;
 use axum::{Extension, Json};
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -22,12 +21,10 @@ use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::{is_manager_or_admin, AuthUser};
 use crate::state::AppState;
 use std::sync::Arc;
-
-type Result<T = Response> = std::result::Result<T, AppError>;
 
 /// Bounded metrics-history retention (monitoring/metrics, CRD 4034).
 const METRICS_HISTORY_CAP: usize = 288;

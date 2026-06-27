@@ -1,6 +1,6 @@
 // Setup wizard (CRD §9.2, lines 6855-6979): multi-step flow — authenticate
 // the hosting account, collect deployment configuration, trigger
-// provisioning, poll live status, present generated admin credentials.
+// provisioning, poll live status, and hand off to post-deploy admin setup.
 
 import { useEffect, useRef, useState } from 'react'
 
@@ -13,7 +13,7 @@ interface RunStatus {
   progressPercent?: number
   currentStep?: string | null
   completedSteps?: string[]
-  adminCredentials?: { email: string; password: string; note?: string }
+  adminSetup?: { required?: boolean; method?: string; note?: string }
   error?: string
 }
 
@@ -158,14 +158,11 @@ export default function Install() {
         </div>
       )}
 
-      {step === 'done' && run?.adminCredentials && (
+      {step === 'done' && (
         <div>
-          <h2>佈建完成 🎉</h2>
-          <p>請記下初始管理員憑證（僅顯示一次）：</p>
-          <pre style={{ background: '#f6f6f6', padding: 12 }}>
-            {`帳號: ${run.adminCredentials.email}\n密碼: ${run.adminCredentials.password}`}
-          </pre>
-          <p><small>{run.adminCredentials.note}</small></p>
+          <h2>佈建完成</h2>
+          <p>雲端資源已建立完成。請開啟部署後的後端初始化流程，建立第一位系統管理員。</p>
+          {run?.adminSetup?.note && <p><small>{run.adminSetup.note}</small></p>}
         </div>
       )}
 

@@ -2,14 +2,13 @@
 
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue};
-use axum::response::Response;
 use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::{is_manager_or_admin, AuthUser};
 use crate::middleware::cookies;
 use crate::middleware::rate_limit::TrustedClientIp;
@@ -17,8 +16,6 @@ use crate::state::AppState;
 
 use super::store::{self, AgentRow};
 use super::tokens::{self, Claims, TeamClaim};
-
-type Result<T = Response> = std::result::Result<T, AppError>;
 
 const MONITORING_TOKEN_REFRESH_TTL_SECS: i64 = 604_800;
 const MONITORING_TOKEN_MAX_LIFETIME_SECS: i64 = 2_592_000;
@@ -65,7 +62,9 @@ fn require_admin_access(user: &AuthUser) -> Result<()> {
     if user.is_admin() && user.token_type == "access" {
         Ok(())
     } else {
-        Err(AppError::Forbidden("Administrator access token required".into()))
+        Err(AppError::Forbidden(
+            "Administrator access token required".into(),
+        ))
     }
 }
 
@@ -100,7 +99,11 @@ async fn issue_token_pair(
 ) -> Result<(String, String)> {
     let team_claims: Vec<TeamClaim> = teams
         .iter()
-        .map(|t| TeamClaim { team_id: t.team_id, role: t.role.clone(), is_primary: t.is_primary })
+        .map(|t| TeamClaim {
+            team_id: t.team_id,
+            role: t.role.clone(),
+            is_primary: t.is_primary,
+        })
         .collect();
     let primary = teams.iter().find(|t| t.is_primary).map(|t| t.team_id);
 
@@ -139,7 +142,9 @@ pub async fn login(
     let email = body.email.as_deref().unwrap_or("").trim().to_string();
     let password = body.password.as_deref().unwrap_or("").trim().to_string();
     if email.is_empty() || password.is_empty() {
-        return Err(AppError::BadRequest("Email and password are required".into()));
+        return Err(AppError::BadRequest(
+            "Email and password are required".into(),
+        ));
     }
 
     let generic = || AppError::Unauthorized("Invalid email or password".into());
@@ -160,7 +165,12 @@ pub async fn login(
 
     // Forced password change: not fully signed in (CRD 139).
     if agent.password_policy == "must_change" {
-        let mut temp = Claims::new(&agent.id, &agent.role, "temp_change", tokens::TEMP_CHANGE_TTL_SECS);
+        let mut temp = Claims::new(
+            &agent.id,
+            &agent.role,
+            "temp_change",
+            tokens::TEMP_CHANGE_TTL_SECS,
+        );
         temp.email = Some(agent.email.clone());
         let temp_token = tokens::sign(&temp, &state.config.jwt_secret)
             .map_err(|e| AppError::Internal(format!("token signing failed: {e}")))?;
@@ -175,11 +185,14 @@ pub async fn login(
     }
 
     // Best-effort last-login update (CRD 139: failure does not block sign-in).
-    let _ = sqlx::query("UPDATE agents SET last_login_at = $1 WHERE id = $2")
+    if let Err(error) = sqlx::query("UPDATE agents SET last_login_at = $1 WHERE id = $2")
         .bind(crate::db::now_iso())
         .bind(&agent.id)
         .execute(&state.db)
-        .await;
+        .await
+    {
+        tracing::warn!(error = %error, agent_id = %agent.id, "last-login update failed");
+    }
 
     let teams = store::memberships(&state.db, &agent.id).await?;
     let (access_token, refresh_token) = issue_token_pair(&state, &agent, &teams).await?;
@@ -210,7 +223,9 @@ pub async fn login(
     }));
     for cookie_str in cookies::auth_cookies(&access_token, &refresh_token, &csrf_token, secure) {
         if let Ok(hv) = HeaderValue::from_str(&cookie_str) {
-            response.headers_mut().append(axum::http::header::SET_COOKIE, hv);
+            response
+                .headers_mut()
+                .append(axum::http::header::SET_COOKIE, hv);
         }
     }
     Ok(response)
@@ -242,7 +257,12 @@ pub async fn register(
     }
     let email = body.email.as_deref().unwrap_or("").trim().to_string();
     let password = body.password.as_deref().unwrap_or("").to_string();
-    let display_name = body.display_name.as_deref().unwrap_or("").trim().to_string();
+    let display_name = body
+        .display_name
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let role = body.role.as_deref().unwrap_or("").to_string();
     if email.is_empty() || password.is_empty() || display_name.is_empty() || role.is_empty() {
         return Err(AppError::BadRequest(
@@ -250,10 +270,17 @@ pub async fn register(
         ));
     }
     if role != "admin" && role != "agent" {
-        return Err(AppError::BadRequest("role must be one of: admin, agent".into()));
+        return Err(AppError::BadRequest(
+            "role must be one of: admin, agent".into(),
+        ));
     }
-    if store::find_active_agent_by_email(&state.db, &email).await?.is_some() {
-        return Err(AppError::Conflict("An account with this email already exists".into()));
+    if store::find_active_agent_by_email(&state.db, &email)
+        .await?
+        .is_some()
+    {
+        return Err(AppError::Conflict(
+            "An account with this email already exists".into(),
+        ));
     }
 
     let hash = store::hash_password(&password)
@@ -369,20 +396,21 @@ pub async fn logout(
 
     store::delete_session(&state.db, session_id).await?;
 
-    // Best-effort revocations (CRD 159).
+    // Revocation persistence is part of the logout contract: if it fails, the
+    // caller must not receive a success response while a token remains usable.
     if let Some(token) = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "))
     {
         if let Ok(claims) = tokens::verify(token, &state.config.jwt_secret) {
-            let _ = store::revoke_jti(&state.db, &claims.jti, Some(&claims.sub), Some(claims.exp)).await;
+            store::revoke_jti(&state.db, &claims.jti, Some(&claims.sub), Some(claims.exp)).await?;
         }
     }
     // Cookie-auth clients: revoke the access token carried by the HttpOnly cookie.
     if let Some(at) = cookies::cookie_value(&headers, "mcss_access") {
         if let Ok(claims) = tokens::verify(&at, &state.config.jwt_secret) {
-            let _ = store::revoke_jti(&state.db, &claims.jti, Some(&claims.sub), Some(claims.exp)).await;
+            store::revoke_jti(&state.db, &claims.jti, Some(&claims.sub), Some(claims.exp)).await?;
         }
     }
     let rt_opt = body
@@ -392,16 +420,24 @@ pub async fn logout(
         if let Ok(claims) = tokens::verify(&rt, &state.config.jwt_secret) {
             // Only revoked when it belongs to the same signed-in user (CRD 159).
             if claims.token_type == "refresh" && claims.sub == agent_id {
-                let _ = store::revoke_refresh_token(&state.db, &claims.jti).await;
-                let _ = store::revoke_jti(&state.db, &claims.jti, Some(&claims.sub), Some(claims.exp)).await;
+                store::revoke_refresh_token(&state.db, &claims.jti).await?;
+                store::revoke_jti(&state.db, &claims.jti, Some(&claims.sub), Some(claims.exp))
+                    .await?;
             }
         }
     }
 
     store::log_activity(
-        &state.db, &agent.id, &agent.display_name, &agent.role,
-        "logout", "auth", None, None,
-        ip.as_deref(), user_agent(&headers).as_deref(),
+        &state.db,
+        &agent.id,
+        &agent.display_name,
+        &agent.role,
+        "logout",
+        "auth",
+        None,
+        None,
+        ip.as_deref(),
+        user_agent(&headers).as_deref(),
     )
     .await;
 
@@ -409,7 +445,9 @@ pub async fn logout(
     let mut response = envelope::message_only("Logged out successfully");
     for cookie_str in cookies::clear_auth_cookies(secure) {
         if let Ok(hv) = HeaderValue::from_str(&cookie_str) {
-            response.headers_mut().append(axum::http::header::SET_COOKIE, hv);
+            response
+                .headers_mut()
+                .append(axum::http::header::SET_COOKIE, hv);
         }
     }
     Ok(response)
@@ -450,8 +488,18 @@ pub async fn refresh(
 
     if row.consumed_at.is_some() || row.revoked_at.is_some() {
         // Reuse detected: revoke and force a fresh sign-in (CRD 169).
-        let _ = store::revoke_refresh_token(&state.db, &claims.jti).await;
-        let _ = store::revoke_jti(&state.db, &claims.jti, Some(&claims.sub), Some(claims.exp)).await;
+        store::revoke_refresh_token(&state.db, &claims.jti)
+            .await
+            .map_err(|error| {
+                tracing::error!(error = %error, user = %claims.sub, "refresh token reuse revocation failed");
+                AppError::Unauthorized("Unable to revoke reused refresh token".into())
+            })?;
+        store::revoke_jti(&state.db, &claims.jti, Some(&claims.sub), Some(claims.exp))
+            .await
+            .map_err(|error| {
+                tracing::error!(error = %error, user = %claims.sub, "refresh token jti revocation failed");
+                AppError::Unauthorized("Unable to revoke reused refresh token".into())
+            })?;
         tracing::warn!(
             user = %claims.sub,
             ip = ?ip,
@@ -468,7 +516,9 @@ pub async fn refresh(
         .filter(|a| a.is_active != 0)
         .ok_or_else(|| AppError::Unauthorized("Account not found or inactive".into()))?;
     if token_issued_before_valid_after(claims.iat, &agent.tokens_valid_after) {
-        return Err(AppError::Unauthorized("Refresh token is no longer valid".into()));
+        return Err(AppError::Unauthorized(
+            "Refresh token is no longer valid".into(),
+        ));
     }
 
     // Team data re-derived from authoritative storage (CRD 169).
@@ -484,7 +534,9 @@ pub async fn refresh(
     }));
     for cookie_str in cookies::auth_cookies(&access_token, &refresh_token, &csrf_token, secure) {
         if let Ok(hv) = HeaderValue::from_str(&cookie_str) {
-            response.headers_mut().append(axum::http::header::SET_COOKIE, hv);
+            response
+                .headers_mut()
+                .append(axum::http::header::SET_COOKIE, hv);
         }
     }
     Ok(response)
@@ -568,18 +620,26 @@ pub async fn update_me(
         .await?;
 
     store::log_activity(
-        &state.db, &user.id, &user.display_name, &user.role,
-        "update_profile", "agent", Some(&user.id),
+        &state.db,
+        &user.id,
+        &user.display_name,
+        &user.role,
+        "update_profile",
+        "agent",
+        Some(&user.id),
         Some(json!({
             "selfService": true, "reversible": true,
             "old": {"displayName": agent.display_name},
             "new": {"displayName": name},
         })),
-        ip.as_deref(), user_agent(&headers).as_deref(),
+        ip.as_deref(),
+        user_agent(&headers).as_deref(),
     )
     .await;
 
-    let updated = store::find_agent_by_id(&state.db, &user.id).await?.unwrap_or(agent);
+    let updated = store::find_agent_by_id(&state.db, &user.id)
+        .await?
+        .unwrap_or(agent);
     Ok(envelope::ok_msg(agent_view(&updated), "Profile updated"))
 }
 
@@ -614,13 +674,21 @@ pub async fn change_password(
 
     if !store::verify_password(&current, &agent.password_hash) {
         store::log_activity(
-            &state.db, &user.id, &user.display_name, &user.role,
-            "change_password_failed", "agent", Some(&user.id),
+            &state.db,
+            &user.id,
+            &user.display_name,
+            &user.role,
+            "change_password_failed",
+            "agent",
+            Some(&user.id),
             Some(json!({"reason": "wrong current password", "security": true})),
-            ip.as_deref(), user_agent(&headers).as_deref(),
+            ip.as_deref(),
+            user_agent(&headers).as_deref(),
         )
         .await;
-        return Err(AppError::Unauthorized("Current password is incorrect".into()));
+        return Err(AppError::Unauthorized(
+            "Current password is incorrect".into(),
+        ));
     }
 
     let hash = store::hash_password(&new)
@@ -638,9 +706,16 @@ pub async fn change_password(
     store::revoke_user_credentials(&state.db, &user.id, &now).await?;
 
     store::log_activity(
-        &state.db, &user.id, &user.display_name, &user.role,
-        "change_password", "agent", Some(&user.id), None,
-        ip.as_deref(), user_agent(&headers).as_deref(),
+        &state.db,
+        &user.id,
+        &user.display_name,
+        &user.role,
+        "change_password",
+        "agent",
+        Some(&user.id),
+        None,
+        ip.as_deref(),
+        user_agent(&headers).as_deref(),
     )
     .await;
 
@@ -663,7 +738,9 @@ pub async fn reset_member_password(
     Json(body): Json<ResetPasswordBody>,
 ) -> Result {
     if !is_manager_or_admin(&user) {
-        return Err(AppError::Forbidden("Manager or administrator role required".into()));
+        return Err(AppError::Forbidden(
+            "Manager or administrator role required".into(),
+        ));
     }
     let new = body.new_password.unwrap_or_default();
     if new.is_empty() {
@@ -687,7 +764,9 @@ pub async fn reset_member_password(
 
     let hash = store::hash_password(&new)
         .map_err(|e| AppError::Internal(format!("password hashing failed: {e}")))?;
-    let policy = body.policy.unwrap_or_else(|| target.password_policy.clone());
+    let policy = body
+        .policy
+        .unwrap_or_else(|| target.password_policy.clone());
     let now = crate::db::now_iso();
     sqlx::query(
         "UPDATE agents SET password_hash = $1, password_policy = $2,
@@ -818,10 +897,14 @@ pub async fn batch_tokens(
         .ok_or_else(|| AppError::BadRequest("users must be a non-empty array".into()))?
         .clone();
     if users.is_empty() {
-        return Err(AppError::BadRequest("users must be a non-empty array".into()));
+        return Err(AppError::BadRequest(
+            "users must be a non-empty array".into(),
+        ));
     }
     if users.len() > 10 {
-        return Err(AppError::BadRequest("users may contain at most 10 entries".into()));
+        return Err(AppError::BadRequest(
+            "users may contain at most 10 entries".into(),
+        ));
     }
     let expires_in = body.expires_in.unwrap_or(3600);
 
@@ -833,9 +916,16 @@ pub async fn batch_tokens(
             .and_then(|v| v.as_str())
             .unwrap_or("test-user")
             .to_string();
-        let role = u.get("role").and_then(|v| v.as_str()).unwrap_or("agent").to_string();
+        let role = u
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("agent")
+            .to_string();
         let mut claims = Claims::new(&id, &role, "user", expires_in);
-        claims.name = u.get("displayName").and_then(|v| v.as_str()).map(|s| s.to_string());
+        claims.name = u
+            .get("displayName")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let token = tokens::sign(&claims, &state.config.jwt_secret)
             .map_err(|e| AppError::Internal(format!("token signing failed: {e}")))?;
         issued.push(json!({"userId": id, "role": role, "token": token}));
@@ -909,35 +999,38 @@ pub async fn refresh_service_token(
 
     let root_iat = claims.service_root_iat.unwrap_or(claims.iat);
     let now = chrono::Utc::now().timestamp();
-    let (new_claims, kind) = if claims.token_type == "monitoring" && claims.monitoring.unwrap_or(false) {
-        let ttl = bounded_service_ttl(
-            now,
-            root_iat,
-            MONITORING_TOKEN_REFRESH_TTL_SECS,
-            MONITORING_TOKEN_MAX_LIFETIME_SECS,
-        )
-        .ok_or_else(|| AppError::Unauthorized("Token maximum lifetime exceeded".into()))?;
-        let mut c = Claims::new(&claims.sub, &claims.role, "monitoring", ttl);
-        c.monitoring = Some(true);
-        c.service_root_iat = Some(root_iat);
-        (c, "monitoring")
-    } else if claims.token_type == "user" {
-        let ttl = bounded_service_ttl(
-            now,
-            root_iat,
-            USER_TOKEN_REFRESH_TTL_SECS,
-            USER_TOKEN_MAX_LIFETIME_SECS,
-        )
-        .ok_or_else(|| AppError::Unauthorized("Token maximum lifetime exceeded".into()))?;
-        let mut c = Claims::new(&claims.sub, &claims.role, "user", ttl);
-        c.email = claims.email.clone();
-        c.name = claims.name.clone();
-        c.primary_team_id = claims.primary_team_id;
-        c.service_root_iat = Some(root_iat);
-        (c, "user")
-    } else {
-        return Err(AppError::BadRequest("Only monitoring or user tokens can be refreshed".into()));
-    };
+    let (new_claims, kind) =
+        if claims.token_type == "monitoring" && claims.monitoring.unwrap_or(false) {
+            let ttl = bounded_service_ttl(
+                now,
+                root_iat,
+                MONITORING_TOKEN_REFRESH_TTL_SECS,
+                MONITORING_TOKEN_MAX_LIFETIME_SECS,
+            )
+            .ok_or_else(|| AppError::Unauthorized("Token maximum lifetime exceeded".into()))?;
+            let mut c = Claims::new(&claims.sub, &claims.role, "monitoring", ttl);
+            c.monitoring = Some(true);
+            c.service_root_iat = Some(root_iat);
+            (c, "monitoring")
+        } else if claims.token_type == "user" {
+            let ttl = bounded_service_ttl(
+                now,
+                root_iat,
+                USER_TOKEN_REFRESH_TTL_SECS,
+                USER_TOKEN_MAX_LIFETIME_SECS,
+            )
+            .ok_or_else(|| AppError::Unauthorized("Token maximum lifetime exceeded".into()))?;
+            let mut c = Claims::new(&claims.sub, &claims.role, "user", ttl);
+            c.email = claims.email.clone();
+            c.name = claims.name.clone();
+            c.primary_team_id = claims.primary_team_id;
+            c.service_root_iat = Some(root_iat);
+            (c, "user")
+        } else {
+            return Err(AppError::BadRequest(
+                "Only monitoring or user tokens can be refreshed".into(),
+            ));
+        };
     store::revoke_jti(&state.db, &claims.jti, Some(&claims.sub), Some(claims.exp)).await?;
     let token = tokens::sign(&new_claims, &state.config.jwt_secret)
         .map_err(|e| AppError::Internal(format!("token signing failed: {e}")))?;
@@ -1002,7 +1095,10 @@ mod tests {
         assert!(request_is_tls(&headers));
 
         let mut headers = HeaderMap::new();
-        headers.insert("forwarded", HeaderValue::from_static("for=1.2.3.4;proto=https"));
+        headers.insert(
+            "forwarded",
+            HeaderValue::from_static("for=1.2.3.4;proto=https"),
+        );
         assert!(request_is_tls(&headers));
 
         let mut headers = HeaderMap::new();

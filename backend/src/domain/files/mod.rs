@@ -34,18 +34,36 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let public = Router::new()
         .route("/api/files/health", get(handlers::health))
         .route("/api/files/public/{*path}", get(handlers::public_proxy))
-        .route("/api/assets/video-placeholder.png", get(handlers::video_placeholder))
-        .route("/api/files/download/{attachmentId}", get(handlers::public_download))
-        .route("/api/r2-public/{folder}/{filename}", get(handlers::r2_public))
+        .route(
+            "/api/assets/video-placeholder.png",
+            get(handlers::video_placeholder),
+        )
+        .route(
+            "/api/files/download/{attachmentId}",
+            get(handlers::public_download),
+        )
+        .route(
+            "/api/r2-public/{folder}/{filename}",
+            get(handlers::r2_public),
+        )
         .merge(direct);
 
     // Upload routes get a body-size cap so oversized multipart bodies are
     // rejected by axum before the handler reads them into memory (review #4).
     let upload = Router::new()
         .route("/api/files", post(handlers::upload))
-        .route("/api/files/upload-multiple", post(handlers::upload_multiple))
-        .route("/api/files/upload/{platform}", post(handlers::upload_platform))
-        .route("/api/files/chunked/{sessionId}/chunk", post(handlers::chunked_chunk))
+        .route(
+            "/api/files/upload-multiple",
+            post(handlers::upload_multiple),
+        )
+        .route(
+            "/api/files/upload/{platform}",
+            post(handlers::upload_platform),
+        )
+        .route(
+            "/api/files/chunked/{sessionId}/chunk",
+            post(handlers::chunked_chunk),
+        )
         .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES));
 
     let authed = Router::new()
@@ -56,22 +74,49 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/files/stats/summary", get(handlers::stats_summary))
         .route("/api/files/search", get(handlers::search))
         .route("/api/files/batch", post(handlers::batch))
-        .route("/api/files/conversation/{conversationId}", get(handlers::conversation_files))
-        .route("/api/files/message/{messageId}", get(handlers::message_files))
+        .route(
+            "/api/files/conversation/{conversationId}",
+            get(handlers::conversation_files),
+        )
+        .route(
+            "/api/files/message/{messageId}",
+            get(handlers::message_files),
+        )
         // LINE media carries no HMAC signature, so it must be auth-gated (H2).
-        .route("/api/files/line-proxy/{lineMessageId}", get(handlers::line_proxy))
+        .route(
+            "/api/files/line-proxy/{lineMessageId}",
+            get(handlers::line_proxy),
+        )
         .route(
             "/api/files/presigned-url",
             post(handlers::presigned_url).get(handlers::presigned_status),
         )
-        .route("/api/files/presigned-url/status", get(handlers::presigned_status))
+        .route(
+            "/api/files/presigned-url/status",
+            get(handlers::presigned_status),
+        )
         .route("/api/files/chunked/init", post(handlers::chunked_init))
-        .route("/api/files/chunked/{sessionId}/complete", post(handlers::chunked_complete))
-        .route("/api/files/chunked/{sessionId}/cancel", post(handlers::chunked_cancel))
-        .route("/api/files/{fileId}", get(handlers::get_file).delete(handlers::delete_file))
-        .route("/api/files/{fileId}/confirm", post(handlers::confirm_upload))
+        .route(
+            "/api/files/chunked/{sessionId}/complete",
+            post(handlers::chunked_complete),
+        )
+        .route(
+            "/api/files/chunked/{sessionId}/cancel",
+            post(handlers::chunked_cancel),
+        )
+        .route(
+            "/api/files/{fileId}",
+            get(handlers::get_file).delete(handlers::delete_file),
+        )
+        .route(
+            "/api/files/{fileId}/confirm",
+            post(handlers::confirm_upload),
+        )
         .route("/api/files/{fileId}/status", get(handlers::upload_status))
-        .route("/api/files/{fileId}/download-url", get(handlers::download_url))
+        .route(
+            "/api/files/{fileId}/download-url",
+            get(handlers::download_url),
+        )
         .merge(upload)
         .layer(from_fn_with_state(state, require_auth));
 

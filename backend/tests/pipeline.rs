@@ -21,7 +21,10 @@ async fn unknown_route_returns_spec_fallback_shape() {
     let (status, body, _) = app.request("GET", "/api/nope/missing", None, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"], "Not Found");
-    assert!(body["message"].as_str().unwrap().contains("/api/nope/missing"));
+    assert!(body["message"]
+        .as_str()
+        .unwrap()
+        .contains("/api/nope/missing"));
     assert!(body["timestamp"].is_string());
     // Spec note: the fallback envelope has NO `success` flag (CRD 5640).
     assert!(body.get("success").is_none());
@@ -50,7 +53,10 @@ async fn preflight_from_allowed_origin_returns_204_with_cors_headers() {
         .to_str()
         .unwrap()
         .contains("PATCH"));
-    assert_eq!(headers.get("access-control-allow-credentials").unwrap(), "true");
+    assert_eq!(
+        headers.get("access-control-allow-credentials").unwrap(),
+        "true"
+    );
     assert_eq!(headers.get("access-control-max-age").unwrap(), "86400");
     assert_eq!(headers.get("cache-control").unwrap(), "no-store");
 }
@@ -83,20 +89,35 @@ async fn preflight_from_disallowed_origin_returns_structured_403() {
 async fn allowed_origin_responses_get_cors_decoration() {
     let app = spawn_app().await;
     let (_, _, headers) = app
-        .request_with_headers("GET", "/", None, None, &[("Origin", "http://localhost:5173")])
+        .request_with_headers(
+            "GET",
+            "/",
+            None,
+            None,
+            &[("Origin", "http://localhost:5173")],
+        )
         .await;
     assert_eq!(
         headers.get("access-control-allow-origin").unwrap(),
         "http://localhost:5173"
     );
-    assert_eq!(headers.get("access-control-allow-credentials").unwrap(), "true");
+    assert_eq!(
+        headers.get("access-control-allow-credentials").unwrap(),
+        "true"
+    );
 }
 
 #[tokio::test]
 async fn disallowed_origin_still_executes_but_without_cors_headers() {
     let app = spawn_app().await;
     let (status, _, headers) = app
-        .request_with_headers("GET", "/", None, None, &[("Origin", "https://evil.example.com")])
+        .request_with_headers(
+            "GET",
+            "/",
+            None,
+            None,
+            &[("Origin", "https://evil.example.com")],
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert!(headers.get("access-control-allow-origin").is_none());
@@ -157,11 +178,17 @@ async fn pagination_clamping_follows_spec_bounds() {
 #[tokio::test]
 async fn metric_path_normalization_collapses_dynamic_segments() {
     use mcss_backend::middleware::metrics::normalize_path;
-    assert_eq!(normalize_path("/api/conversations/123/messages"), "/api/conversations/:id/messages");
+    assert_eq!(
+        normalize_path("/api/conversations/123/messages"),
+        "/api/conversations/:id/messages"
+    );
     assert_eq!(
         normalize_path("/api/users/550e8400-e29b-41d4-a716-446655440000"),
         "/api/users/:id"
     );
-    assert_eq!(normalize_path("/api/files/deadbeefdeadbeef01"), "/api/files/:id");
+    assert_eq!(
+        normalize_path("/api/files/deadbeefdeadbeef01"),
+        "/api/files/:id"
+    );
     assert_eq!(normalize_path("/api/auth/login"), "/api/auth/login");
 }

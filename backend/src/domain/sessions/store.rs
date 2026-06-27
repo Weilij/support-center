@@ -30,7 +30,9 @@ pub const SELECT: &str =
      FROM conversation_sessions";
 
 fn parse_json_text(raw: &Option<String>) -> Value {
-    raw.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or(Value::Null)
+    raw.as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(Value::Null)
 }
 
 /// Wire view of one conversation session (CRD 473-474).
@@ -56,19 +58,21 @@ pub fn session_view(s: &SessionRow) -> Value {
 
 pub async fn find(db: &PgPool, id: &str) -> Result<Option<SessionRow>, AppError> {
     let sql = format!("{SELECT} WHERE id = $1");
-    Ok(sqlx::query_as(&crate::db::pg_params(&sql)).bind(id).fetch_optional(db).await?)
+    Ok(sqlx::query_as(&crate::db::pg_params(&sql))
+        .bind(id)
+        .fetch_optional(db)
+        .await?)
 }
 
 /// Team of the session's underlying conversation (None when unassigned).
-pub async fn conversation_team(
-    db: &PgPool,
-    session: &SessionRow,
-) -> Result<Option<i64>, AppError> {
-    Ok(sqlx::query_scalar("SELECT team_id FROM conversations WHERE id = $1")
-        .bind(&session.conversation_id)
-        .fetch_optional(db)
-        .await?
-        .flatten())
+pub async fn conversation_team(db: &PgPool, session: &SessionRow) -> Result<Option<i64>, AppError> {
+    Ok(
+        sqlx::query_scalar("SELECT team_id FROM conversations WHERE id = $1")
+            .bind(&session.conversation_id)
+            .fetch_optional(db)
+            .await?
+            .flatten(),
+    )
 }
 
 /// The conversation's most-recently-active session (CRD 450).
@@ -80,7 +84,10 @@ pub async fn latest_active(
         "{SELECT} WHERE conversation_id = $1 AND is_active = 1
          ORDER BY COALESCE(last_activity_at, created_at) DESC, created_at DESC LIMIT 1"
     );
-    Ok(sqlx::query_as(&crate::db::pg_params(&sql)).bind(conversation_id).fetch_optional(db).await?)
+    Ok(sqlx::query_as(&crate::db::pg_params(&sql))
+        .bind(conversation_id)
+        .fetch_optional(db)
+        .await?)
 }
 
 pub struct NewSession<'a> {
@@ -184,10 +191,7 @@ fn group_map(rows: Vec<(String, i64)>) -> Value {
 }
 
 /// Aggregate statistics, optionally scoped to one conversation (CRD 420-431).
-pub async fn statistics(
-    db: &PgPool,
-    conversation_id: Option<&str>,
-) -> Result<Value, AppError> {
+pub async fn statistics(db: &PgPool, conversation_id: Option<&str>) -> Result<Value, AppError> {
     let (clause, binds): (&str, Vec<String>) = match conversation_id {
         Some(cid) => ("WHERE conversation_id = $1", vec![cid.to_string()]),
         None => ("", Vec::new()),
@@ -239,7 +243,11 @@ pub async fn statistics(
         .await?
         .into_iter()
         .map(|(topic, count)| {
-            let pct = if total == 0 { 0.0 } else { (count as f64 / total as f64) * 100.0 };
+            let pct = if total == 0 {
+                0.0
+            } else {
+                (count as f64 / total as f64) * 100.0
+            };
             json!({ "topic": topic, "count": count, "percentage": (pct * 100.0).round() / 100.0 })
         })
         .collect();

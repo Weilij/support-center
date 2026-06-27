@@ -48,7 +48,9 @@ pub struct LastActiveDebounce {
 impl LastActiveDebounce {
     /// Returns true when the caller should persist last-active now.
     pub fn should_persist(&self, user_id: &str, interval: std::time::Duration) -> bool {
-        let Ok(mut entries) = self.entries.lock() else { return false };
+        let Ok(mut entries) = self.entries.lock() else {
+            return false;
+        };
         let now = Instant::now();
         match entries.get(user_id) {
             Some(last) if now.duration_since(*last) < interval => false,
@@ -81,7 +83,11 @@ impl BatchUndoStore {
             entries.retain(|_, e| e.created.elapsed() < BATCH_UNDO_RETENTION);
             entries.insert(
                 token.to_string(),
-                BatchUndoEntry { user_id: user_id.to_string(), created: Instant::now(), snapshot },
+                BatchUndoEntry {
+                    user_id: user_id.to_string(),
+                    created: Instant::now(),
+                    snapshot,
+                },
             );
         }
     }
@@ -104,7 +110,11 @@ impl BatchUndoStore {
         if let Ok(mut entries) = self.entries.lock() {
             entries.insert(
                 token.to_string(),
-                BatchUndoEntry { user_id, created: Instant::now(), snapshot },
+                BatchUndoEntry {
+                    user_id,
+                    created: Instant::now(),
+                    snapshot,
+                },
             );
         }
     }
@@ -130,7 +140,12 @@ impl ShopeeOAuthStateStore {
             entries.retain(|_, e| e.created.elapsed() < SHOPEE_OAUTH_STATE_TTL);
             entries.insert(
                 token.to_string(),
-                ShopeeOAuthEntry { user_id: user_id.to_string(), shop_id, team_id, created: Instant::now() },
+                ShopeeOAuthEntry {
+                    user_id: user_id.to_string(),
+                    shop_id,
+                    team_id,
+                    created: Instant::now(),
+                },
             );
         }
     }
@@ -163,7 +178,9 @@ impl RecallableMarkers {
     }
 
     pub fn is_recallable(&self, id: &str) -> bool {
-        let Ok(mut entries) = self.entries.lock() else { return false };
+        let Ok(mut entries) = self.entries.lock() else {
+            return false;
+        };
         match entries.get(id) {
             Some(expiry) if *expiry > Instant::now() => true,
             Some(_) => {

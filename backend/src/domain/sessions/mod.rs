@@ -21,7 +21,7 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::middleware::auth::require_auth;
+use crate::middleware::auth::require_ops_area;
 use crate::middleware::rate_limit::{self, RatePolicy};
 use crate::state::AppState;
 
@@ -94,7 +94,7 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
 
     let authed = rate_limited
         .merge(plain)
-        .layer(from_fn_with_state(state.clone(), require_auth));
+        .layer(from_fn_with_state(state.clone(), require_ops_area));
 
     let module = open
         .merge(authed)

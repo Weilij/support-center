@@ -27,7 +27,7 @@ fn iso_in(seconds: i64) -> String {
 }
 
 async fn write_recall_log(db: &PgPool, message_id: &str, user_id: &str, action: &str) {
-    let _ = sqlx::query(
+    if let Err(error) = sqlx::query(
         "INSERT INTO message_recall_logs (message_id, agent_id, action, created_at)
          VALUES ($1, $2, $3, $4)",
     )
@@ -36,7 +36,10 @@ async fn write_recall_log(db: &PgPool, message_id: &str, user_id: &str, action: 
     .bind(action)
     .bind(crate::db::now_iso())
     .execute(db)
-    .await;
+    .await
+    {
+        tracing::warn!(error = %error, message_id, user_id, action, "message recall log write failed");
+    }
 }
 
 // ------------------------------------------------- Schedule delayed message (CRD 983-989)
@@ -59,15 +62,16 @@ pub async fn schedule_delayed(state: &AppState, agent_id: &str, p: ScheduleParam
             "error": format!("Delay must be between {MIN_DELAY_SECS} and {MAX_DELAY_SECS} seconds"),
         });
     }
-    let exists: Option<String> =
-        match sqlx::query_scalar("SELECT id FROM conversations WHERE id = $1 AND deleted_at IS NULL")
-            .bind(&p.conversation_id)
-            .fetch_optional(&state.db)
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => return json!({ "success": false, "error": e.to_string() }),
-        };
+    let exists: Option<String> = match sqlx::query_scalar(
+        "SELECT id FROM conversations WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(&p.conversation_id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return json!({ "success": false, "error": e.to_string() }),
+    };
     if exists.is_none() {
         return json!({ "success": false, "error": "Conversation not found" });
     }
@@ -80,7 +84,10 @@ pub async fn schedule_delayed(state: &AppState, agent_id: &str, p: ScheduleParam
         _ => serde_json::Map::new(),
     };
     metadata.insert("recipientId".into(), json!(p.recipient_id));
-    metadata.insert("platform".into(), json!(p.platform.as_deref().unwrap_or("webchat")));
+    metadata.insert(
+        "platform".into(),
+        json!(p.platform.as_deref().unwrap_or("webchat")),
+    );
     metadata.insert("delaySeconds".into(), json!(p.delay_seconds));
     metadata.insert("mediaUrl".into(), json!(p.media_url));
 
@@ -135,14 +142,17 @@ struct DelayedRow {
 async fn mark_delayed_failed(db: &PgPool, row: &DelayedRow, reason: &str) {
     let mut metadata = super::store::metadata_map(&row.metadata);
     metadata.insert("failureReason".into(), json!(reason));
-    let _ = sqlx::query(
+    if let Err(error) = sqlx::query(
         "UPDATE scheduled_messages SET status = 'failed', metadata = $1, updated_at = $2 WHERE id = $3",
     )
     .bind(Value::Object(metadata).to_string())
     .bind(crate::db::now_iso())
     .bind(&row.id)
     .execute(db)
-    .await;
+    .await
+    {
+        tracing::warn!(error = %error, delayed_message_id = %row.id, "scheduled message failure-state update failed");
+    }
 }
 
 pub async fn process_delayed(state: &AppState, delayed_id: &str) -> Value {
@@ -177,19 +187,28 @@ pub async fn process_delayed(state: &AppState, delayed_id: &str) -> Value {
     }
 
     let metadata = super::store::metadata_map(&row.metadata);
-    let platform =
-        metadata.get("platform").and_then(Value::as_str).unwrap_or("webchat").to_string();
-    let recipient =
-        metadata.get("recipientId").and_then(Value::as_str).unwrap_or_default().to_string();
+    let platform = metadata
+        .get("platform")
+        .and_then(Value::as_str)
+        .unwrap_or("webchat")
+        .to_string();
+    let recipient = metadata
+        .get("recipientId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     let content = row.content.clone().unwrap_or_default();
 
     let result = match platform.as_str() {
         // External platforms dispatch through the platform gateway (CRD 993).
-        // The stub gateway only completes LINE pushes; a gateway error marks
-        // the item failed, matching the documented pending -> failed outcome.
+        // Missing credentials or gateway errors mark the item failed, matching
+        // the documented pending -> failed outcome.
         "line" | "facebook" | "instagram" | "shopee" => {
             let gateway = OutboundGateway::from_state(state);
-            match gateway.send_batch(&platform, &recipient, &[OutboundItem::text(content)]).await {
+            match gateway
+                .send_batch(&platform, &recipient, &[OutboundItem::text(content)])
+                .await
+            {
                 Ok(platform_message_id) => Ok(json!({
                     "success": true,
                     "delayedMessageId": row.id,
@@ -224,30 +243,35 @@ pub async fn process_delayed(state: &AppState, delayed_id: &str) -> Value {
             .await;
             match insert {
                 Ok(_) => {
-                    let _ = super::store::touch_conversation(
-                        &state.db,
-                        &row.conversation_id,
-                        &now,
-                    )
-                    .await;
+                    let _ = super::store::touch_conversation(&state.db, &row.conversation_id, &now)
+                        .await;
                     // Realtime: push the created webchat message to the
                     // conversation's live audience (CRD 3450, 3452);
                     // best-effort only.
+                    let payload = json!({
+                        "messageId": message_id,
+                        "conversationId": row.conversation_id,
+                        "content": content,
+                        "messageType": row.content_type,
+                        "senderType": "agent",
+                        "senderId": row.agent_id,
+                        "deliveryStatus": "sent",
+                        "delayed": true,
+                        "timestamp": now,
+                    });
                     state.realtime.to_conversation_message(
                         &row.conversation_id,
                         "message_sent",
-                        json!({
-                            "messageId": message_id,
-                            "conversationId": row.conversation_id,
-                            "content": content,
-                            "messageType": row.content_type,
-                            "senderType": "agent",
-                            "senderId": row.agent_id,
-                            "deliveryStatus": "sent",
-                            "delayed": true,
-                            "timestamp": now,
-                        }),
+                        payload.clone(),
                     );
+                    crate::realtime::broadcaster::publish_remote_event(
+                        state,
+                        "message_sent",
+                        payload,
+                        vec![json!({ "type": "conversation", "ids": [&row.conversation_id] })],
+                        "high",
+                    )
+                    .await;
                     // Delayed-message terminal events also reach the
                     // originating agent's personal channel (CRD 3452).
                     state.realtime.to_user(
@@ -341,7 +365,12 @@ pub async fn cancel_delayed(
 
     let mut metadata = super::store::metadata_map(&row.metadata);
     metadata.insert(
-        if as_recall { "recallReason" } else { "cancelReason" }.into(),
+        if as_recall {
+            "recallReason"
+        } else {
+            "cancelReason"
+        }
+        .into(),
         json!(reason.unwrap_or("Cancelled by user")),
     );
     let updated = sqlx::query(
@@ -369,26 +398,29 @@ pub async fn cancel_delayed(
 
 pub async fn recall_sent_message(state: &AppState, message_id: &str, user_id: &str) -> Value {
     // (conversationId, isRecalled, recallDeadline, platformMessageId, platform, recipient)
-    type RecallTarget =
-        (String, i64, Option<String>, Option<String>, Option<String>, Option<String>);
-    let row: Option<RecallTarget> =
-        match sqlx::query_as(
-            "SELECT m.conversation_id, m.is_recalled, m.recall_deadline, m.platform_message_id,
+    type RecallTarget = (
+        String,
+        i64,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let row: Option<RecallTarget> = match sqlx::query_as(
+        "SELECT m.conversation_id, m.is_recalled, m.recall_deadline, m.platform_message_id,
                     cu.platform, cu.platform_user_id
              FROM messages m
              LEFT JOIN conversations c ON c.id = m.conversation_id
              LEFT JOIN customers cu ON cu.id = c.customer_id
              WHERE m.id = $1 AND m.deleted_at IS NULL",
-        )
-        .bind(message_id)
-        .fetch_optional(&state.db)
-        .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                return json!({ "success": false, "error": e.to_string(), "canRecall": false })
-            }
-        };
+    )
+    .bind(message_id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return json!({ "success": false, "error": e.to_string(), "canRecall": false }),
+    };
     let Some((_conversation_id, is_recalled, deadline, platform_message_id, platform, recipient)) =
         row
     else {
@@ -435,18 +467,28 @@ pub async fn recall_sent_message(state: &AppState, message_id: &str, user_id: &s
             // LINE offers no native unsend through its API: send a
             // customer-facing recall notice instead (CRD 1005). Failure is
             // swallowed and never reverts the database recall.
-            let _ = gateway.send_batch(
-                "line",
-                recipient.as_deref().unwrap_or_default(),
-                &[OutboundItem::text("This message has been recalled")],
-            ).await;
+            let _ = gateway
+                .send_batch(
+                    "line",
+                    recipient.as_deref().unwrap_or_default(),
+                    &[OutboundItem::text("This message has been recalled")],
+                )
+                .await;
         }
         Some("facebook") => {
-            // TODO(channels): attempt a Facebook platform-side delete using the
-            // stored platform message identifier (CRD 1005); the stub gateway
-            // has no delete primitive, so the attempt is a no-op here. Failure
-            // is best-effort and swallowed either way.
-            let _ = platform_message_id;
+            if let Some(platform_message_id) = platform_message_id.as_deref() {
+                if let Err(error) = gateway
+                    .delete_message("facebook", platform_message_id)
+                    .await
+                {
+                    tracing::warn!(
+                        error = %error,
+                        message_id,
+                        platform_message_id,
+                        "facebook platform delete failed after local recall"
+                    );
+                }
+            }
         }
         _ => {} // Other platforms are skipped (CRD 1005).
     }
@@ -549,9 +591,17 @@ pub async fn replay_buffered(
          FROM offline_message_buffer
          WHERE recipient_id = $1 AND expires_at > $2 {}
          ORDER BY buffered_at, id",
-        if include_delivered { "" } else { "AND delivered = 0" }
+        if include_delivered {
+            ""
+        } else {
+            "AND delivered = 0"
+        }
     );
-    sqlx::query_as(&crate::db::pg_params(&sql)).bind(recipient_id).bind(crate::db::now_iso()).fetch_all(db).await
+    sqlx::query_as(&crate::db::pg_params(&sql))
+        .bind(recipient_id)
+        .bind(crate::db::now_iso())
+        .fetch_all(db)
+        .await
 }
 
 /// Idempotent delivery marking for one or many entries (CRD 1038); a delivered
@@ -577,10 +627,7 @@ pub async fn mark_delivered(db: &PgPool, ids: &[String]) -> Result<u64, sqlx::Er
 
 /// Bump the retry counter on undelivered entries; entries that exceed the
 /// retry maximum are dropped (CRD 1018). Returns (retried, dropped).
-pub async fn retry_undelivered(
-    db: &PgPool,
-    recipient_id: &str,
-) -> Result<(u64, u64), sqlx::Error> {
+pub async fn retry_undelivered(db: &PgPool, recipient_id: &str) -> Result<(u64, u64), sqlx::Error> {
     let now = crate::db::now_iso();
     let retried = sqlx::query(
         "UPDATE offline_message_buffer SET retry_count = retry_count + 1
@@ -624,16 +671,18 @@ pub async fn buffer_stats(db: &PgPool, recipient_id: &str) -> Result<Value, sqlx
 
 /// Purge entries past their expiry (CRD 1018).
 pub async fn purge_expired(db: &PgPool) -> Result<u64, sqlx::Error> {
-    Ok(sqlx::query("DELETE FROM offline_message_buffer WHERE expires_at <= $1")
-        .bind(crate::db::now_iso())
-        .execute(db)
-        .await?
-        .rows_affected())
+    Ok(
+        sqlx::query("DELETE FROM offline_message_buffer WHERE expires_at <= $1")
+            .bind(crate::db::now_iso())
+            .execute(db)
+            .await?
+            .rows_affected(),
+    )
 }
 
-// TODO(scale-out): real-time fan-out batching (CRD 1040, 3465) — group
-// outbound events per target in the hub, flush on size threshold / short
-// delay, let urgent priority bypass, and collapse duplicate transient events
-// (typing, join/leave) before fan-out. The hub currently delivers every event
-// immediately, which the spec permits ("non-urgent events MAY be coalesced");
-// batching is a pure delivery-efficiency optimization.
+// NOTE(scale-out): real-time fan-out batching (CRD 1040, 3465) can group
+// outbound events per target in the hub, flush on size threshold / short delay,
+// let urgent priority bypass, and collapse duplicate transient events (typing,
+// join/leave). The hub currently delivers every event immediately, which the
+// spec permits ("non-urgent events MAY be coalesced"); batching is a pure
+// delivery-efficiency optimization.

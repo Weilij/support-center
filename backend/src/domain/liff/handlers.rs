@@ -7,22 +7,46 @@ use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::OnceLock;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use crate::db::now_iso;
 use crate::domain::conversations::channels::{OutboundGateway, OutboundItem};
 use crate::domain::webhooks::ingest::DEFAULT_WELCOME;
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
-
-type Result<T = Response> = std::result::Result<T, AppError>;
 
 const AUTO_CLOSE_DELAY_MS: i64 = 2000;
 const VERSION: &str = "1.0.0";
 const DEFAULT_BOT_HANDLE: &str = "@support";
+
+#[derive(Debug)]
+enum ReconcileError {
+    Database(sqlx::Error),
+    CustomerNotFound,
+}
+
+impl std::fmt::Display for ReconcileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Database(error) => write!(f, "{error}"),
+            Self::CustomerNotFound => {
+                f.write_str("customer record not found; reconciliation skipped")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ReconcileError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Database(error) => Some(error),
+            Self::CustomerNotFound => None,
+        }
+    }
+}
 
 fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -42,7 +66,10 @@ fn id_token_from(headers: &HeaderMap, body_token: Option<&str>) -> Option<String
             headers
                 .get("authorization")
                 .and_then(|v| v.to_str().ok())
-                .and_then(|h| h.strip_prefix("Bearer ").or_else(|| h.strip_prefix("bearer ")))
+                .and_then(|h| {
+                    h.strip_prefix("Bearer ")
+                        .or_else(|| h.strip_prefix("bearer "))
+                })
                 .map(str::trim)
                 .filter(|t| !t.is_empty())
                 .map(str::to_string)
@@ -129,10 +156,7 @@ pub async fn config(State(state): State<Arc<AppState>>) -> Result {
     })))
 }
 
-pub async fn team_info(
-    State(state): State<Arc<AppState>>,
-    Path(team_id): Path<String>,
-) -> Result {
+pub async fn team_info(State(state): State<Arc<AppState>>, Path(team_id): Path<String>) -> Result {
     let team_id: i64 = team_id
         .parse()
         .map_err(|_| AppError::BadRequest("無效的團隊編號".into()))?;
@@ -145,7 +169,9 @@ pub async fn team_info(
     let Some((id, name, description)) = row else {
         return Err(AppError::NotFound("找不到團隊".into()));
     };
-    Ok(envelope::ok(json!({ "id": id, "name": name, "description": description })))
+    Ok(envelope::ok(
+        json!({ "id": id, "name": name, "description": description }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -217,17 +243,23 @@ pub async fn assign_team(
     .await?;
 
     // Scan counter on the team's front-end code, when one exists (CRD 2897).
-    let _ = sqlx::query(
+    if let Err(error) = sqlx::query(
         "UPDATE team_liff_links SET scan_count = scan_count + 1, updated_at = $1 WHERE team_id = $2",
     )
     .bind(now_iso())
     .bind(team_id)
     .execute(&state.db)
-    .await;
+    .await
+    {
+        tracing::warn!(error = %error, team_id, "LIFF scan counter update failed");
+    }
 
     // Synthetic pending-conversation broadcast to the destination team,
     // best-effort (CRD 2991).
-    let display = body.display_name.clone().unwrap_or_else(|| "LINE 用戶".into());
+    let display = body
+        .display_name
+        .clone()
+        .unwrap_or_else(|| "LINE 用戶".into());
     state.realtime.to_team(
         team_id,
         "conversation_transferred",
@@ -320,7 +352,7 @@ async fn reconcile(
     user_id: &str,
     team_id: i64,
     team_name: &str,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<(), ReconcileError> {
     let customer: Option<(i64, Option<String>)> = sqlx::query_as(
         "SELECT id, display_name FROM customers
          WHERE platform = 'line' AND platform_user_id = $1 AND deleted_at IS NULL",
@@ -328,9 +360,9 @@ async fn reconcile(
     .bind(user_id)
     .fetch_optional(&state.db)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(ReconcileError::Database)?;
     let Some((customer_id, customer_name)) = customer else {
-        return Err("customer record not found; reconciliation skipped".into());
+        return Err(ReconcileError::CustomerNotFound);
     };
 
     let conversation: Option<(String, Option<i64>, String)> = sqlx::query_as(
@@ -341,7 +373,7 @@ async fn reconcile(
     .bind(customer_id)
     .fetch_optional(&state.db)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(ReconcileError::Database)?;
 
     let customer_view = json!({
         "id": customer_id,
@@ -357,7 +389,7 @@ async fn reconcile(
                 .bind(&conversation_id)
                 .execute(&state.db)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(ReconcileError::Database)?;
             let mut audience = vec![team_id];
             if let Some(p) = prior_team {
                 audience.push(p);
@@ -389,7 +421,7 @@ async fn reconcile(
             .bind(now_iso())
             .execute(&state.db)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(ReconcileError::Database)?;
             state.realtime.to_team(
                 team_id,
                 "conversation_transferred",
@@ -424,8 +456,10 @@ pub async fn join_page(
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
     let Some(team_ref) = params.get("team").filter(|t| !t.is_empty()) else {
-        return Html("<html><body><h1>無效的連結</h1><p>此邀請連結缺少必要的參數。</p></body></html>")
-            .into_response();
+        return Html(
+            "<html><body><h1>無效的連結</h1><p>此邀請連結缺少必要的參數。</p></body></html>",
+        )
+        .into_response();
     };
     let team: Option<(i64, String, Option<String>)> = match team_ref.parse::<i64>() {
         Ok(id) => sqlx::query_as(
@@ -453,8 +487,10 @@ pub async fn join_page(
             id
         ))
         .into_response(),
-        None => Html("<html><body><h1>連結已失效</h1><p>此邀請連結對應的團隊不存在。</p></body></html>")
-            .into_response(),
+        None => {
+            Html("<html><body><h1>連結已失效</h1><p>此邀請連結對應的團隊不存在。</p></body></html>")
+                .into_response()
+        }
     }
 }
 
@@ -508,7 +544,11 @@ pub async fn coverage_status(
     .await?;
     let total = teams.len() as i64;
     let with = teams.iter().filter(|(_, _, has)| *has != 0).count() as i64;
-    let coverage = if total > 0 { with as f64 * 100.0 / total as f64 } else { 0.0 };
+    let coverage = if total > 0 {
+        with as f64 * 100.0 / total as f64
+    } else {
+        0.0
+    };
     Ok(envelope::ok(json!({
         "totalTeams": total,
         "teamsWithLiffQR": with,
@@ -518,4 +558,20 @@ pub async fn coverage_status(
             "id": id, "name": name, "hasLiffQR": *has != 0,
         })).collect::<Vec<_>>(),
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ReconcileError;
+
+    #[test]
+    fn reconcile_missing_customer_error_keeps_existing_message() {
+        let error = ReconcileError::CustomerNotFound;
+
+        assert_eq!(
+            error.to_string(),
+            "customer record not found; reconciliation skipped"
+        );
+        assert!(std::error::Error::source(&error).is_none());
+    }
 }
