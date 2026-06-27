@@ -35,12 +35,10 @@ pub async fn find_active_agent_by_email(
     pool: &PgPool,
     email: &str,
 ) -> sqlx::Result<Option<AgentRow>> {
-    sqlx::query_as::<_, AgentRow>(
-        "SELECT * FROM agents WHERE email = $1 AND deleted_at IS NULL",
-    )
-    .bind(email)
-    .fetch_optional(pool)
-    .await
+    sqlx::query_as::<_, AgentRow>("SELECT * FROM agents WHERE email = $1 AND deleted_at IS NULL")
+        .bind(email)
+        .fetch_optional(pool)
+        .await
 }
 
 pub async fn find_deleted_agent_by_email(
@@ -71,7 +69,11 @@ pub async fn memberships(pool: &PgPool, agent_id: &str) -> sqlx::Result<Vec<Team
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(team_id, role, is_primary)| TeamMembership { team_id, role, is_primary: is_primary != 0 })
+        .map(|(team_id, role, is_primary)| TeamMembership {
+            team_id,
+            role,
+            is_primary: is_primary != 0,
+        })
         .collect())
 }
 
@@ -112,13 +114,11 @@ pub async fn create_session(pool: &PgPool, agent: &AgentRow) -> sqlx::Result<Str
 
 /// Returns the owning agent id when the session exists and is unexpired.
 pub async fn lookup_session(pool: &PgPool, session_id: &str) -> sqlx::Result<Option<String>> {
-    sqlx::query_scalar(
-        "SELECT agent_id FROM auth_sessions WHERE id = $1 AND expires_at > $2",
-    )
-    .bind(session_id)
-    .bind(now_iso())
-    .fetch_optional(pool)
-    .await
+    sqlx::query_scalar("SELECT agent_id FROM auth_sessions WHERE id = $1 AND expires_at > $2")
+        .bind(session_id)
+        .bind(now_iso())
+        .fetch_optional(pool)
+        .await
 }
 
 pub async fn delete_session(pool: &PgPool, session_id: &str) -> sqlx::Result<()> {
@@ -215,9 +215,9 @@ pub async fn revoke_jti(
     agent_id: Option<&str>,
     exp_unix: Option<i64>,
 ) -> sqlx::Result<()> {
-    let expires = exp_unix.and_then(|e| chrono::DateTime::from_timestamp(e, 0)).map(|t| {
-        t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-    });
+    let expires = exp_unix
+        .and_then(|e| chrono::DateTime::from_timestamp(e, 0))
+        .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
     sqlx::query(
         "INSERT INTO revoked_tokens (jti, agent_id, revoked_at, expires_at) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
     )
@@ -253,7 +253,7 @@ pub async fn log_activity(
     ip: Option<&str>,
     user_agent: Option<&str>,
 ) {
-    let _ = sqlx::query(
+    if let Err(error) = sqlx::query(
         "INSERT INTO activity_logs (agent_id, agent_name, agent_role, action, resource_type, resource_id, details, ip_address, user_agent, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
@@ -268,7 +268,16 @@ pub async fn log_activity(
     .bind(user_agent)
     .bind(now_iso())
     .execute(pool)
-    .await;
+    .await
+    {
+        tracing::warn!(
+            error = %error,
+            agent_id,
+            action,
+            resource_type,
+            "auth activity log insert failed"
+        );
+    }
 }
 
 // --- password hashing ---

@@ -29,10 +29,19 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/auth/profile", get(handlers::profile))
         .route("/api/auth/me", get(handlers::me).put(handlers::update_me))
         .route("/api/auth/change-password", post(handlers::change_password))
-        .route("/api/teams/members/{memberId}/reset", post(handlers::reset_member_password))
-        .route("/phase2-auth/monitoring-token", post(handlers::monitoring_token))
+        .route(
+            "/api/teams/members/{memberId}/reset",
+            post(handlers::reset_member_password),
+        )
+        .route(
+            "/phase2-auth/monitoring-token",
+            post(handlers::monitoring_token),
+        )
         .route("/phase2-auth/user-token", post(handlers::user_token))
-        .route("/phase2-auth/refresh-token", post(handlers::refresh_service_token))
+        .route(
+            "/phase2-auth/refresh-token",
+            post(handlers::refresh_service_token),
+        )
         .route("/phase2-auth/batch-tokens", post(handlers::batch_tokens))
         .route("/phase2-auth/status", get(handlers::auth_status))
         .layer(from_fn_with_state(state.clone(), require_auth));
