@@ -15,7 +15,12 @@ async fn setup() -> (TestApp, String, String) {
 
 async fn create_tag(app: &TestApp, token: &str, name: &str) -> i64 {
     let (status, body, _) = app
-        .request("POST", "/api/tags", Some(token), Some(json!({ "name": name })))
+        .request(
+            "POST",
+            "/api/tags",
+            Some(token),
+            Some(json!({ "name": name })),
+        )
         .await;
     assert_eq!(status, StatusCode::CREATED, "create tag failed: {body}");
     body["data"]["id"].as_i64().unwrap()
@@ -93,7 +98,9 @@ async fn list_tags_supports_search_and_excludes_soft_deleted() {
         .await;
     assert_eq!(status, StatusCode::OK);
 
-    let (status, body, _) = app.request("GET", "/api/tags?search=vip", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/tags?search=vip", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     let items = body["data"]["items"].as_array().unwrap();
     assert_eq!(items.len(), 1, "soft-deleted tag must be excluded: {body}");
@@ -128,7 +135,12 @@ async fn create_tag_returns_201_and_normalizes_color() {
 
     // Default color when omitted.
     let (_, body2, _) = app
-        .request("POST", "/api/tags", Some(&token), Some(json!({ "name": "plain" })))
+        .request(
+            "POST",
+            "/api/tags",
+            Some(&token),
+            Some(json!({ "name": "plain" })),
+        )
         .await;
     assert_eq!(body2["data"]["color"], "#3B82F6");
 }
@@ -137,11 +149,20 @@ async fn create_tag_returns_201_and_normalizes_color() {
 async fn create_tag_requires_name() {
     let (app, _, token) = setup().await;
     let (status, body, _) = app
-        .request("POST", "/api/tags", Some(&token), Some(json!({ "name": "   " })))
+        .request(
+            "POST",
+            "/api/tags",
+            Some(&token),
+            Some(json!({ "name": "   " })),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["success"], false);
-    assert!(body["error"].as_str().unwrap().to_lowercase().contains("name"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .to_lowercase()
+        .contains("name"));
 }
 
 #[tokio::test]
@@ -149,9 +170,18 @@ async fn create_tag_rejects_invalid_color() {
     let (app, _, token) = setup().await;
     for bad in ["red", "#12345", "#GGGGGG", "3B82F6"] {
         let (status, body, _) = app
-            .request("POST", "/api/tags", Some(&token), Some(json!({ "name": "x", "color": bad })))
+            .request(
+                "POST",
+                "/api/tags",
+                Some(&token),
+                Some(json!({ "name": "x", "color": bad })),
+            )
             .await;
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "color {bad}: {body}");
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "color {bad}: {body}"
+        );
         assert_eq!(body["data"]["code"], "VALIDATION_ERROR");
         assert_eq!(body["data"]["errors"][0]["field"], "color");
     }
@@ -162,7 +192,12 @@ async fn create_tag_duplicate_active_name_conflicts() {
     let (app, _, token) = setup().await;
     create_tag(&app, &token, "vip").await;
     let (status, body, _) = app
-        .request("POST", "/api/tags", Some(&token), Some(json!({ "name": "vip" })))
+        .request(
+            "POST",
+            "/api/tags",
+            Some(&token),
+            Some(json!({ "name": "vip" })),
+        )
         .await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["success"], false);
@@ -173,7 +208,12 @@ async fn create_tag_rejects_malformed_body_as_invalid_json() {
     let (app, _, token) = setup().await;
     // name as a number fails body deserialization -> 400 "Invalid JSON".
     let (status, body, _) = app
-        .request("POST", "/api/tags", Some(&token), Some(json!({ "name": 123 })))
+        .request(
+            "POST",
+            "/api/tags",
+            Some(&token),
+            Some(json!({ "name": 123 })),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], "Invalid JSON");
@@ -186,7 +226,9 @@ async fn get_tag_returns_detail_even_when_soft_deleted() {
     let (app, agent_id, token) = setup().await;
     let id = create_tag(&app, &token, "vip").await;
 
-    let (status, body, _) = app.request("GET", &format!("/api/tags/{id}"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", &format!("/api/tags/{id}"), Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     let data = &body["data"];
     assert_eq!(data["id"], id);
@@ -199,8 +241,11 @@ async fn get_tag_returns_detail_even_when_soft_deleted() {
     assert_eq!(data["conversationCount"], 0);
 
     // Soft-delete, then the detail endpoint still returns the record.
-    app.request("DELETE", &format!("/api/tags/{id}"), Some(&token), None).await;
-    let (status, body, _) = app.request("GET", &format!("/api/tags/{id}"), Some(&token), None).await;
+    app.request("DELETE", &format!("/api/tags/{id}"), Some(&token), None)
+        .await;
+    let (status, body, _) = app
+        .request("GET", &format!("/api/tags/{id}"), Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["isActive"], false);
 }
@@ -208,7 +253,9 @@ async fn get_tag_returns_detail_even_when_soft_deleted() {
 #[tokio::test]
 async fn get_tag_unknown_id_is_404() {
     let (app, _, token) = setup().await;
-    let (status, body, _) = app.request("GET", "/api/tags/9999", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/tags/9999", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["success"], false);
 }
@@ -241,7 +288,12 @@ async fn update_tag_with_no_effective_change_reports_no_change() {
     let (app, _, token) = setup().await;
     let id = create_tag(&app, &token, "stable").await;
     let (status, body, _) = app
-        .request("PUT", &format!("/api/tags/{id}"), Some(&token), Some(json!({ "name": "stable" })))
+        .request(
+            "PUT",
+            &format!("/api/tags/{id}"),
+            Some(&token),
+            Some(json!({ "name": "stable" })),
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["message"], "No changes made");
@@ -259,7 +311,12 @@ async fn update_tag_error_conditions() {
     // Non-integer / non-positive id -> 400 "Invalid tag id".
     for bad in ["abc", "0", "-3"] {
         let (status, body, _) = app
-            .request("PUT", &format!("/api/tags/{bad}"), Some(&token), Some(json!({ "name": "x" })))
+            .request(
+                "PUT",
+                &format!("/api/tags/{bad}"),
+                Some(&token),
+                Some(json!({ "name": "x" })),
+            )
             .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
         assert_eq!(body["error"], "Invalid tag id");
@@ -267,20 +324,35 @@ async fn update_tag_error_conditions() {
 
     // Missing tag -> 404.
     let (status, _, _) = app
-        .request("PUT", "/api/tags/9999", Some(&token), Some(json!({ "name": "x" })))
+        .request(
+            "PUT",
+            "/api/tags/9999",
+            Some(&token),
+            Some(json!({ "name": "x" })),
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // Invalid color -> 422 on `color`.
     let (status, body, _) = app
-        .request("PUT", &format!("/api/tags/{id}"), Some(&token), Some(json!({ "color": "blue" })))
+        .request(
+            "PUT",
+            &format!("/api/tags/{id}"),
+            Some(&token),
+            Some(json!({ "color": "blue" })),
+        )
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(body["data"]["errors"][0]["field"], "color");
 
     // Duplicate name -> 422 on `name`.
     let (status, body, _) = app
-        .request("PUT", &format!("/api/tags/{id}"), Some(&token), Some(json!({ "name": "second" })))
+        .request(
+            "PUT",
+            &format!("/api/tags/{id}"),
+            Some(&token),
+            Some(json!({ "name": "second" })),
+        )
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(body["data"]["errors"][0]["field"], "name");
@@ -293,19 +365,24 @@ async fn delete_tag_soft_deletes_and_repeated_delete_is_404() {
     let (app, _, token) = setup().await;
     let id = create_tag(&app, &token, "ephemeral").await;
 
-    let (status, body, _) =
-        app.request("DELETE", &format!("/api/tags/{id}"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request("DELETE", &format!("/api/tags/{id}"), Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], true);
     assert!(body["data"].is_null());
     assert!(body["message"].is_string());
 
     // Already soft-deleted -> 404.
-    let (status, _, _) = app.request("DELETE", &format!("/api/tags/{id}"), Some(&token), None).await;
+    let (status, _, _) = app
+        .request("DELETE", &format!("/api/tags/{id}"), Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // Invalid id -> 400 "Invalid tag id".
-    let (status, body, _) = app.request("DELETE", "/api/tags/zero", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("DELETE", "/api/tags/zero", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], "Invalid tag id");
 }
@@ -330,7 +407,9 @@ async fn bulk_operations_apply_to_all_listed_tags() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["data"].is_null());
     assert!(body["message"].as_str().unwrap().contains("deactivate"));
-    let (_, one, _) = app.request("GET", &format!("/api/tags/{a}"), Some(&token), None).await;
+    let (_, one, _) = app
+        .request("GET", &format!("/api/tags/{a}"), Some(&token), None)
+        .await;
     assert_eq!(one["data"]["isActive"], false);
 
     // Activate back.
@@ -341,7 +420,9 @@ async fn bulk_operations_apply_to_all_listed_tags() {
         Some(json!({ "operation": "activate", "tagIds": [a, b] })),
     )
     .await;
-    let (_, one, _) = app.request("GET", &format!("/api/tags/{a}"), Some(&token), None).await;
+    let (_, one, _) = app
+        .request("GET", &format!("/api/tags/{a}"), Some(&token), None)
+        .await;
     assert_eq!(one["data"]["isActive"], true);
 
     // update_color stores the value as supplied without HEX validation.
@@ -354,7 +435,9 @@ async fn bulk_operations_apply_to_all_listed_tags() {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    let (_, one, _) = app.request("GET", &format!("/api/tags/{a}"), Some(&token), None).await;
+    let (_, one, _) = app
+        .request("GET", &format!("/api/tags/{a}"), Some(&token), None)
+        .await;
     assert_eq!(one["data"]["color"], "not-a-hex");
 }
 
@@ -425,8 +508,9 @@ async fn tag_stats_aggregates_usage() {
     app.add_customer_tag(line_customer, tag, &agent_id).await;
     app.add_customer_tag(fb_customer, tag, &agent_id).await;
 
-    let (status, body, _) =
-        app.request("GET", &format!("/api/tags/{tag}/stats"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", &format!("/api/tags/{tag}/stats"), Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let data = &body["data"];
     assert_eq!(data["tagInfo"]["id"], tag);
@@ -449,7 +533,9 @@ async fn tag_stats_aggregates_usage() {
 #[tokio::test]
 async fn tag_stats_unknown_id_is_404() {
     let (app, _, token) = setup().await;
-    let (status, _, _) = app.request("GET", "/api/tags/4242/stats", Some(&token), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/tags/4242/stats", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -462,8 +548,14 @@ async fn tag_customers_lists_holders_with_pagination() {
     let customer = app.seed_customer("line", "U9", "Holder", None).await;
     app.add_customer_tag(customer, tag, &agent_id).await;
 
-    let (status, body, _) =
-        app.request("GET", &format!("/api/tags/{tag}/customers"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/tags/{tag}/customers"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let customers = body["data"]["customers"].as_array().unwrap();
     assert_eq!(customers.len(), 1);
@@ -484,8 +576,14 @@ async fn tag_customers_lists_holders_with_pagination() {
 async fn tag_customers_requires_active_tag() {
     let (app, agent_id, token) = setup().await;
     let inactive = app.seed_tag_full("inactive", &agent_id, None, false).await;
-    let (status, _, _) =
-        app.request("GET", &format!("/api/tags/{inactive}/customers"), Some(&token), None).await;
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &format!("/api/tags/{inactive}/customers"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -499,8 +597,14 @@ async fn tag_conversations_lists_holder_conversations() {
     let conv = app.seed_conversation(customer, None, "active").await;
     app.add_customer_tag(customer, tag, &agent_id).await;
 
-    let (status, body, _) =
-        app.request("GET", &format!("/api/tags/{tag}/conversations"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/tags/{tag}/conversations"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let convs = body["data"]["conversations"].as_array().unwrap();
     assert_eq!(convs.len(), 1);
@@ -515,8 +619,9 @@ async fn tag_conversations_lists_holder_conversations() {
     assert_eq!(p["total"], 1);
 
     // Unknown tag -> 404.
-    let (status, _, _) =
-        app.request("GET", "/api/tags/31337/conversations", Some(&token), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/tags/31337/conversations", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -552,7 +657,12 @@ async fn conversation_tags_add_list_remove() {
 
     // List.
     let (status, body, _) = app
-        .request("GET", &format!("/api/conversations/{conv}/tags"), Some(&token), None)
+        .request(
+            "GET",
+            &format!("/api/conversations/{conv}/tags"),
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     let tags = body["data"].as_array().unwrap();
@@ -571,7 +681,12 @@ async fn conversation_tags_add_list_remove() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let (_, body, _) = app
-        .request("GET", &format!("/api/conversations/{conv}/tags"), Some(&token), None)
+        .request(
+            "GET",
+            &format!("/api/conversations/{conv}/tags"),
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(body["data"].as_array().unwrap().len(), 1);
 }
@@ -582,8 +697,9 @@ async fn conversation_tags_error_conditions() {
     let tag = create_tag(&app, &token, "conv-err").await;
 
     // Unknown conversation -> 404 "Conversation not found".
-    let (status, body, _) =
-        app.request("GET", "/api/conversations/nope/tags", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/conversations/nope/tags", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"], "Conversation not found");
     let (status, _, _) = app

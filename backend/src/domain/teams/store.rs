@@ -43,10 +43,7 @@ pub fn team_select(filter: &str, tail: &str) -> String {
     )
 }
 
-pub async fn team_with_counts(
-    pool: &PgPool,
-    id: i64,
-) -> sqlx::Result<Option<TeamWithCounts>> {
+pub async fn team_with_counts(pool: &PgPool, id: i64) -> sqlx::Result<Option<TeamWithCounts>> {
     sqlx::query_as(&crate::db::pg_params(&team_select("AND t.id = ?", "")))
         .bind(id)
         .fetch_optional(pool)
@@ -137,10 +134,7 @@ pub async fn find_membership(
     .await
 }
 
-pub async fn memberships_of(
-    pool: &PgPool,
-    agent_id: &str,
-) -> sqlx::Result<Vec<MembershipRow>> {
+pub async fn memberships_of(pool: &PgPool, agent_id: &str) -> sqlx::Result<Vec<MembershipRow>> {
     sqlx::query_as(
         "SELECT agent_id, team_id, role, is_primary, joined_at FROM team_members
          WHERE agent_id = $1 ORDER BY is_primary DESC, team_id",
@@ -172,10 +166,7 @@ pub async fn clear_primary(pool: &PgPool, agent_id: &str) -> sqlx::Result<()> {
 
 /// When the agent has memberships but no primary one, promotes one remaining membership
 /// to primary (CRD 1920, 2135, 2145). Returns the promoted team id, if any.
-pub async fn promote_primary_if_needed(
-    pool: &PgPool,
-    agent_id: &str,
-) -> sqlx::Result<Option<i64>> {
+pub async fn promote_primary_if_needed(pool: &PgPool, agent_id: &str) -> sqlx::Result<Option<i64>> {
     let has_primary: Option<i64> = sqlx::query_scalar(
         "SELECT team_id FROM team_members WHERE agent_id = $1 AND is_primary = 1 LIMIT 1",
     )
@@ -204,11 +195,7 @@ pub async fn promote_primary_if_needed(
 
 /// Replaces the agent's memberships with a single primary membership in `team_id`
 /// (profile team-change and bulk transfer semantics, CRD 2187, 2285, 2304).
-pub async fn replace_memberships(
-    pool: &PgPool,
-    agent_id: &str,
-    team_id: i64,
-) -> sqlx::Result<()> {
+pub async fn replace_memberships(pool: &PgPool, agent_id: &str, team_id: i64) -> sqlx::Result<()> {
     sqlx::query("DELETE FROM team_members WHERE agent_id = $1")
         .bind(agent_id)
         .execute(pool)
