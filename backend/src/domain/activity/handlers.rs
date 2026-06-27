@@ -1,7 +1,6 @@
 //! Read, statistics, and cleanup handlers for the audit trail (CRD §3.5, lines 2462-2541).
 
 use axum::extract::{Path, Query, State};
-use axum::response::Response;
 use axum::Extension;
 use chrono::{SecondsFormat, TimeZone, Utc};
 use serde::Deserialize;
@@ -9,18 +8,20 @@ use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
 use crate::envelope;
-use crate::error::{AppError, FieldProblem};
+use crate::error::{AppError, FieldProblem, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
 
 use super::store::{self, ListFilter};
 
-type Result<T = Response> = std::result::Result<T, AppError>;
-
 fn validation(field: &str, message: &str) -> AppError {
     AppError::Validation(
         message.to_string(),
-        vec![FieldProblem { field: field.into(), message: message.into(), value: None }],
+        vec![FieldProblem {
+            field: field.into(),
+            message: message.into(),
+            value: None,
+        }],
     )
 }
 
@@ -65,7 +66,15 @@ fn window(days: i64) -> (ListFilter, String, String) {
     let end = Utc::now();
     let start = end - chrono::Duration::days(days);
     let (s, e) = (iso(start), iso(end));
-    (ListFilter { start: Some(s.clone()), end: Some(e.clone()), ..Default::default() }, s, e)
+    (
+        ListFilter {
+            start: Some(s.clone()),
+            end: Some(e.clone()),
+            ..Default::default()
+        },
+        s,
+        e,
+    )
 }
 
 // ------------------------------------------------- List activity entries (CRD 2462-2473)
@@ -92,11 +101,17 @@ fn parse_bounded(raw: &Option<String>, field: &str) -> Result<Option<i64>> {
     match raw.as_deref().map(str::trim) {
         None | Some("") => Ok(None),
         Some(s) => {
-            let v: i64 = s
-                .parse()
-                .map_err(|_| validation(field, &format!("{field} must be an integer between 1 and 1000")))?;
+            let v: i64 = s.parse().map_err(|_| {
+                validation(
+                    field,
+                    &format!("{field} must be an integer between 1 and 1000"),
+                )
+            })?;
             if !(1..=1000).contains(&v) {
-                return Err(validation(field, &format!("{field} must be between 1 and 1000")));
+                return Err(validation(
+                    field,
+                    &format!("{field} must be between 1 and 1000"),
+                ));
             }
             Ok(Some(v))
         }
@@ -116,14 +131,24 @@ pub async fn list_activities(
     // Validated up to 1000 but the effective page size is capped at 100 (CRD 2465).
     let limit = raw_limit.min(100);
 
-    let start = match q.start_date.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        None => None,
-        Some(s) => Some(
-            parse_iso(s, false)
-                .ok_or_else(|| validation("startDate", "startDate must be a valid ISO 8601 date"))?,
-        ),
-    };
-    let end = match q.end_date.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let start =
+        match q
+            .start_date
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            None => None,
+            Some(s) => Some(parse_iso(s, false).ok_or_else(|| {
+                validation("startDate", "startDate must be a valid ISO 8601 date")
+            })?),
+        };
+    let end = match q
+        .end_date
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         None => None,
         Some(s) => Some(
             parse_iso(s, true)
@@ -281,7 +306,9 @@ pub async fn overview(
     require_admin(&user)?;
     let days = lenient_days(&q.days, 7);
     let (filter, start, end) = window(days);
-    Ok(envelope::ok(overview_payload(&state, &filter, days, &start, &end).await?))
+    Ok(envelope::ok(
+        overview_payload(&state, &filter, days, &start, &end).await?,
+    ))
 }
 
 // -------------------------------------------- Resource-type statistics (CRD 2511-2513)
@@ -396,8 +423,16 @@ pub async fn custom_stats(
     Query(q): Query<CustomRangeQuery>,
 ) -> Result {
     require_admin(&user)?;
-    let raw_start = q.start_date.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let raw_end = q.end_date.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let raw_start = q
+        .start_date
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let raw_end = q
+        .end_date
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let (Some(raw_start), Some(raw_end)) = (raw_start, raw_end) else {
         return Err(AppError::Validation(
             "Start date and end date are required".into(),
@@ -417,8 +452,14 @@ pub async fn custom_stats(
     }
     let days = (end - start).num_days().max(1);
     let (s, e) = (iso(start), iso(end));
-    let filter = ListFilter { start: Some(s.clone()), end: Some(e.clone()), ..Default::default() };
-    Ok(envelope::ok(overview_payload(&state, &filter, days, &s, &e).await?))
+    let filter = ListFilter {
+        start: Some(s.clone()),
+        end: Some(e.clone()),
+        ..Default::default()
+    };
+    Ok(envelope::ok(
+        overview_payload(&state, &filter, days, &s, &e).await?,
+    ))
 }
 
 // --------------------------------------------------------- Activity trends (CRD 2526-2528)
@@ -504,7 +545,10 @@ pub async fn metrics(
 
     let total = store::count(&state.db, &filter).await?;
     let avg_per_day = ((total as f64) / (days as f64) * 100.0).round() / 100.0;
-    let peak_hour = store::hour_counts(&state.db, &filter).await?.first().map(|(h, _)| *h);
+    let peak_hour = store::hour_counts(&state.db, &filter)
+        .await?
+        .first()
+        .map(|(h, _)| *h);
     let most_active = store::top_users(&state.db, &filter, 1)
         .await?
         .first()

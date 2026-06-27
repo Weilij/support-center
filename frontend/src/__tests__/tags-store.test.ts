@@ -25,7 +25,13 @@ describe('tags store', () => {
   it('loads tags from supported response containers', async () => {
     getMock.mockResolvedValue({
       success: true,
-      data: { tags: [{ id: 1, name: 'VIP', color: '#0ea5e9' }] },
+      data: {
+        tags: [
+          { id: 1, name: 'VIP', color: '#0ea5e9' },
+          { id: 'bad', name: 'Broken' },
+          { id: 3 },
+        ],
+      },
     } as never)
 
     await loadTags()

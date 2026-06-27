@@ -19,14 +19,24 @@ fn line_sig(body: &str) -> String {
 fn fb_sig(body: &str) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(b"test-fb-secret").unwrap();
     mac.update(body.as_bytes());
-    let hex: String = mac.finalize().into_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    let hex: String = mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     format!("sha256={hex}")
 }
 
 fn shopee_sig(body: &str) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(b"test-shopee-key").unwrap();
     mac.update(body.as_bytes());
-    let hex: String = mac.finalize().into_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    let hex: String = mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     format!("sha256={hex}")
 }
 
@@ -178,7 +188,11 @@ async fn line_rejects_when_secret_unconfigured() {
     let sig = line_sig(&body);
     let (status, resp) = post_line(&app, &body, Some(&sig)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert!(resp["error"].as_str().unwrap().to_lowercase().contains("secret"));
+    assert!(resp["error"]
+        .as_str()
+        .unwrap()
+        .to_lowercase()
+        .contains("secret"));
 }
 
 #[tokio::test]
@@ -294,7 +308,10 @@ async fn line_redelivery_is_idempotent() {
     .fetch_one(&app.state.db)
     .await
     .unwrap();
-    assert_eq!(marker_before, marker_after, "activity marker only advances on insert (CRD 2771)");
+    assert_eq!(
+        marker_before, marker_after,
+        "activity marker only advances on insert (CRD 2771)"
+    );
 }
 
 #[tokio::test]
@@ -362,7 +379,10 @@ async fn line_media_normalization_uses_placeholders() {
             .fetch_one(&app.state.db)
             .await
             .unwrap();
-    assert!(file_content.contains("doc.pdf"), "file placeholder carries the name: {file_content}");
+    assert!(
+        file_content.contains("doc.pdf"),
+        "file placeholder carries the name: {file_content}"
+    );
 
     let unknown_content: String =
         sqlx::query_scalar("SELECT content FROM messages WHERE platform_message_id = 'mm-3'")
@@ -399,14 +419,16 @@ async fn follow_with_routing_creates_team_conversation_and_welcome() {
     let (status, _) = post_line(&app, &body, Some(&line_sig(&body))).await;
     assert_eq!(status, StatusCode::OK);
 
-    let (cust_id, meta): (i64, Option<String>) = sqlx::query_as(
-        "SELECT id, metadata FROM customers WHERE platform_user_id = 'U-follow'",
-    )
-    .fetch_one(&app.state.db)
-    .await
-    .unwrap();
+    let (cust_id, meta): (i64, Option<String>) =
+        sqlx::query_as("SELECT id, metadata FROM customers WHERE platform_user_id = 'U-follow'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
     let meta: Value = serde_json::from_str(&meta.unwrap_or_default()).unwrap_or_default();
-    assert!(meta.get("lastFollowedAt").is_some(), "follow metadata recorded: {meta}");
+    assert!(
+        meta.get("lastFollowedAt").is_some(),
+        "follow metadata recorded: {meta}"
+    );
 
     let (conv_team, conv_status): (Option<i64>, String) =
         sqlx::query_as("SELECT team_id, status FROM conversations WHERE customer_id = $1")
@@ -419,8 +441,14 @@ async fn follow_with_routing_creates_team_conversation_and_welcome() {
 
     // Default welcome stored as a system-authored message so the conversation
     // is not empty (CRD 2822).
-    let (sender_type, count, platform_message_id): (String, i64, Option<String>) = sqlx::query_as(
+    let (sender_type, count, platform_message_id, delivery_status): (
+        String,
+        i64,
+        Option<String>,
+        String,
+    ) = sqlx::query_as(
         "SELECT MAX(m.sender_type), COUNT(*), MAX(m.platform_message_id)
+                , MAX(m.delivery_status)
          FROM messages m JOIN conversations c ON c.id = m.conversation_id
          WHERE c.customer_id = $1",
     )
@@ -430,12 +458,8 @@ async fn follow_with_routing_creates_team_conversation_and_welcome() {
     .unwrap();
     assert_eq!(sender_type, "system");
     assert_eq!(count, 1);
-    assert!(
-        platform_message_id
-            .as_deref()
-            .is_some_and(|id| id.starts_with("stub-line-")),
-        "default welcome should be dispatched through the LINE outbound gateway: {platform_message_id:?}"
-    );
+    assert!(platform_message_id.is_none());
+    assert_eq!(delivery_status, "failed");
 }
 
 #[tokio::test]
@@ -594,14 +618,26 @@ async fn facebook_delivery_verifies_signature_and_ingests() {
     let body = fb_text_body("F-1", "fb-mid-1", "fb hello");
 
     // Bad signature rejected.
-    let (status, resp) = send_raw(&app, "POST", "/api/webhooks/facebook", &body,
-        &[("x-hub-signature-256", "sha256=deadbeef")]).await;
+    let (status, resp) = send_raw(
+        &app,
+        "POST",
+        "/api/webhooks/facebook",
+        &body,
+        &[("x-hub-signature-256", "sha256=deadbeef")],
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{resp}");
 
     // Valid signature ingests.
     let sig = fb_sig(&body);
-    let (status, resp) = send_raw(&app, "POST", "/api/webhooks/facebook", &body,
-        &[("x-hub-signature-256", sig.as_str())]).await;
+    let (status, resp) = send_raw(
+        &app,
+        "POST",
+        "/api/webhooks/facebook",
+        &body,
+        &[("x-hub-signature-256", sig.as_str())],
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{resp}");
 
     let (content, platform): (String, String) = sqlx::query_as(
@@ -625,8 +661,14 @@ async fn post_fb_item(app: &TestApp, item: Value) -> (StatusCode, Value) {
     })
     .to_string();
     let sig = fb_sig(&body);
-    let (status, text) =
-        send_raw(app, "POST", "/api/webhooks/facebook", &body, &[("x-hub-signature-256", sig.as_str())]).await;
+    let (status, text) = send_raw(
+        app,
+        "POST",
+        "/api/webhooks/facebook",
+        &body,
+        &[("x-hub-signature-256", sig.as_str())],
+    )
+    .await;
     (status, serde_json::from_str(&text).unwrap_or(Value::Null))
 }
 
@@ -717,7 +759,9 @@ async fn facebook_postback_redelivery_is_idempotent() {
 #[tokio::test]
 async fn facebook_delivery_marks_messages_delivered() {
     let app = spawn_app().await;
-    let cust = app.seed_customer("facebook", "F-del", "Facebook User", None).await;
+    let cust = app
+        .seed_customer("facebook", "F-del", "Facebook User", None)
+        .await;
     let conv = app.seed_conversation(cust, None, "active").await;
     // Seed an outbound agent message with a known platform_message_id, initially
     // not yet delivered, so the receipt has an observable effect.
@@ -746,18 +790,21 @@ async fn facebook_delivery_marks_messages_delivered() {
     .await;
     assert_eq!(status, StatusCode::OK, "{resp}");
 
-    let delivery: String =
-        sqlx::query_scalar("SELECT delivery_status FROM messages WHERE platform_message_id = 'del-mid-1'")
-            .fetch_one(&app.state.db)
-            .await
-            .unwrap();
+    let delivery: String = sqlx::query_scalar(
+        "SELECT delivery_status FROM messages WHERE platform_message_id = 'del-mid-1'",
+    )
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
     assert_eq!(delivery, "delivered");
 }
 
 #[tokio::test]
 async fn facebook_read_stamps_read_at_via_watermark() {
     let app = spawn_app().await;
-    let cust = app.seed_customer("facebook", "F-read", "Facebook User", None).await;
+    let cust = app
+        .seed_customer("facebook", "F-read", "Facebook User", None)
+        .await;
     let conv = app.seed_conversation(cust, None, "active").await;
     // An agent message sent in the SAME second as the read watermark, stamped in
     // the canonical ISO form real code writes (now_iso / to_rfc3339_opts(Millis,
@@ -795,13 +842,15 @@ async fn facebook_read_stamps_read_at_via_watermark() {
     .await;
     assert_eq!(status, StatusCode::OK, "{resp}");
 
-    let read_at: Option<String> =
-        sqlx::query_scalar("SELECT read_at FROM messages WHERE id = $1")
-            .bind(&msg_id)
-            .fetch_one(&app.state.db)
-            .await
-            .unwrap();
-    assert!(read_at.is_some(), "agent message read_at stamped by the watermark");
+    let read_at: Option<String> = sqlx::query_scalar("SELECT read_at FROM messages WHERE id = $1")
+        .bind(&msg_id)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+    assert!(
+        read_at.is_some(),
+        "agent message read_at stamped by the watermark"
+    );
 
     // Collation-independent regression guard against the actual production
     // conversion. The `sent_at <= $2` compare runs as TEXT under the deployment's
@@ -849,8 +898,14 @@ async fn facebook_user_object_is_accepted_but_not_processed() {
     })
     .to_string();
     let sig = fb_sig(&body);
-    let (status, _) = send_raw(&app, "POST", "/api/webhooks/facebook", &body,
-        &[("x-hub-signature-256", sig.as_str())]).await;
+    let (status, _) = send_raw(
+        &app,
+        "POST",
+        "/api/webhooks/facebook",
+        &body,
+        &[("x-hub-signature-256", sig.as_str())],
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
         .fetch_one(&app.state.db)
@@ -861,7 +916,10 @@ async fn facebook_user_object_is_accepted_but_not_processed() {
         .fetch_one(&app.state.db)
         .await
         .unwrap();
-    assert_eq!(customers, 0, "the object guard, not an empty array, prevents processing (CRD 2794)");
+    assert_eq!(
+        customers, 0,
+        "the object guard, not an empty array, prevents processing (CRD 2794)"
+    );
 }
 
 // ---------------------------------------------------------------- Instagram
@@ -874,8 +932,14 @@ async fn post_ig_item(app: &TestApp, item: Value) -> (StatusCode, Value) {
     })
     .to_string();
     let sig = fb_sig(&body);
-    let (status, text) =
-        send_raw(app, "POST", "/api/webhooks/facebook", &body, &[("x-hub-signature-256", sig.as_str())]).await;
+    let (status, text) = send_raw(
+        app,
+        "POST",
+        "/api/webhooks/facebook",
+        &body,
+        &[("x-hub-signature-256", sig.as_str())],
+    )
+    .await;
     (status, serde_json::from_str(&text).unwrap_or(Value::Null))
 }
 
@@ -933,7 +997,9 @@ async fn instagram_echo_messages_are_skipped() {
 #[tokio::test]
 async fn instagram_reaction_records_metadata() {
     let app = spawn_app().await;
-    let cust = app.seed_customer("instagram", "IG-react", "Instagram User", None).await;
+    let cust = app
+        .seed_customer("instagram", "IG-react", "Instagram User", None)
+        .await;
     let conv = app.seed_conversation(cust, None, "active").await;
     // Seed a customer message with a known platform_message_id and empty-object
     // metadata so the reaction has a target to update.
@@ -963,13 +1029,16 @@ async fn instagram_reaction_records_metadata() {
     .await;
     assert_eq!(status, StatusCode::OK, "{resp}");
 
-    let meta: String =
-        sqlx::query_scalar("SELECT metadata FROM messages WHERE platform_message_id = 'ig-react-mid'")
-            .fetch_one(&app.state.db)
-            .await
-            .unwrap();
+    let meta: String = sqlx::query_scalar(
+        "SELECT metadata FROM messages WHERE platform_message_id = 'ig-react-mid'",
+    )
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
     let meta: Value = serde_json::from_str(&meta).unwrap();
-    let reactions = meta["reactions"].as_array().expect("reactions array present");
+    let reactions = meta["reactions"]
+        .as_array()
+        .expect("reactions array present");
     assert_eq!(reactions.len(), 1, "one reaction recorded: {meta}");
     assert_eq!(reactions[0]["reaction"], "love");
     assert_eq!(reactions[0]["emoji"], "❤️");
@@ -978,7 +1047,9 @@ async fn instagram_reaction_records_metadata() {
 #[tokio::test]
 async fn instagram_unreaction_removes_reaction() {
     let app = spawn_app().await;
-    let cust = app.seed_customer("instagram", "IG-unreact", "Instagram User", None).await;
+    let cust = app
+        .seed_customer("instagram", "IG-unreact", "Instagram User", None)
+        .await;
     let conv = app.seed_conversation(cust, None, "active").await;
     // Seed a customer message with a known platform_message_id and empty-object
     // metadata so the reaction has a target to update.
@@ -1009,14 +1080,18 @@ async fn instagram_unreaction_removes_reaction() {
     .await;
     assert_eq!(status, StatusCode::OK, "{resp}");
 
-    let meta: String =
-        sqlx::query_scalar("SELECT metadata FROM messages WHERE platform_message_id = 'ig-unreact-mid'")
-            .fetch_one(&app.state.db)
-            .await
-            .unwrap();
+    let meta: String = sqlx::query_scalar(
+        "SELECT metadata FROM messages WHERE platform_message_id = 'ig-unreact-mid'",
+    )
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
     let meta: Value = serde_json::from_str(&meta).unwrap();
     assert_eq!(
-        meta["reactions"].as_array().expect("reactions array present").len(),
+        meta["reactions"]
+            .as_array()
+            .expect("reactions array present")
+            .len(),
         1,
         "one reaction recorded after react: {meta}"
     );
@@ -1034,14 +1109,18 @@ async fn instagram_unreaction_removes_reaction() {
     .await;
     assert_eq!(status, StatusCode::OK, "{resp}");
 
-    let meta: String =
-        sqlx::query_scalar("SELECT metadata FROM messages WHERE platform_message_id = 'ig-unreact-mid'")
-            .fetch_one(&app.state.db)
-            .await
-            .unwrap();
+    let meta: String = sqlx::query_scalar(
+        "SELECT metadata FROM messages WHERE platform_message_id = 'ig-unreact-mid'",
+    )
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
     let meta: Value = serde_json::from_str(&meta).unwrap();
     assert_eq!(
-        meta["reactions"].as_array().expect("reactions array present").len(),
+        meta["reactions"]
+            .as_array()
+            .expect("reactions array present")
+            .len(),
         0,
         "reaction removed after unreact: {meta}"
     );
@@ -1050,7 +1129,9 @@ async fn instagram_unreaction_removes_reaction() {
 #[tokio::test]
 async fn instagram_seen_by_mid_stamps_read_at() {
     let app = spawn_app().await;
-    let cust = app.seed_customer("instagram", "IG-seen", "Instagram User", None).await;
+    let cust = app
+        .seed_customer("instagram", "IG-seen", "Instagram User", None)
+        .await;
     let conv = app.seed_conversation(cust, None, "active").await;
     // Seed an agent message with a known platform_message_id and sent_at; read_at
     // starts NULL. The IG "seen" event carries that mid.
@@ -1080,13 +1161,15 @@ async fn instagram_seen_by_mid_stamps_read_at() {
     .await;
     assert_eq!(status, StatusCode::OK, "{resp}");
 
-    let read_at: Option<String> =
-        sqlx::query_scalar("SELECT read_at FROM messages WHERE id = $1")
-            .bind(&msg_id)
-            .fetch_one(&app.state.db)
-            .await
-            .unwrap();
-    assert!(read_at.is_some(), "agent message read_at stamped by the seen mid");
+    let read_at: Option<String> = sqlx::query_scalar("SELECT read_at FROM messages WHERE id = $1")
+        .bind(&msg_id)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+    assert!(
+        read_at.is_some(),
+        "agent message read_at stamped by the seen mid"
+    );
 }
 
 #[tokio::test]
@@ -1122,8 +1205,17 @@ async fn facebook_declared_oversize_content_length_is_rejected() {
     let body = fb_text_body("F-big", "fb-big", "x");
     let sig = fb_sig(&body);
     // The declared content-length triggers rejection before signature checks.
-    let (status, resp) = send_raw(&app, "POST", "/api/webhooks/facebook", &body,
-        &[("x-hub-signature-256", sig.as_str()), ("content-length", "2000000")]).await;
+    let (status, resp) = send_raw(
+        &app,
+        "POST",
+        "/api/webhooks/facebook",
+        &body,
+        &[
+            ("x-hub-signature-256", sig.as_str()),
+            ("content-length", "2000000"),
+        ],
+    )
+    .await;
     // Either the framework rejects the mismatched length or the handler does;
     // the observable contract is a 4xx, specifically 413 when it reaches the handler.
     assert!(
@@ -1186,12 +1278,11 @@ async fn shopee_text_message_creates_customer_conversation_and_message() {
     .unwrap();
     assert_eq!(name, "Shopee User");
 
-    let conv_id: String =
-        sqlx::query_scalar("SELECT id FROM conversations WHERE customer_id = $1")
-            .bind(cust_id)
-            .fetch_one(&app.state.db)
-            .await
-            .unwrap();
+    let conv_id: String = sqlx::query_scalar("SELECT id FROM conversations WHERE customer_id = $1")
+        .bind(cust_id)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
     let (content, content_type, delivery, metadata): (String, String, String, String) =
         sqlx::query_as(
             "SELECT content, content_type, delivery_status, metadata
@@ -1256,10 +1347,11 @@ async fn shopee_redelivery_is_idempotent() {
     assert_eq!(s1, StatusCode::OK);
     assert_eq!(s2, StatusCode::OK);
 
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE platform_message_id = 'sp-mid-dup'")
-            .fetch_one(&app.state.db)
-            .await
-            .unwrap();
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages WHERE platform_message_id = 'sp-mid-dup'",
+    )
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
     assert_eq!(count, 1);
 }

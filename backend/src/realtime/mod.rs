@@ -34,69 +34,155 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let gateway = Router::new()
         .route("/api/websocket/connect", get(socket::connect))
         .route("/api/websocket/disconnect", post(endpoints::disconnect))
-        .layer(from_fn(rate_limit::limit(state.clone(), RatePolicy::WEBSOCKET)));
+        .layer(from_fn(rate_limit::limit(
+            state.clone(),
+            RatePolicy::WEBSOCKET,
+        )));
 
     let ops = Router::new()
-        .route("/api/websocket/migration-status", get(endpoints::migration_status))
-        .route("/api/websocket/migration-config", post(endpoints::migration_config))
+        .route(
+            "/api/websocket/migration-status",
+            get(endpoints::migration_status),
+        )
+        .route(
+            "/api/websocket/migration-config",
+            post(endpoints::migration_config),
+        )
         .route("/api/websocket/health", get(endpoints::health))
         .route("/api/websocket/readiness", get(endpoints::readiness))
         .route("/api/websocket/liveness", get(endpoints::liveness))
         .route("/api/websocket/metrics", get(endpoints::metrics))
-        .route("/api/websocket/health-detail", get(endpoints::health_detail))
+        .route(
+            "/api/websocket/health-detail",
+            get(endpoints::health_detail),
+        )
         .route("/api/websocket/comparison", get(endpoints::comparison))
-        .route("/api/websocket/dashboard/metrics", get(endpoints::dashboard_metrics))
-        .route("/api/websocket/dashboard/connections", get(endpoints::dashboard_connections))
-        .route("/api/websocket/dashboard/history", get(endpoints::dashboard_history))
-        .route("/api/websocket/dashboard/trends", get(endpoints::dashboard_trends))
+        .route(
+            "/api/websocket/dashboard/metrics",
+            get(endpoints::dashboard_metrics),
+        )
+        .route(
+            "/api/websocket/dashboard/connections",
+            get(endpoints::dashboard_connections),
+        )
+        .route(
+            "/api/websocket/dashboard/history",
+            get(endpoints::dashboard_history),
+        )
+        .route(
+            "/api/websocket/dashboard/trends",
+            get(endpoints::dashboard_trends),
+        )
         .route(
             "/api/websocket/dashboard/durable-objects",
             get(endpoints::dashboard_durable_objects),
         )
-        .route("/api/websocket/dashboard/alerts", get(endpoints::dashboard_alerts))
-        .route("/api/websocket/analytics/dashboard", get(endpoints::analytics_dashboard))
-        .route("/api/websocket/analytics/trends", get(endpoints::analytics_trends))
-        .route("/api/websocket/analytics/errors", post(endpoints::analytics_record_error))
-        .route("/api/websocket/analytics/quality", post(endpoints::analytics_record_quality))
+        .route(
+            "/api/websocket/dashboard/alerts",
+            get(endpoints::dashboard_alerts),
+        )
+        .route(
+            "/api/websocket/analytics/dashboard",
+            get(endpoints::analytics_dashboard),
+        )
+        .route(
+            "/api/websocket/analytics/trends",
+            get(endpoints::analytics_trends),
+        )
+        .route(
+            "/api/websocket/analytics/errors",
+            post(endpoints::analytics_record_error),
+        )
+        .route(
+            "/api/websocket/analytics/quality",
+            post(endpoints::analytics_record_quality),
+        )
         .route(
             "/api/websocket/analytics/alerts/trigger",
             post(endpoints::analytics_trigger_alert),
         )
-        .route("/api/websocket/analytics/health", get(endpoints::analytics_health))
+        .route(
+            "/api/websocket/analytics/health",
+            get(endpoints::analytics_health),
+        )
         .route(
             "/api/websocket/analytics/config/alerts",
-            get(endpoints::analytics_alert_config)
-                .put(endpoints::analytics_update_alert_config),
+            get(endpoints::analytics_alert_config).put(endpoints::analytics_update_alert_config),
         )
-        .route("/api/websocket/analytics/export/trends", get(endpoints::analytics_export_trends))
-        .route("/api/websocket/test-connection", get(endpoints::test_connection));
+        .route(
+            "/api/websocket/analytics/export/trends",
+            get(endpoints::analytics_export_trends),
+        )
+        .route(
+            "/api/websocket/test-connection",
+            get(endpoints::test_connection),
+        );
 
     // Conversation room surface (CRD §5.2 lines 3469-3577), mounted per room.
     let rooms = Router::new()
-        .route("/api/realtime/rooms/{conversation_id}/websocket", get(rooms::room_connect))
-        .route("/api/realtime/rooms/{conversation_id}/challenge", post(rooms::challenge))
-        .route("/api/realtime/rooms/{conversation_id}/connect", post(rooms::connect_status))
-        .route("/api/realtime/rooms/{conversation_id}/disconnect", post(rooms::force_disconnect))
-        .route("/api/realtime/rooms/{conversation_id}/broadcast", post(rooms::broadcast))
-        .route("/api/realtime/rooms/{conversation_id}/participants", post(rooms::participants))
-        .route("/api/realtime/rooms/{conversation_id}/metrics", post(rooms::room_metrics));
+        .route(
+            "/api/realtime/rooms/{conversation_id}/websocket",
+            get(rooms::room_connect),
+        )
+        .route(
+            "/api/realtime/rooms/{conversation_id}/challenge",
+            post(rooms::challenge),
+        )
+        .route(
+            "/api/realtime/rooms/{conversation_id}/connect",
+            post(rooms::connect_status),
+        )
+        .route(
+            "/api/realtime/rooms/{conversation_id}/disconnect",
+            post(rooms::force_disconnect),
+        )
+        .route(
+            "/api/realtime/rooms/{conversation_id}/broadcast",
+            post(rooms::broadcast),
+        )
+        .route(
+            "/api/realtime/rooms/{conversation_id}/participants",
+            post(rooms::participants),
+        )
+        .route(
+            "/api/realtime/rooms/{conversation_id}/metrics",
+            post(rooms::room_metrics),
+        );
 
     // Routed event delivery (CRD §5.2 lines 3581-3660).
     let delivery = Router::new()
-        .route("/api/realtime/broadcaster/broadcast", post(broadcaster::queue_event))
-        .route("/api/realtime/broadcaster/queue-event", post(broadcaster::queue_event))
+        .route(
+            "/api/realtime/broadcaster/broadcast",
+            post(broadcaster::queue_event),
+        )
+        .route(
+            "/api/realtime/broadcaster/queue-event",
+            post(broadcaster::queue_event),
+        )
         .route(
             "/api/realtime/broadcaster/broadcast-to-conversations",
             post(broadcaster::to_conversations),
         )
-        .route("/api/realtime/broadcaster/broadcast-to-users", post(broadcaster::to_users))
-        .route("/api/realtime/broadcaster/broadcast-to-teams", post(broadcaster::to_teams))
+        .route(
+            "/api/realtime/broadcaster/broadcast-to-users",
+            post(broadcaster::to_users),
+        )
+        .route(
+            "/api/realtime/broadcaster/broadcast-to-teams",
+            post(broadcaster::to_teams),
+        )
         .route(
             "/api/realtime/broadcaster/broadcast-to-teams-and-admins",
             post(broadcaster::to_teams_and_admins),
         )
-        .route("/api/realtime/broadcaster/broadcast-global", post(broadcaster::global))
-        .route("/api/realtime/broadcaster/batch-broadcast", post(broadcaster::batch))
+        .route(
+            "/api/realtime/broadcaster/broadcast-global",
+            post(broadcaster::global),
+        )
+        .route(
+            "/api/realtime/broadcaster/batch-broadcast",
+            post(broadcaster::batch),
+        )
         .route(
             "/api/realtime/broadcaster/register-connection",
             post(broadcaster::register_connection),
@@ -105,15 +191,30 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/api/realtime/broadcaster/unregister-connection",
             post(broadcaster::unregister_connection),
         )
-        .route("/api/realtime/broadcaster/update-filters", post(broadcaster::update_filters))
-        .route("/api/realtime/broadcaster/flush-queue", post(broadcaster::flush_queue))
+        .route(
+            "/api/realtime/broadcaster/update-filters",
+            post(broadcaster::update_filters),
+        )
+        .route(
+            "/api/realtime/broadcaster/flush-queue",
+            post(broadcaster::flush_queue),
+        )
         .route(
             "/api/realtime/broadcaster/system-broadcast",
             post(broadcaster::system_broadcast),
         )
-        .route("/api/realtime/broadcaster/metrics", post(broadcaster::metrics))
-        .route("/api/realtime/broadcaster/status", post(broadcaster::status))
-        .route("/api/realtime/broadcaster/health", post(broadcaster::status))
+        .route(
+            "/api/realtime/broadcaster/metrics",
+            post(broadcaster::metrics),
+        )
+        .route(
+            "/api/realtime/broadcaster/status",
+            post(broadcaster::status),
+        )
+        .route(
+            "/api/realtime/broadcaster/health",
+            post(broadcaster::status),
+        )
         .route(
             "/api/realtime/broadcaster/debug-connections",
             post(broadcaster::debug_connections),
@@ -122,12 +223,30 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     // User real-time sessions (CRD §5.3 lines 3694-3845), scoped to the
     // authenticated user.
     let sessions = Router::new()
-        .route("/api/realtime/session/websocket", get(user_sessions::session_connect))
-        .route("/api/realtime/session/connect", post(user_sessions::subscribe))
-        .route("/api/realtime/session/subscribe", post(user_sessions::subscribe))
-        .route("/api/realtime/session/disconnect", post(user_sessions::unsubscribe))
-        .route("/api/realtime/session/unsubscribe", post(user_sessions::unsubscribe))
-        .route("/api/realtime/session/presence", post(user_sessions::presence))
+        .route(
+            "/api/realtime/session/websocket",
+            get(user_sessions::session_connect),
+        )
+        .route(
+            "/api/realtime/session/connect",
+            post(user_sessions::subscribe),
+        )
+        .route(
+            "/api/realtime/session/subscribe",
+            post(user_sessions::subscribe),
+        )
+        .route(
+            "/api/realtime/session/disconnect",
+            post(user_sessions::unsubscribe),
+        )
+        .route(
+            "/api/realtime/session/unsubscribe",
+            post(user_sessions::unsubscribe),
+        )
+        .route(
+            "/api/realtime/session/presence",
+            post(user_sessions::presence),
+        )
         .route(
             "/api/realtime/session/preferences",
             get(user_sessions::get_preferences)
@@ -137,8 +256,14 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/api/realtime/session/status", get(user_sessions::status))
         .route("/api/realtime/session/metrics", get(user_sessions::metrics))
-        .route("/api/realtime/session/broadcast", post(user_sessions::broadcast))
-        .route("/api/realtime/session/batch-events", post(user_sessions::batch_events));
+        .route(
+            "/api/realtime/session/broadcast",
+            post(user_sessions::broadcast),
+        )
+        .route(
+            "/api/realtime/session/batch-events",
+            post(user_sessions::batch_events),
+        );
 
     // Customer-side per-conversation channels (CRD §5.4 lines 3847-3974).
     // No bearer middleware: the WS path authenticates in-handshake and the
@@ -149,7 +274,10 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         Router::new()
             .route("/ws", get(customer::channel_ws))
             .route("/notify-message", post(customer::notify_message))
-            .route("/notify-message-updated", post(customer::notify_message_updated))
+            .route(
+                "/notify-message-updated",
+                post(customer::notify_message_updated),
+            )
             .route(
                 "/messages",
                 get(customer::list_messages).post(customer::create_message),
@@ -173,16 +301,28 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(module::conversation_status),
         )
         .route("/api/realtime/online-status", post(module::online_status))
-        .route("/api/realtime/config", get(module::get_config).put(module::put_config))
+        .route(
+            "/api/realtime/config",
+            get(module::get_config).put(module::put_config),
+        )
         .route("/api/realtime/stats", get(module::stats))
         .route("/api/realtime/health", get(module::health))
-        .route("/api/realtime/monitoring/dashboard", get(module::monitoring_dashboard))
-        .route("/api/realtime/monitoring/metrics", get(module::monitoring_metrics))
+        .route(
+            "/api/realtime/monitoring/dashboard",
+            get(module::monitoring_dashboard),
+        )
+        .route(
+            "/api/realtime/monitoring/metrics",
+            get(module::monitoring_metrics),
+        )
         .route(
             "/api/realtime/monitoring/alerts",
             get(module::monitoring_alerts).post(module::resolve_alert),
         )
-        .route("/api/realtime/monitoring/health", get(module::monitoring_health))
+        .route(
+            "/api/realtime/monitoring/health",
+            get(module::monitoring_health),
+        )
         .route(
             "/api/realtime/monitoring/config",
             get(module::monitoring_config).post(module::monitoring_config),

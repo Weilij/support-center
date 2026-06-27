@@ -20,15 +20,18 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         // Health routes are registered before the {id} routes so the static
         // segment cannot be captured as a rule id.
-        .route("/api/auto-reply/rules/health", get(|| async {
-            handlers::health(axum::extract::Path("rules".to_string())).await
-        }))
-        .route("/api/auto-reply/schedules/health", get(|| async {
-            handlers::health(axum::extract::Path("schedules".to_string())).await
-        }))
-        .route("/api/auto-reply/logs/health", get(|| async {
-            handlers::health(axum::extract::Path("logs".to_string())).await
-        }))
+        .route(
+            "/api/auto-reply/rules/health",
+            get(|| async { handlers::health(axum::extract::Path("rules".to_string())).await }),
+        )
+        .route(
+            "/api/auto-reply/schedules/health",
+            get(|| async { handlers::health(axum::extract::Path("schedules".to_string())).await }),
+        )
+        .route(
+            "/api/auto-reply/logs/health",
+            get(|| async { handlers::health(axum::extract::Path("logs".to_string())).await }),
+        )
         .route(
             "/api/auto-reply/rules/{id}",
             axum::routing::put(handlers::update_rule).delete(handlers::delete_rule),

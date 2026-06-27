@@ -4,15 +4,48 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
-use common::{spawn_app, TestApp};
+use axum::routing::post;
+use axum::{Json, Router};
+use common::{spawn_app, spawn_app_custom, TestApp};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
+use std::net::SocketAddr;
 use tower::ServiceExt;
 
 use mcss_backend::domain::messaging::service;
 
+async fn mock_line_push_url() -> String {
+    async fn capture(headers: HeaderMap, _body: axum::body::Bytes) -> (StatusCode, Json<Value>) {
+        let token = headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        if token != "Bearer good-line" {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"message": "bad line token"})),
+            );
+        }
+        (
+            StatusCode::OK,
+            Json(json!({"sentMessages": [{"id": "line-delayed"}]})),
+        )
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/line/push", post(capture)))
+            .await
+            .unwrap();
+    });
+    format!("http://{addr}/line/push")
+}
+
 async fn admin(app: &TestApp) -> (String, String) {
-    let id = app.seed_agent("admin@test.dev", "Secret123!", "admin").await;
+    let id = app
+        .seed_agent("admin@test.dev", "Secret123!", "admin")
+        .await;
     let token = app.login("admin@test.dev", "Secret123!").await.0;
     (token, id)
 }
@@ -110,7 +143,10 @@ fn multipart_request(
         .method("POST")
         .uri(path)
         .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", format!("multipart/form-data; boundary={boundary}"))
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
         .body(Body::from(body))
         .unwrap()
 }
@@ -200,7 +236,12 @@ async fn create_message_validates_required_fields() {
     let (token, _, _, conv) = fixture(&app).await;
     // Missing content.
     let (status, _, _) = app
-        .request("POST", "/api/messages", Some(&token), Some(json!({ "conversationId": conv })))
+        .request(
+            "POST",
+            "/api/messages",
+            Some(&token),
+            Some(json!({ "conversationId": conv })),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Blank content after trimming.
@@ -215,11 +256,18 @@ async fn create_message_validates_required_fields() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Missing conversationId.
     let (status, _, _) = app
-        .request("POST", "/api/messages", Some(&token), Some(json!({ "content": "hi" })))
+        .request(
+            "POST",
+            "/api/messages",
+            Some(&token),
+            Some(json!({ "content": "hi" })),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Malformed JSON.
-    let (status, _) = app.request_raw("POST", "/api/messages", Some(&token), "{not json").await;
+    let (status, _) = app
+        .request_raw("POST", "/api/messages", Some(&token), "{not json")
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -260,7 +308,8 @@ async fn create_message_rejects_missing_or_deleted_conversation() {
 #[tokio::test]
 async fn create_message_enforces_team_scope() {
     let app = spawn_app().await;
-    app.seed_agent("admin@test.dev", "Secret123!", "admin").await;
+    app.seed_agent("admin@test.dev", "Secret123!", "admin")
+        .await;
     let team_a = app.seed_team("A").await;
     let team_b = app.seed_team("B").await;
     let (token, _) = agent(&app, "agent@test.dev", Some(team_a)).await;
@@ -297,7 +346,8 @@ async fn create_message_validates_reply_target() {
     let app = spawn_app().await;
     let (token, admin_id, cust, conv) = fixture(&app).await;
     let other_conv = app.seed_conversation(cust, None, "active").await;
-    let other_msg = seed_agent_message(&app, &other_conv, &admin_id, "elsewhere", false, None).await;
+    let other_msg =
+        seed_agent_message(&app, &other_conv, &admin_id, "elsewhere", false, None).await;
 
     // Reply target in a different conversation is invalid.
     let (status, _, _) = app
@@ -395,8 +445,9 @@ async fn get_message_returns_detail_view() {
     let app = spawn_app().await;
     let (token, admin_id, _, conv) = fixture(&app).await;
     let id = seed_agent_message(&app, &conv, &admin_id, "details", false, None).await;
-    let (status, body, _) =
-        app.request("GET", &format!("/api/messages/{id}"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", &format!("/api/messages/{id}"), Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let data = &body["data"];
     assert_eq!(data["id"], json!(id));
@@ -422,16 +473,29 @@ async fn get_message_hides_scope_violations_as_not_found() {
     let id = seed_agent_message(&app, &conv, &admin_id, "secret", false, None).await;
 
     // Out-of-scope read is reported as not found (CRD 861).
-    let (status, _, _) =
-        app.request("GET", &format!("/api/messages/{id}"), Some(&agent_token), None).await;
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &format!("/api/messages/{id}"),
+            Some(&agent_token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     // Admin sees it.
-    let (status, _, _) =
-        app.request("GET", &format!("/api/messages/{id}"), Some(&admin_token), None).await;
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &format!("/api/messages/{id}"),
+            Some(&admin_token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     // Unknown id is 404; soft-deleted is 404.
-    let (status, _, _) =
-        app.request("GET", "/api/messages/missing-id", Some(&admin_token), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/messages/missing-id", Some(&admin_token), None)
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     sqlx::query("UPDATE messages SET deleted_at = $1 WHERE id = $2")
         .bind(chrono::Utc::now().to_rfc3339())
@@ -439,8 +503,14 @@ async fn get_message_hides_scope_violations_as_not_found() {
         .execute(&app.state.db)
         .await
         .unwrap();
-    let (status, _, _) =
-        app.request("GET", &format!("/api/messages/{id}"), Some(&admin_token), None).await;
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &format!("/api/messages/{id}"),
+            Some(&admin_token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -476,29 +546,56 @@ async fn update_message_error_conditions() {
 
     // Empty content when provided.
     let (status, _, _) = app
-        .request("PUT", &format!("/api/messages/{id}"), Some(&admin_token), Some(json!({ "content": " " })))
+        .request(
+            "PUT",
+            &format!("/api/messages/{id}"),
+            Some(&admin_token),
+            Some(json!({ "content": " " })),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Not found.
     let (status, _, _) = app
-        .request("PUT", "/api/messages/missing", Some(&admin_token), Some(json!({ "content": "x" })))
+        .request(
+            "PUT",
+            "/api/messages/missing",
+            Some(&admin_token),
+            Some(json!({ "content": "x" })),
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     // Non-author, non-admin.
     let (status, _, _) = app
-        .request("PUT", &format!("/api/messages/{id}"), Some(&other_token), Some(json!({ "content": "x" })))
+        .request(
+            "PUT",
+            &format!("/api/messages/{id}"),
+            Some(&other_token),
+            Some(json!({ "content": "x" })),
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     // Customer-origin messages are never editable.
-    let cust_msg = app.seed_message(&conv, "customer", "from customer", None).await;
+    let cust_msg = app
+        .seed_message(&conv, "customer", "from customer", None)
+        .await;
     let (status, _, _) = app
-        .request("PUT", &format!("/api/messages/{cust_msg}"), Some(&admin_token), Some(json!({ "content": "x" })))
+        .request(
+            "PUT",
+            &format!("/api/messages/{cust_msg}"),
+            Some(&admin_token),
+            Some(json!({ "content": "x" })),
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     // Already recalled.
     let recalled = seed_agent_message(&app, &conv, &admin_id, "gone", true, None).await;
     let (status, _, _) = app
-        .request("PUT", &format!("/api/messages/{recalled}"), Some(&admin_token), Some(json!({ "content": "x" })))
+        .request(
+            "PUT",
+            &format!("/api/messages/{recalled}"),
+            Some(&admin_token),
+            Some(json!({ "content": "x" })),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -510,20 +607,20 @@ async fn recall_message_overwrites_content_with_placeholder() {
     let app = spawn_app().await;
     let (token, admin_id, _, conv) = fixture(&app).await;
     let id = seed_agent_message(&app, &conv, &admin_id, "sensitive", false, None).await;
-    let (status, body, _) =
-        app.request("DELETE", &format!("/api/messages/{id}"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request("DELETE", &format!("/api/messages/{id}"), Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["isRecalled"], json!(true));
     assert_eq!(body["data"]["recalledBy"]["id"], json!(admin_id));
     assert!(body["data"]["recalledAt"].is_string());
 
-    let (content, is_recalled, status_col): (String, i64, String) = sqlx::query_as(
-        "SELECT content, is_recalled, delivery_status FROM messages WHERE id = $1",
-    )
-    .bind(&id)
-    .fetch_one(&app.state.db)
-    .await
-    .unwrap();
+    let (content, is_recalled, status_col): (String, i64, String) =
+        sqlx::query_as("SELECT content, is_recalled, delivery_status FROM messages WHERE id = $1")
+            .bind(&id)
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
     assert_eq!(content, "[Message recalled]");
     assert_eq!(is_recalled, 1);
     assert_eq!(status_col, "recalled");
@@ -548,26 +645,50 @@ async fn recall_message_error_conditions() {
     let conv = app.seed_conversation(cust, None, "active").await;
 
     // Not found.
-    let (status, _, _) =
-        app.request("DELETE", "/api/messages/missing", Some(&admin_token), None).await;
+    let (status, _, _) = app
+        .request("DELETE", "/api/messages/missing", Some(&admin_token), None)
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     // Not author/admin.
     let id = seed_agent_message(&app, &conv, &admin_id, "x", false, None).await;
-    let (status, _, _) =
-        app.request("DELETE", &format!("/api/messages/{id}"), Some(&other_token), None).await;
+    let (status, _, _) = app
+        .request(
+            "DELETE",
+            &format!("/api/messages/{id}"),
+            Some(&other_token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     // Already recalled.
     let recalled = seed_agent_message(&app, &conv, &admin_id, "x", true, None).await;
-    let (status, _, _) =
-        app.request("DELETE", &format!("/api/messages/{recalled}"), Some(&admin_token), None).await;
+    let (status, _, _) = app
+        .request(
+            "DELETE",
+            &format!("/api/messages/{recalled}"),
+            Some(&admin_token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Recall deadline passed.
     let expired = seed_agent_message(
-        &app, &conv, &admin_id, "x", false, Some("2000-01-01T00:00:00.000Z"),
+        &app,
+        &conv,
+        &admin_id,
+        "x",
+        false,
+        Some("2000-01-01T00:00:00.000Z"),
     )
     .await;
-    let (status, _, _) =
-        app.request("DELETE", &format!("/api/messages/{expired}"), Some(&admin_token), None).await;
+    let (status, _, _) = app
+        .request(
+            "DELETE",
+            &format!("/api/messages/{expired}"),
+            Some(&admin_token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -577,13 +698,19 @@ async fn recall_message_error_conditions() {
 async fn conversation_listing_paginates_and_filters() {
     let app = spawn_app().await;
     let (token, admin_id, _, conv) = fixture(&app).await;
-    app.seed_message(&conv, "customer", "c1", Some("2026-01-01T00:00:00.000Z")).await;
+    app.seed_message(&conv, "customer", "c1", Some("2026-01-01T00:00:00.000Z"))
+        .await;
     seed_agent_message(&app, &conv, &admin_id, "a1", false, None).await;
     let recalled = seed_agent_message(&app, &conv, &admin_id, "gone", true, None).await;
 
     // Recalled excluded by default; newest first.
     let (status, body, _) = app
-        .request("GET", &format!("/api/messages/conversation/{conv}"), Some(&token), None)
+        .request(
+            "GET",
+            &format!("/api/messages/conversation/{conv}"),
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let messages = body["data"]["messages"].as_array().unwrap();
@@ -625,7 +752,12 @@ async fn conversation_listing_paginates_and_filters() {
 
     // Unknown conversation -> 404.
     let (status, _, _) = app
-        .request("GET", "/api/messages/conversation/missing", Some(&token), None)
+        .request(
+            "GET",
+            "/api/messages/conversation/missing",
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -640,8 +772,9 @@ async fn search_matches_substring_and_filters() {
     seed_agent_message(&app, &conv, &admin_id, "lazy dog", false, None).await;
     seed_agent_message(&app, &conv, &admin_id, "quick recalled", true, None).await;
 
-    let (status, body, _) =
-        app.request("GET", "/api/messages/search?q=quick", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/messages/search?q=quick", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["total"], json!(2));
     assert_eq!(body["data"]["pagination"]["limit"], json!(50));
@@ -655,12 +788,19 @@ async fn search_matches_substring_and_filters() {
 
     // isRecalled filter narrows to the recalled one.
     let (_, body, _) = app
-        .request("GET", "/api/messages/search?q=quick&isRecalled=true", Some(&token), None)
+        .request(
+            "GET",
+            "/api/messages/search?q=quick&isRecalled=true",
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(body["data"]["total"], json!(1));
 
     // A LIKE wildcard in the term is treated literally.
-    let (_, body, _) = app.request("GET", "/api/messages/search?q=%25", Some(&token), None).await;
+    let (_, body, _) = app
+        .request("GET", "/api/messages/search?q=%25", Some(&token), None)
+        .await;
     assert_eq!(body["data"]["total"], json!(0));
 }
 
@@ -670,7 +810,9 @@ async fn stats_reports_totals_and_zero_breakdowns() {
     let (token, admin_id, _, conv) = fixture(&app).await;
     seed_agent_message(&app, &conv, &admin_id, "one", false, None).await;
     seed_agent_message(&app, &conv, &admin_id, "two", false, None).await;
-    let (status, body, _) = app.request("GET", "/api/messages/stats", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/messages/stats", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["overview"]["totalMessages"], json!(2));
     assert_eq!(body["data"]["overview"]["todayMessages"], json!(0));
@@ -690,7 +832,9 @@ async fn tag_listing_aggregates_metadata_tags() {
     set_message_metadata(&app, &m2, json!({ "tags": ["vip"] })).await;
     set_message_metadata(&app, &m3, json!({ "tags": ["hidden"] })).await;
 
-    let (status, body, _) = app.request("GET", "/api/messages/tags", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/messages/tags", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     let tags = body["data"]["tags"].as_array().unwrap();
     assert_eq!(body["data"]["total"], json!(2));
@@ -706,14 +850,16 @@ async fn export_filter_options_list_customers_and_agents() {
     let app = spawn_app().await;
     let (token, _) = admin(&app).await;
     app.seed_customer("line", "U1", "Alice", None).await;
-    let (status, body, _) =
-        app.request("GET", "/api/messages/export/customers", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/messages/export/customers", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"][0]["displayName"], json!("Alice"));
     assert_eq!(body["data"][0]["platform"], json!("line"));
 
-    let (status, body, _) =
-        app.request("GET", "/api/messages/export/agents", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/messages/export/agents", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"][0]["displayName"], json!("admin user"));
     assert_eq!(body["data"][0]["role"], json!("admin"));
@@ -747,8 +893,14 @@ async fn export_json_csv_txt_and_invalid_format() {
     seed_agent_message(&app, &conv, &admin_id, "skip me (recalled)", true, None).await;
 
     // JSON envelope with exportInfo.
-    let (status, body, _) =
-        app.request("GET", "/api/messages/export?format=json", Some(&token), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            "/api/messages/export?format=json",
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["messages"].as_array().unwrap().len(), 1);
     assert_eq!(body["data"]["exportInfo"]["format"], json!("json"));
@@ -756,27 +908,38 @@ async fn export_json_csv_txt_and_invalid_format() {
     assert_eq!(body["data"]["exportInfo"]["exportedBy"], json!(admin_id));
 
     // CSV download.
-    let (status, headers, text) =
-        raw_get(&app, "/api/messages/export?format=csv", &token).await;
+    let (status, headers, text) = raw_get(&app, "/api/messages/export?format=csv", &token).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(headers["content-type"].to_str().unwrap().contains("text/csv"));
-    assert!(headers["content-disposition"].to_str().unwrap().contains("attachment"));
+    assert!(headers["content-type"]
+        .to_str()
+        .unwrap()
+        .contains("text/csv"));
+    assert!(headers["content-disposition"]
+        .to_str()
+        .unwrap()
+        .contains("attachment"));
     assert!(text.starts_with("id,conversationId,senderType"));
     assert!(text.contains("export me"));
     assert!(!text.contains("skip me"));
 
     // TXT transcript grouped by conversation.
-    let (status, headers, text) =
-        raw_get(&app, "/api/messages/export?format=txt", &token).await;
+    let (status, headers, text) = raw_get(&app, "/api/messages/export?format=txt", &token).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(headers["content-type"].to_str().unwrap().contains("text/plain"));
-    assert!(headers["content-disposition"].to_str().unwrap().contains("attachment"));
+    assert!(headers["content-type"]
+        .to_str()
+        .unwrap()
+        .contains("text/plain"));
+    assert!(headers["content-disposition"]
+        .to_str()
+        .unwrap()
+        .contains("attachment"));
     assert!(text.contains(&format!("Conversation: {conv}")));
     assert!(text.contains("export me"));
 
     // Invalid format.
-    let (status, _, _) =
-        app.request("GET", "/api/messages/export?format=xml", Some(&token), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/messages/export?format=xml", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -813,19 +976,31 @@ async fn bulk_create_validates_batch_shape() {
     let (token, _, _, conv) = fixture(&app).await;
     // Empty array.
     let (status, _, _) = app
-        .request("POST", "/api/messages/bulk-create", Some(&token), Some(json!({ "messages": [] })))
+        .request(
+            "POST",
+            "/api/messages/bulk-create",
+            Some(&token),
+            Some(json!({ "messages": [] })),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Over 100 entries.
-    let entries: Vec<Value> =
-        (0..101).map(|i| json!({ "conversationId": conv, "content": format!("m{i}") })).collect();
+    let entries: Vec<Value> = (0..101)
+        .map(|i| json!({ "conversationId": conv, "content": format!("m{i}") }))
+        .collect();
     let (status, _, _) = app
-        .request("POST", "/api/messages/bulk-create", Some(&token), Some(json!({ "messages": entries })))
+        .request(
+            "POST",
+            "/api/messages/bulk-create",
+            Some(&token),
+            Some(json!({ "messages": entries })),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Malformed JSON.
-    let (status, _) =
-        app.request_raw("POST", "/api/messages/bulk-create", Some(&token), "nope").await;
+    let (status, _) = app
+        .request_raw("POST", "/api/messages/bulk-create", Some(&token), "nope")
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -835,7 +1010,9 @@ async fn bulk_create_validates_batch_shape() {
 async fn bulk_delete_recalls_eligible_and_reports_item_errors() {
     let app = spawn_app().await;
     let (admin_token, admin_id) = admin(&app).await;
-    let other_id = app.seed_agent("other@test.dev", "Secret123!", "agent").await;
+    let other_id = app
+        .seed_agent("other@test.dev", "Secret123!", "agent")
+        .await;
     let other_token = app.login("other@test.dev", "Secret123!").await.0;
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, None, "active").await;
@@ -843,9 +1020,15 @@ async fn bulk_delete_recalls_eligible_and_reports_item_errors() {
     let mine = seed_agent_message(&app, &conv, &other_id, "mine", false, None).await;
     let admins = seed_agent_message(&app, &conv, &admin_id, "admin's", false, None).await;
     let recalled = seed_agent_message(&app, &conv, &other_id, "done", true, None).await;
-    let expired =
-        seed_agent_message(&app, &conv, &other_id, "late", false, Some("2000-01-01T00:00:00.000Z"))
-            .await;
+    let expired = seed_agent_message(
+        &app,
+        &conv,
+        &other_id,
+        "late",
+        false,
+        Some("2000-01-01T00:00:00.000Z"),
+    )
+    .await;
 
     // Non-admin agent: own message recalls; the admin's is denied; recalled and
     // expired are per-item errors; unknown id is a per-item error.
@@ -880,12 +1063,22 @@ async fn bulk_delete_validates_batch_shape() {
     let app = spawn_app().await;
     let (token, _) = admin(&app).await;
     let (status, _, _) = app
-        .request("POST", "/api/messages/bulk-delete", Some(&token), Some(json!({ "messageIds": [] })))
+        .request(
+            "POST",
+            "/api/messages/bulk-delete",
+            Some(&token),
+            Some(json!({ "messageIds": [] })),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let ids: Vec<String> = (0..101).map(|i| format!("m{i}")).collect();
     let (status, _, _) = app
-        .request("POST", "/api/messages/bulk-delete", Some(&token), Some(json!({ "messageIds": ids })))
+        .request(
+            "POST",
+            "/api/messages/bulk-delete",
+            Some(&token),
+            Some(json!({ "messageIds": ids })),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -910,7 +1103,12 @@ async fn attachment_listing_returns_records_and_count() {
     .unwrap();
 
     let (status, body, _) = app
-        .request("GET", &format!("/api/messages/{id}/attachments"), Some(&token), None)
+        .request(
+            "GET",
+            &format!("/api/messages/{id}/attachments"),
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["count"], json!(1));
@@ -922,7 +1120,12 @@ async fn attachment_listing_returns_records_and_count() {
 
     // Missing message -> 404.
     let (status, _, _) = app
-        .request("GET", "/api/messages/missing/attachments", Some(&token), None)
+        .request(
+            "GET",
+            "/api/messages/missing/attachments",
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -949,12 +1152,15 @@ async fn attachment_upload_stores_file_and_validates() {
     assert_eq!(body["data"]["mimeType"], json!("image/png"));
     assert_eq!(body["data"]["fileSize"], json!(7));
     // The stored object exists on disk.
-    let key: String = sqlx::query_scalar("SELECT storage_key FROM attachments WHERE message_id = $1")
-        .bind(&id)
-        .fetch_one(&app.state.db)
-        .await
-        .unwrap();
-    assert!(std::path::Path::new(&app.state.config.upload_dir).join(&key).exists());
+    let key: String =
+        sqlx::query_scalar("SELECT storage_key FROM attachments WHERE message_id = $1")
+            .bind(&id)
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    assert!(std::path::Path::new(&app.state.config.upload_dir)
+        .join(&key)
+        .exists());
 
     // Disallowed type.
     let req = multipart_request(
@@ -1039,18 +1245,20 @@ async fn forward_creates_copies_with_provenance() {
     assert_eq!(body["data"]["totalTargets"], json!(3));
     assert_eq!(body["data"]["successCount"], json!(2));
     assert_eq!(body["data"]["failureCount"], json!(1));
-    assert_eq!(body["data"]["errors"][0]["conversationId"], json!("missing"));
+    assert_eq!(
+        body["data"]["errors"][0]["conversationId"],
+        json!("missing")
+    );
 
     // Forwarded copy carries the marker, the comment, and provenance metadata;
     // the target conversation's timestamps were bumped.
     let new_id = body["data"]["results"][0]["messageId"].as_str().unwrap();
-    let (content, metadata, status_col): (String, String, String) = sqlx::query_as(
-        "SELECT content, metadata, delivery_status FROM messages WHERE id = $1",
-    )
-    .bind(new_id)
-    .fetch_one(&app.state.db)
-    .await
-    .unwrap();
+    let (content, metadata, status_col): (String, String, String) =
+        sqlx::query_as("SELECT content, metadata, delivery_status FROM messages WHERE id = $1")
+            .bind(new_id)
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
     assert!(content.starts_with("[Forwarded] pass it on"));
     assert!(content.contains("FYI"));
     assert_eq!(status_col, "sent");
@@ -1156,28 +1364,53 @@ async fn set_tags_validation_and_not_found() {
     let id = seed_agent_message(&app, &conv, &admin_id, "x", false, None).await;
     // Not an array.
     let (status, _, _) = app
-        .request("PUT", &format!("/api/messages/{id}/tags"), Some(&token), Some(json!({ "tags": "vip" })))
+        .request(
+            "PUT",
+            &format!("/api/messages/{id}/tags"),
+            Some(&token),
+            Some(json!({ "tags": "vip" })),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Over 10 tags.
     let many: Vec<String> = (0..11).map(|i| format!("t{i}")).collect();
     let (status, _, _) = app
-        .request("PUT", &format!("/api/messages/{id}/tags"), Some(&token), Some(json!({ "tags": many })))
+        .request(
+            "PUT",
+            &format!("/api/messages/{id}/tags"),
+            Some(&token),
+            Some(json!({ "tags": many })),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Blank entry.
     let (status, _, _) = app
-        .request("PUT", &format!("/api/messages/{id}/tags"), Some(&token), Some(json!({ "tags": ["ok", " "] })))
+        .request(
+            "PUT",
+            &format!("/api/messages/{id}/tags"),
+            Some(&token),
+            Some(json!({ "tags": ["ok", " "] })),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Non-string entry.
     let (status, _, _) = app
-        .request("PUT", &format!("/api/messages/{id}/tags"), Some(&token), Some(json!({ "tags": [1] })))
+        .request(
+            "PUT",
+            &format!("/api/messages/{id}/tags"),
+            Some(&token),
+            Some(json!({ "tags": [1] })),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Unknown message.
     let (status, _, _) = app
-        .request("PUT", "/api/messages/missing/tags", Some(&token), Some(json!({ "tags": ["x"] })))
+        .request(
+            "PUT",
+            "/api/messages/missing/tags",
+            Some(&token),
+            Some(json!({ "tags": ["x"] })),
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -1189,8 +1422,14 @@ async fn remove_tags_clears_collection() {
     let id = seed_agent_message(&app, &conv, &admin_id, "x", false, None).await;
     set_message_metadata(&app, &id, json!({ "tags": ["vip"] })).await;
 
-    let (status, body, _) =
-        app.request("DELETE", &format!("/api/messages/{id}/tags"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request(
+            "DELETE",
+            &format!("/api/messages/{id}/tags"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["removedTags"], json!(["vip"]));
     assert!(body["data"]["removedAt"].is_string());
@@ -1205,8 +1444,9 @@ async fn remove_tags_clears_collection() {
     assert!(meta["tagsRemovedAt"].is_string());
 
     // Unknown message -> 404.
-    let (status, _, _) =
-        app.request("DELETE", "/api/messages/missing/tags", Some(&token), None).await;
+    let (status, _, _) = app
+        .request("DELETE", "/api/messages/missing/tags", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -1317,7 +1557,12 @@ async fn force_due(app: &TestApp, id: &str) {
 
 #[tokio::test]
 async fn process_delayed_dispatches_per_platform() {
-    let app = spawn_app().await;
+    let line_push_url = mock_line_push_url().await;
+    let app = spawn_app_custom(move |config| {
+        config.line_channel_access_token = Some("good-line".into());
+        config.line_push_url = line_push_url;
+    })
+    .await;
     let (_, admin_id, _, conv) = fixture(&app).await;
 
     // Too early -> reschedule signal, still pending.
@@ -1356,7 +1601,7 @@ async fn process_delayed_dispatches_per_platform() {
     assert_eq!(result["success"], json!(false));
     assert_eq!(result["status"], json!("sent"));
 
-    // LINE dispatches through the gateway stub and is marked sent.
+    // LINE dispatches through the configured gateway endpoint and is marked sent.
     let line = schedule_for(&app, &admin_id, &conv, "line").await;
     force_due(&app, &line).await;
     let result = service::process_delayed(&app.state, &line).await;
@@ -1391,11 +1636,12 @@ async fn dispatch_due_processes_only_due_items() {
 
     let processed = service::dispatch_due(&app.state).await;
     assert_eq!(processed, 1);
-    let due_status: String = sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = $1")
-        .bind(&due)
-        .fetch_one(&app.state.db)
-        .await
-        .unwrap();
+    let due_status: String =
+        sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = $1")
+            .bind(&due)
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
     assert_eq!(due_status, "sent");
     let future_status: String =
         sqlx::query_scalar("SELECT status FROM scheduled_messages WHERE id = $1")
@@ -1444,7 +1690,10 @@ async fn cancel_delayed_transitions_and_guards() {
     force_due(&app, &late).await;
     let result = service::cancel_delayed(&app.state, &late, &admin_id, None, true).await;
     assert_eq!(result["success"], json!(false));
-    assert_eq!(result["error"], json!("Cannot recall after scheduled send time"));
+    assert_eq!(
+        result["error"],
+        json!("Cannot recall after scheduled send time")
+    );
 
     // Unknown item.
     let result = service::cancel_delayed(&app.state, "missing", &admin_id, None, false).await;
@@ -1487,7 +1736,12 @@ async fn recall_sent_message_service_capability() {
     assert_eq!(result["error"], json!("Message already recalled"));
 
     let expired = seed_agent_message(
-        &app, &conv, &admin_id, "too late", false, Some("2000-01-01T00:00:00.000Z"),
+        &app,
+        &conv,
+        &admin_id,
+        "too late",
+        false,
+        Some("2000-01-01T00:00:00.000Z"),
     )
     .await;
     let result = service::recall_sent_message(&app.state, &expired, &admin_id).await;
@@ -1542,9 +1796,15 @@ async fn offline_buffer_replay_delivery_and_stats() {
     let app = spawn_app().await;
     let db = &app.state.db;
     let payload = json!({ "content": "while you were away" });
-    let b1 = service::buffer_message(db, "user-1", "conv-1", "msg-1", &payload).await.unwrap();
-    let b2 = service::buffer_message(db, "user-1", "conv-1", "msg-2", &payload).await.unwrap();
-    service::buffer_message(db, "user-2", "conv-1", "msg-3", &payload).await.unwrap();
+    let b1 = service::buffer_message(db, "user-1", "conv-1", "msg-1", &payload)
+        .await
+        .unwrap();
+    let b2 = service::buffer_message(db, "user-1", "conv-1", "msg-2", &payload)
+        .await
+        .unwrap();
+    service::buffer_message(db, "user-2", "conv-1", "msg-3", &payload)
+        .await
+        .unwrap();
 
     // Replay undelivered for one recipient only.
     let entries = service::replay_buffered(db, "user-1", false).await.unwrap();
@@ -1552,9 +1812,13 @@ async fn offline_buffer_replay_delivery_and_stats() {
     assert_eq!(entries[0].recipient_id, "user-1");
 
     // Idempotent delivery marking.
-    let marked = service::mark_delivered(db, std::slice::from_ref(&b1)).await.unwrap();
+    let marked = service::mark_delivered(db, std::slice::from_ref(&b1))
+        .await
+        .unwrap();
     assert_eq!(marked, 1);
-    let marked_again = service::mark_delivered(db, std::slice::from_ref(&b1)).await.unwrap();
+    let marked_again = service::mark_delivered(db, std::slice::from_ref(&b1))
+        .await
+        .unwrap();
     assert_eq!(marked_again, 0);
 
     // Undelivered-only replay now skips it; include_delivered brings it back.
@@ -1581,11 +1845,13 @@ async fn offline_buffer_replay_delivery_and_stats() {
     assert!(gone.is_empty());
 
     // Expired entries are purged (b1 is still retained as delivered; expire it).
-    sqlx::query("UPDATE offline_message_buffer SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = $1")
-        .bind(&b1)
-        .execute(db)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE offline_message_buffer SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = $1",
+    )
+    .bind(&b1)
+    .execute(db)
+    .await
+    .unwrap();
     let purged = service::purge_expired(db).await.unwrap();
     assert_eq!(purged, 1);
     let _ = b2;

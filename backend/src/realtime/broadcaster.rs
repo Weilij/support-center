@@ -3,14 +3,12 @@
 //! conversations / users / teams / admins / everyone, endpoint reachability
 //! registry, subscription filters, and the delivery metrics/health surface.
 //!
-//! Single-process implementation: delivery resolves audiences against the live
-//! hub. TODO(scale-out): a multi-instance deployment would publish queued
-//! events to peer instances and merge reachability registries; observable
-//! behavior here is the single-instance equivalent (CRD 3542).
+//! Delivery resolves local audiences against the live hub and mirrors queued or
+//! direct domain events into Postgres fan-out rows so peer instances can deliver
+//! events they have not acked (CRD 3542).
 
 use axum::extract::State;
 use axum::http::HeaderMap;
-use axum::response::Response;
 use axum::Json;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -19,7 +17,7 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::authenticate;
 use crate::state::AppState;
 
@@ -259,7 +257,7 @@ pub fn spawn_loops(state: Arc<AppState>) {
 }
 
 async fn publish_remote_broadcast(
-    state: &Arc<AppState>,
+    state: &AppState,
     event: &Value,
     targets: &[Value],
     options: &Value,
@@ -283,13 +281,18 @@ async fn publish_remote_broadcast(
     }
 }
 
+fn remote_event_envelope(event_type: &str, payload: Value) -> Value {
+    json!({
+        "id": uuid::Uuid::new_v4().to_string(),
+        "type": event_type,
+        "timestamp": crate::db::now_iso(),
+        "data": payload,
+    })
+}
+
 /// Relay an injected room broadcast to peer instances serving the same
 /// conversation. Local delivery still happens synchronously in `rooms`.
-pub async fn publish_remote_room_broadcast(
-    state: &Arc<AppState>,
-    conversation_id: &str,
-    event: &Value,
-) {
+pub async fn publish_remote_room_broadcast(state: &AppState, conversation_id: &str, event: &Value) {
     let targets = vec![json!({ "type": "conversation", "ids": [conversation_id] })];
     publish_remote_broadcast(state, event, &targets, &json!({ "priority": "high" })).await;
 }
@@ -297,7 +300,7 @@ pub async fn publish_remote_room_broadcast(
 /// Relay first-online / last-offline presence transitions to peer instances.
 /// Local presence is already emitted synchronously by the hub.
 pub async fn publish_remote_presence_change(
-    state: &Arc<AppState>,
+    state: &AppState,
     transition: &super::hub::PresenceTransition,
 ) {
     let event = json!({
@@ -318,20 +321,11 @@ pub async fn publish_remote_presence_change(
     publish_remote_broadcast(state, &event, &targets, &json!({ "priority": "high" })).await;
 }
 
-fn remote_event_envelope(event_type: &str, payload: Value) -> Value {
-    json!({
-        "id": uuid::Uuid::new_v4().to_string(),
-        "type": event_type,
-        "timestamp": crate::db::now_iso(),
-        "data": payload,
-    })
-}
-
 /// Publish a domain-originated event to peer instances. The local caller is
 /// still responsible for immediate in-process delivery; this helper mirrors the
 /// same event through the shared fan-out table for other live hubs.
 pub async fn publish_remote_event(
-    state: &Arc<AppState>,
+    state: &AppState,
     event_type: &str,
     payload: Value,
     targets: Vec<Value>,
@@ -619,6 +613,18 @@ async fn deliver_targets(
                         .to_user(&user_id, &event_type, payload.clone());
                 }
             }
+            "role" => {
+                for id in &ids {
+                    if let Some(role) = id.as_str() {
+                        state
+                            .realtime
+                            .global_role(role, &event_type, payload.clone());
+                        ok += 1;
+                    } else {
+                        bad += 1;
+                    }
+                }
+            }
             // global / everyone (and unknown audience kinds degrade to global).
             _ => {
                 state.realtime.global(&event_type, payload.clone());
@@ -630,8 +636,6 @@ async fn deliver_targets(
 }
 
 // ----------------------------------------------------------- HTTP handlers
-
-type Result<T = Response> = std::result::Result<T, AppError>;
 
 /// All routed-delivery injection endpoints are trusted system surface; they
 /// require an administrator credential (the CRD documents them as trusted
@@ -714,6 +718,7 @@ async fn targeted_broadcast(
     let started = std::time::Instant::now();
     let targets: Vec<Value> = vec![json!({ "type": kind, "ids": ids })];
     let (ok, bad) = deliver_targets(&state, &event, &targets).await?;
+    publish_remote_broadcast(&state, &event, &targets, &json!({ "priority": "high" })).await;
     state
         .realtime
         .queue
@@ -770,18 +775,24 @@ pub async fn to_teams_and_admins(
         .and_then(Value::as_bool)
         .unwrap_or(true);
     let started = std::time::Instant::now();
-    let targets: Vec<Value> = vec![json!({ "type": "team", "ids": team_ids })];
+    let mut targets: Vec<Value> = vec![json!({ "type": "team", "ids": team_ids })];
     let (mut ok, bad) = deliver_targets(&state, &event, &targets).await?;
     if include_admins {
         // Failure to resolve admins degrades gracefully (CRD 3609).
         if let Ok(admins) = active_admins(&state).await {
             let (event_type, payload) = event_type_and_payload(&event);
+            let mut admin_ids = Vec::with_capacity(admins.len());
             for admin in admins {
+                admin_ids.push(Value::String(admin.clone()));
                 state.realtime.to_user(&admin, &event_type, payload.clone());
                 ok += 1;
             }
+            if !admin_ids.is_empty() {
+                targets.push(json!({ "type": "user", "ids": admin_ids }));
+            }
         }
     }
+    publish_remote_broadcast(&state, &event, &targets, &json!({ "priority": "high" })).await;
     state
         .realtime
         .queue
@@ -811,6 +822,7 @@ pub async fn global(
         .unwrap_or("everyone");
     let targets: Vec<Value> = vec![json!({ "type": target })];
     let (ok, bad) = deliver_targets(&state, &event, &targets).await?;
+    publish_remote_broadcast(&state, &event, &targets, &json!({ "priority": "high" })).await;
     state.realtime.queue.record_processed(ok, bad, 0, 1);
     Ok(envelope::ok(json!({
         "eventId": event["id"],
@@ -849,7 +861,9 @@ pub async fn batch(
             bad += 1;
             continue;
         };
-        let (o, b) = deliver_targets(&state, &event, &[target]).await?;
+        let targets = vec![target];
+        let (o, b) = deliver_targets(&state, &event, &targets).await?;
+        publish_remote_broadcast(&state, &event, &targets, &json!({ "priority": "high" })).await;
         ok += o;
         bad += b;
         processed += 1;
@@ -965,11 +979,13 @@ pub async fn system_broadcast(
         "timestamp": crate::db::now_iso(),
         "data": { "message": message, "priority": priority },
     });
-    state.realtime.queue.enqueue(
-        event,
-        vec![json!({ "type": "global" })],
-        json!({ "priority": priority }),
-    );
+    let targets = vec![json!({ "type": "global" })];
+    let options = json!({ "priority": priority });
+    state
+        .realtime
+        .queue
+        .enqueue(event.clone(), targets.clone(), options.clone());
+    publish_remote_broadcast(&state, &event, &targets, &options).await;
     Ok(envelope::ok(json!({ "eventId": event_id })))
 }
 
@@ -1060,4 +1076,25 @@ pub async fn debug_connections(State(state): State<Arc<AppState>>, headers: Head
         "activeConnections": state.realtime.connection_count() as i64 + registered,
         "timestamp": crate::db::now_iso(),
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remote_event_envelope;
+    use serde_json::json;
+
+    #[test]
+    fn remote_event_envelope_wraps_domain_payload() {
+        let payload = json!({
+            "conversationId": "conv-1",
+            "messageId": "msg-1",
+        });
+
+        let event = remote_event_envelope("message_sent", payload.clone());
+
+        assert_eq!(event["type"], "message_sent");
+        assert_eq!(event["data"], payload);
+        assert!(event["id"].as_str().is_some_and(|id| !id.is_empty()));
+        assert!(event["timestamp"].as_str().is_some_and(|ts| !ts.is_empty()));
+    }
 }

@@ -3,11 +3,46 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{spawn_app, TestApp};
+use axum::routing::post;
+use axum::{Json, Router};
+use common::{spawn_app, spawn_app_custom, TestApp};
 use mcss_backend::domain::queue::worker;
 use serde_json::json;
+use serde_json::Value;
+use std::net::SocketAddr;
 
 const PNG: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3];
+
+async fn mock_line_push_url() -> String {
+    async fn capture(
+        headers: axum::http::HeaderMap,
+        _body: axum::body::Bytes,
+    ) -> (StatusCode, Json<Value>) {
+        let token = headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        if token != "Bearer good-line" {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"message": "bad line token"})),
+            );
+        }
+        (
+            StatusCode::OK,
+            Json(json!({"sentMessages": [{"id": "line-queue"}]})),
+        )
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/line/push", post(capture)))
+            .await
+            .unwrap();
+    });
+    format!("http://{addr}/line/push")
+}
 
 async fn agent(app: &TestApp) -> String {
     app.seed_agent("q@test.dev", "pw123456", "agent").await;
@@ -55,13 +90,19 @@ async fn seed_pending_message(app: &TestApp) -> (String, String) {
 #[tokio::test]
 async fn monitoring_endpoints_require_auth_and_report_shapes() {
     let app = spawn_app().await;
-    for path in ["/api/queues/stats", "/api/queues/health", "/api/queues/performance"] {
+    for path in [
+        "/api/queues/stats",
+        "/api/queues/health",
+        "/api/queues/performance",
+    ] {
         let (status, _, _) = app.request("GET", path, None, None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}");
     }
     let token = agent(&app).await;
 
-    let (status, body, _) = app.request("GET", "/api/queues/stats", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/queues/stats", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["summary"]["status"], "healthy");
     let mq = &body["data"]["queues"]["messageQueue"];
@@ -70,11 +111,15 @@ async fn monitoring_endpoints_require_auth_and_report_shapes() {
     assert_eq!(mq["configuration"]["retryPolicy"], "exponential-backoff");
     assert!(body["data"]["systemHealth"]["lastCheck"].is_string());
 
-    let (_, body, _) = app.request("GET", "/api/queues/health", Some(&token), None).await;
+    let (_, body, _) = app
+        .request("GET", "/api/queues/health", Some(&token), None)
+        .await;
     assert_eq!(body["data"]["queues"]["available"], true);
     assert_eq!(body["data"]["queues"]["processingLatency"], "<100ms");
 
-    let (_, body, _) = app.request("GET", "/api/queues/performance", Some(&token), None).await;
+    let (_, body, _) = app
+        .request("GET", "/api/queues/performance", Some(&token), None)
+        .await;
     assert!(body["data"]["throughput"]["messagesPerSecond"].is_number());
     assert!(body["data"]["reliability"]["successRate"].is_number());
 }
@@ -84,15 +129,23 @@ async fn maintenance_dispatches_and_lists_available_operations() {
     let app = spawn_app().await;
     let token = agent(&app).await;
     let (status, body, _) = app
-        .request("POST", "/api/queues/maintenance", Some(&token),
-            Some(json!({"operation": "status"})))
+        .request(
+            "POST",
+            "/api/queues/maintenance",
+            Some(&token),
+            Some(json!({"operation": "status"})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["queueStatus"], "healthy");
 
     let (status, body, _) = app
-        .request("POST", "/api/queues/maintenance", Some(&token),
-            Some(json!({"operation": "defragment"})))
+        .request(
+            "POST",
+            "/api/queues/maintenance",
+            Some(&token),
+            Some(json!({"operation": "defragment"})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body["availableOperations"].is_array());
@@ -102,7 +155,12 @@ async fn maintenance_dispatches_and_lists_available_operations() {
 
 #[tokio::test]
 async fn outbound_job_delivers_and_marks_message() {
-    let app = spawn_app().await;
+    let line_push_url = mock_line_push_url().await;
+    let app = spawn_app_custom(move |config| {
+        config.line_channel_access_token = Some("good-line".into());
+        config.line_push_url = line_push_url;
+    })
+    .await;
     worker::spawn(app.state.clone());
     let (conversation, message_id) = seed_pending_message(&app).await;
 
@@ -128,9 +186,12 @@ async fn outbound_job_delivers_and_marks_message() {
     .await;
     assert!(delivered, "message transitioned to delivered");
 
-    let stats = app.state.queue.stats.lock().unwrap().clone();
-    assert!(stats.successes >= 1);
-    assert!(stats.last_processed_at.is_some());
+    let stats_recorded = wait_for(5000, || async {
+        let stats = app.state.queue.stats.lock().unwrap().clone();
+        stats.successes >= 1 && stats.last_processed_at.is_some()
+    })
+    .await;
+    assert!(stats_recorded, "queue success stats recorded");
 }
 
 #[tokio::test]
@@ -171,7 +232,9 @@ async fn media_job_stores_attachment_idempotently() {
 
     // The platform content is already mirrored in the store (stubbed fetch).
     mcss_backend::domain::files::store::put_object(
-        &app.state.config.upload_dir, "line/media/777", PNG,
+        &app.state.config.upload_dir,
+        "line/media/777",
+        PNG,
     )
     .await
     .unwrap();
@@ -199,12 +262,11 @@ async fn media_job_stores_attachment_idempotently() {
     // Re-delivery of the same job does not duplicate the record.
     app.state.queue.enqueue_media(job);
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM attachments WHERE message_id = $1")
-            .bind(&message_id)
-            .fetch_one(&app.state.db)
-            .await
-            .unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM attachments WHERE message_id = $1")
+        .bind(&message_id)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
     assert_eq!(count, 1, "duplicate attachment records are avoided");
 }
 
@@ -228,7 +290,10 @@ async fn failed_media_download_retries_then_dead_letters() {
     let dead = wait_for(10_000, || async { app.state.queue.dead_letter_size() == 1 }).await;
     assert!(dead, "exhausted media job lands in the dead-letter queue");
     let stats = app.state.queue.stats.lock().unwrap().clone();
-    assert!(stats.retries >= 2, "transient failures were retried: {stats:?}");
+    assert!(
+        stats.retries >= 2,
+        "transient failures were retried: {stats:?}"
+    );
     assert!(stats.errors >= 3);
 }
 
@@ -247,7 +312,9 @@ async fn inbound_line_media_message_enqueues_processing() {
 
     // Mirror the media content so the stubbed fetch succeeds.
     mcss_backend::domain::files::store::put_object(
-        &app.state.config.upload_dir, "line/media/img-mid-1", PNG,
+        &app.state.config.upload_dir,
+        "line/media/img-mid-1",
+        PNG,
     )
     .await
     .unwrap();
@@ -286,5 +353,8 @@ async fn inbound_line_media_message_enqueues_processing() {
         .unwrap_or(false)
     })
     .await;
-    assert!(attached, "webhook media was queued and processed in the background");
+    assert!(
+        attached,
+        "webhook media was queued and processed in the background"
+    );
 }

@@ -16,7 +16,10 @@ pub const PLATFORM_PATHS: [(&str, &str); 5] = [
 ];
 
 pub fn webhook_path(platform: &str) -> Option<&'static str> {
-    PLATFORM_PATHS.iter().find(|(p, _)| *p == platform).map(|(_, path)| *path)
+    PLATFORM_PATHS
+        .iter()
+        .find(|(p, _)| *p == platform)
+        .map(|(_, path)| *path)
 }
 
 fn base_url(config: &Config) -> String {
@@ -48,7 +51,10 @@ pub fn webhook_config(config: &Config, platform: &str) -> Option<Value> {
 pub fn all_webhook_urls(config: &Config) -> Value {
     let mut map = serde_json::Map::new();
     for (platform, path) in PLATFORM_PATHS {
-        map.insert(platform.to_string(), json!(format!("{}{path}", base_url(config))));
+        map.insert(
+            platform.to_string(),
+            json!(format!("{}{path}", base_url(config))),
+        );
     }
     Value::Object(map)
 }
@@ -88,7 +94,11 @@ pub fn extract_platform(url: &str) -> Option<&'static str> {
 }
 
 /// Build a webhook URL with appended query parameters.
-pub fn build_webhook_url(config: &Config, platform: &str, params: &[(&str, &str)]) -> Option<String> {
+pub fn build_webhook_url(
+    config: &Config,
+    platform: &str,
+    params: &[(&str, &str)],
+) -> Option<String> {
     let mut url = webhook_url(config, platform)?;
     for (i, (k, v)) in params.iter().enumerate() {
         url.push(if i == 0 { '?' } else { '&' });
@@ -102,7 +112,11 @@ pub fn build_webhook_url(config: &Config, platform: &str, params: &[(&str, &str)
 /// Compare two webhook URLs ignoring query string and trailing slash.
 pub fn urls_equivalent(a: &str, b: &str) -> bool {
     let norm = |u: &str| {
-        u.split(['?', '#']).next().unwrap_or(u).trim_end_matches('/').to_string()
+        u.split(['?', '#'])
+            .next()
+            .unwrap_or(u)
+            .trim_end_matches('/')
+            .to_string()
     };
     norm(a) == norm(b)
 }
@@ -120,7 +134,10 @@ mod tests {
     #[test]
     fn derives_urls_and_config_objects() {
         let c = cfg();
-        assert_eq!(webhook_url(&c, "line").unwrap(), "https://api.example.com/api/webhook");
+        assert_eq!(
+            webhook_url(&c, "line").unwrap(),
+            "https://api.example.com/api/webhook"
+        );
         assert_eq!(
             webhook_url(&c, "facebook").unwrap(),
             "https://api.example.com/api/webhooks/facebook"
@@ -131,7 +148,10 @@ mod tests {
         assert_eq!(obj["environment"], "development");
         let all = all_webhook_urls(&c);
         assert_eq!(all.as_object().unwrap().len(), 5);
-        assert!(all["telegram"].as_str().unwrap().ends_with("/api/webhooks/telegram"));
+        assert!(all["telegram"]
+            .as_str()
+            .unwrap()
+            .ends_with("/api/webhooks/telegram"));
     }
 
     #[test]
@@ -147,8 +167,14 @@ mod tests {
     #[test]
     fn extracts_platform_from_paths() {
         assert_eq!(extract_platform("https://h.io/api/webhook"), Some("line"));
-        assert_eq!(extract_platform("https://h.io/api/webhooks/facebook/"), Some("facebook"));
-        assert_eq!(extract_platform("https://h.io/api/webhooks/instagram?x=1"), Some("instagram"));
+        assert_eq!(
+            extract_platform("https://h.io/api/webhooks/facebook/"),
+            Some("facebook")
+        );
+        assert_eq!(
+            extract_platform("https://h.io/api/webhooks/instagram?x=1"),
+            Some("instagram")
+        );
         assert_eq!(extract_platform("https://h.io/api/teams"), None);
         assert_eq!(extract_platform("nonsense"), None);
     }
@@ -162,6 +188,9 @@ mod tests {
             "https://h.io/api/webhook/",
             "https://h.io/api/webhook?since=yesterday"
         ));
-        assert!(!urls_equivalent("https://h.io/api/webhook", "https://h.io/api/webhooks/facebook"));
+        assert!(!urls_equivalent(
+            "https://h.io/api/webhook",
+            "https://h.io/api/webhooks/facebook"
+        ));
     }
 }

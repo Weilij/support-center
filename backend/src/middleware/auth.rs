@@ -120,22 +120,20 @@ pub async fn authenticate(
 ) -> Result<AuthUser, AppError> {
     // Prefer Authorization: Bearer header; fall back to mcss_access cookie.
     let token_str: String;
-    let token: &str = if let Some(header) = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-    {
-        token_str = header
-            .strip_prefix("Bearer ")
-            .or_else(|| header.strip_prefix("bearer "))
-            .ok_or_else(|| AppError::Unauthorized("Authentication required".into()))?
-            .to_string();
-        &token_str
-    } else if let Some(cookie_tok) = cookies::cookie_value(headers, "mcss_access") {
-        token_str = cookie_tok;
-        &token_str
-    } else {
-        return Err(AppError::Unauthorized("Authentication required".into()));
-    };
+    let token: &str =
+        if let Some(header) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
+            token_str = header
+                .strip_prefix("Bearer ")
+                .or_else(|| header.strip_prefix("bearer "))
+                .ok_or_else(|| AppError::Unauthorized("Authentication required".into()))?
+                .to_string();
+            &token_str
+        } else if let Some(cookie_tok) = cookies::cookie_value(headers, "mcss_access") {
+            token_str = cookie_tok;
+            &token_str
+        } else {
+            return Err(AppError::Unauthorized("Authentication required".into()));
+        };
 
     let claims = tokens::verify(token, &state.config.jwt_secret)
         .map_err(|_| AppError::Unauthorized("Invalid or expired token".into()))?;
@@ -197,15 +195,21 @@ pub async fn authenticate(
     };
 
     // Debounced last-active persistence (CRD line 273).
-    if state.last_active.should_persist(&agent.id, LAST_ACTIVE_INTERVAL) {
+    if state
+        .last_active
+        .should_persist(&agent.id, LAST_ACTIVE_INTERVAL)
+    {
         let db = state.db.clone();
         let id = agent.id.clone();
         tokio::spawn(async move {
-            let _ = sqlx::query("UPDATE agents SET last_active_at = $1 WHERE id = $2")
+            if let Err(error) = sqlx::query("UPDATE agents SET last_active_at = $1 WHERE id = $2")
                 .bind(crate::db::now_iso())
-                .bind(id)
+                .bind(&id)
                 .execute(&db)
-                .await;
+                .await
+            {
+                tracing::warn!(error = %error, agent_id = %id, "last-active update failed");
+            }
         });
     }
 
@@ -299,7 +303,9 @@ pub async fn optional_auth(
 /// System-to-system key gate (CRD lines 530-536): requires a matching X-System-Key header.
 /// The expected key is the SYSTEM_API_KEY environment setting; absent configuration denies all.
 pub async fn require_system_key(req: Request<Body>, next: Next) -> Response {
-    let expected = std::env::var("SYSTEM_API_KEY").ok().filter(|k| !k.is_empty());
+    let expected = std::env::var("SYSTEM_API_KEY")
+        .ok()
+        .filter(|k| !k.is_empty());
     let presented = req
         .headers()
         .get("x-system-key")

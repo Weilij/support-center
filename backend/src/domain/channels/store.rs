@@ -34,7 +34,9 @@ const SELECT: &str = "SELECT id, team_id, platform, config, credentials, webhook
  FROM channel_integrations";
 
 fn parse_json(raw: &Option<String>) -> Value {
-    raw.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or(Value::Null)
+    raw.as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(Value::Null)
 }
 
 /// Usage statistics with zeroed defaults when absent or unparseable (CRD 2704).
@@ -71,7 +73,10 @@ pub fn view(row: &ChannelRow) -> Value {
 
 pub async fn find_by_id(db: &PgPool, id: i64) -> Result<Option<ChannelRow>, AppError> {
     let sql = format!("{SELECT} WHERE id = $1");
-    Ok(sqlx::query_as(&crate::db::pg_params(&sql)).bind(id).fetch_optional(db).await?)
+    Ok(sqlx::query_as(&crate::db::pg_params(&sql))
+        .bind(id)
+        .fetch_optional(db)
+        .await?)
 }
 
 /// Connections matching the team (and optional platform) filter, newest first
@@ -151,8 +156,7 @@ pub async fn insert(db: &PgPool, new: NewChannel<'_>) -> Result<ChannelRow, AppE
     .bind(new.metadata.map(|m| m.to_string()))
     .bind(now_iso())
     .fetch_one(db)
-    .await?
-    ;
+    .await?;
     find_by_id(db, id)
         .await?
         .ok_or_else(|| AppError::Internal("Failed to create channel integration".into()))
@@ -182,7 +186,9 @@ pub fn decrypt_credentials(
     raw: &Option<String>,
 ) -> Result<Map<String, Value>, AppError> {
     let parsed = parse_json(raw);
-    let Some(obj) = parsed.as_object() else { return Ok(Map::new()) };
+    let Some(obj) = parsed.as_object() else {
+        return Ok(Map::new());
+    };
     let mut out = Map::new();
     for (k, v) in obj {
         if let Some(s) = v.as_str() {

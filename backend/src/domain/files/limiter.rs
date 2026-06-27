@@ -63,10 +63,15 @@ impl UploadLimiter {
         bytes: u64,
         policy: &UploadPolicy,
     ) -> Result<ConcurrencyGuard<'a>, String> {
-        let mut users = self.users.lock().map_err(|_| "limiter unavailable".to_string())?;
+        let mut users = self
+            .users
+            .lock()
+            .map_err(|_| "limiter unavailable".to_string())?;
         let counters = users.entry(user.to_string()).or_default();
         let now = Instant::now();
-        counters.events.retain(|(t, _)| now.duration_since(*t).as_secs() < 3600);
+        counters
+            .events
+            .retain(|(t, _)| now.duration_since(*t).as_secs() < 3600);
 
         if counters.concurrent >= policy.max_concurrent {
             return Err(format!(
@@ -80,10 +85,16 @@ impl UploadLimiter {
             .filter(|(t, _)| now.duration_since(*t).as_secs() < 60)
             .count() as u32;
         if last_minute >= policy.per_minute {
-            return Err(format!("Upload rate exceeded ({} per minute)", policy.per_minute));
+            return Err(format!(
+                "Upload rate exceeded ({} per minute)",
+                policy.per_minute
+            ));
         }
         if counters.events.len() as u32 >= policy.per_hour {
-            return Err(format!("Upload rate exceeded ({} per hour)", policy.per_hour));
+            return Err(format!(
+                "Upload rate exceeded ({} per hour)",
+                policy.per_hour
+            ));
         }
         let hour_bytes: u64 = counters.events.iter().map(|(_, b)| *b).sum();
         if hour_bytes + bytes > policy.bytes_per_hour {
@@ -92,6 +103,9 @@ impl UploadLimiter {
 
         counters.concurrent += 1;
         counters.events.push((now, bytes));
-        Ok(ConcurrencyGuard { limiter: self, user: user.to_string() })
+        Ok(ConcurrencyGuard {
+            limiter: self,
+            user: user.to_string(),
+        })
     }
 }

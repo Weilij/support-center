@@ -3,7 +3,6 @@
 //! `dashboard:{user}:{id}`.
 
 use axum::extract::{Path, Query, State};
-use axum::response::Response;
 use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -11,11 +10,9 @@ use std::sync::Arc;
 
 use crate::db::now_iso;
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::{is_manager_or_admin, AuthUser};
 use crate::state::AppState;
-
-type Result<T = Response> = std::result::Result<T, AppError>;
 
 pub const WIDGET_TYPES: &[&str] = &["metric", "chart", "table", "gauge", "progress", "status"];
 
@@ -23,7 +20,9 @@ fn require_team_level(user: &AuthUser) -> Result<()> {
     if is_manager_or_admin(user) {
         Ok(())
     } else {
-        Err(AppError::Forbidden("Administrator or team-level role required".into()))
+        Err(AppError::Forbidden(
+            "Administrator or team-level role required".into(),
+        ))
     }
 }
 
@@ -43,7 +42,7 @@ async fn load_config(state: &AppState, user_id: &str, dashboard_id: &str) -> Opt
 }
 
 async fn store_config(state: &AppState, user_id: &str, dashboard_id: &str, config: &Value) {
-    let _ = sqlx::query(
+    if let Err(error) = sqlx::query(
         "INSERT INTO system_settings (key, value, updated_at) VALUES ($1, $2, $3)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
     )
@@ -51,7 +50,10 @@ async fn store_config(state: &AppState, user_id: &str, dashboard_id: &str, confi
     .bind(config.to_string())
     .bind(now_iso())
     .execute(&state.db)
-    .await;
+    .await
+    {
+        tracing::warn!(error = %error, user_id, dashboard_id, "dashboard config store failed");
+    }
 }
 
 fn default_config(user: &AuthUser, dashboard_id: &str) -> Value {
@@ -95,14 +97,14 @@ pub struct TemplateQuery {
 fn dashboard_templates() -> Vec<Value> {
     vec![
         json!({"id": "overview", "name": "Operations overview", "category": "operations",
-               "widgets": [
-                   {"id": "w-total", "type": "metric", "title": "Total conversations",
-                    "dataSource": {"type": "analytics", "query": "total_conversations"},
-                    "position": {"x": 0, "y": 0, "width": 4, "height": 2}},
-                   {"id": "w-trend", "type": "chart", "title": "Conversation trend",
-                    "dataSource": {"type": "analytics", "query": "conversation_trend"},
-                    "position": {"x": 4, "y": 0, "width": 8, "height": 4}},
-               ]}),
+        "widgets": [
+            {"id": "w-total", "type": "metric", "title": "Total conversations",
+             "dataSource": {"type": "analytics", "query": "total_conversations"},
+             "position": {"x": 0, "y": 0, "width": 4, "height": 2}},
+            {"id": "w-trend", "type": "chart", "title": "Conversation trend",
+             "dataSource": {"type": "analytics", "query": "conversation_trend"},
+             "position": {"x": 4, "y": 0, "width": 8, "height": 4}},
+        ]}),
         json!({"id": "team", "name": "Team performance", "category": "team", "widgets": []}),
     ]
 }
@@ -153,7 +155,9 @@ pub async fn get_config(
     Extension(user): Extension<AuthUser>,
     dashboard_id: Option<Path<String>>,
 ) -> Result {
-    let id = dashboard_id.map(|Path(p)| p).unwrap_or_else(|| "default".into());
+    let id = dashboard_id
+        .map(|Path(p)| p)
+        .unwrap_or_else(|| "default".into());
     let config = load_config(&state, &user.id, &id)
         .await
         .unwrap_or_else(|| default_config(&user, &id));
@@ -166,7 +170,11 @@ pub async fn save_config(
     dashboard_id: Option<Path<String>>,
     Json(body): Json<Value>,
 ) -> Result {
-    let name = body.get("name").and_then(Value::as_str).unwrap_or("").trim();
+    let name = body
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     if name.is_empty() {
         return Err(AppError::Validation(
             "Validation failed".into(),
@@ -190,7 +198,9 @@ pub async fn save_config(
     }
     if let Some(interval) = body.get("refreshInterval").and_then(Value::as_i64) {
         if interval < 5000 {
-            return Err(AppError::BadRequest("refreshInterval must be at least 5000 ms".into()));
+            return Err(AppError::BadRequest(
+                "refreshInterval must be at least 5000 ms".into(),
+            ));
         }
     }
     // Resolved id: path id, else body id, else default (CRD 4362).
@@ -203,10 +213,10 @@ pub async fn save_config(
     let mut config = body;
     let obj = config.as_object_mut().unwrap();
     obj.insert("id".into(), json!(id));
-    obj.entry("permissions".to_string()).or_insert_with(|| {
-        json!({"owner": user.id, "viewers": [], "editors": []})
-    });
-    obj.entry("refreshInterval".to_string()).or_insert(json!(30000));
+    obj.entry("permissions".to_string())
+        .or_insert_with(|| json!({"owner": user.id, "viewers": [], "editors": []}));
+    obj.entry("refreshInterval".to_string())
+        .or_insert(json!(30000));
     obj.entry("autoRefresh".to_string()).or_insert(json!(true));
     obj.entry("widgets".to_string()).or_insert(json!([]));
     obj.insert(
@@ -231,12 +241,11 @@ async fn resolve_widget_data(state: &AppState, widget: &Value) -> Value {
         .unwrap_or("");
     let data = match query {
         "total_conversations" => {
-            let count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM conversations WHERE deleted_at IS NULL",
-            )
-            .fetch_one(&state.db)
-            .await
-            .unwrap_or(0);
+            let count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM conversations WHERE deleted_at IS NULL")
+                    .fetch_one(&state.db)
+                    .await
+                    .unwrap_or(0);
             json!({"value": count})
         }
         "total_messages" => {
@@ -255,7 +264,11 @@ async fn resolve_widget_data(state: &AppState, widget: &Value) -> Value {
             .fetch_all(&state.db)
             .await
             .unwrap_or_default();
-            json!(rows.iter().rev().map(|(d, c)| json!({"timestamp": d, "value": c})).collect::<Vec<_>>())
+            json!(rows
+                .iter()
+                .rev()
+                .map(|(d, c)| json!({"timestamp": d, "value": c}))
+                .collect::<Vec<_>>())
         }
         _ => json!(null),
     };
@@ -293,7 +306,9 @@ pub async fn dashboard_data(
     Query(q): Query<DataQuery>,
 ) -> Result {
     parse_time_range(&q.time_range)?;
-    let id = dashboard_id.map(|Path(p)| p).unwrap_or_else(|| "default".into());
+    let id = dashboard_id
+        .map(|Path(p)| p)
+        .unwrap_or_else(|| "default".into());
     let config = load_config(&state, &user.id, &id)
         .await
         .unwrap_or_else(|| default_config(&user, &id));
@@ -342,7 +357,10 @@ pub async fn clone_widget(
 ) -> Result {
     require_team_level(&user)?;
     let body = body.map(|Json(b)| b).unwrap_or_default();
-    let id = body.dashboard_id.clone().unwrap_or_else(|| "default".into());
+    let id = body
+        .dashboard_id
+        .clone()
+        .unwrap_or_else(|| "default".into());
     let mut config = load_config(&state, &user.id, &id)
         .await
         .ok_or_else(|| AppError::NotFound("Widget not found".into()))?;
@@ -355,7 +373,10 @@ pub async fn clone_widget(
     clone["id"] = json!(body
         .new_widget_id
         .unwrap_or_else(|| format!("{widget_id}-copy-{}", uuid::Uuid::new_v4())));
-    config["widgets"].as_array_mut().unwrap().push(clone.clone());
+    config["widgets"]
+        .as_array_mut()
+        .unwrap()
+        .push(clone.clone());
     config["updatedAt"] = json!(now_iso());
     store_config(&state, &user.id, &id, &config).await;
     Ok(envelope::ok_msg(clone, "Widget cloned"))
@@ -424,21 +445,31 @@ fn validate_widget(body: &Value, partial: bool) -> Result<()> {
                 "Widget type must be one of {WIDGET_TYPES:?}"
             )));
         }
-        if body.get("title").and_then(Value::as_str).unwrap_or("").trim().is_empty() {
+        if body
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
             return Err(AppError::BadRequest("Widget title is required".into()));
         }
-        let position = body.get("position").ok_or_else(|| {
-            AppError::BadRequest("Widget position is required".into())
-        })?;
+        let position = body
+            .get("position")
+            .ok_or_else(|| AppError::BadRequest("Widget position is required".into()))?;
         let w = position.get("width").and_then(Value::as_i64).unwrap_or(0);
         let h = position.get("height").and_then(Value::as_i64).unwrap_or(0);
         if w < 1 || h < 1 {
-            return Err(AppError::BadRequest("Widget width/height must be >= 1".into()));
+            return Err(AppError::BadRequest(
+                "Widget width/height must be >= 1".into(),
+            ));
         }
     }
     if let Some(interval) = body.get("refreshInterval").and_then(Value::as_i64) {
         if interval < 5000 {
-            return Err(AppError::BadRequest("refreshInterval must be at least 5000 ms".into()));
+            return Err(AppError::BadRequest(
+                "refreshInterval must be at least 5000 ms".into(),
+            ));
         }
     }
     Ok(())
@@ -482,7 +513,10 @@ pub async fn optimize_layout(
 ) -> Result {
     require_team_level(&user)?;
     let body = body.map(|Json(b)| b).unwrap_or_default();
-    let id = body.dashboard_id.clone().unwrap_or_else(|| "default".into());
+    let id = body
+        .dashboard_id
+        .clone()
+        .unwrap_or_else(|| "default".into());
     let width = body.container_width.unwrap_or(12).clamp(1, 24);
     let mut config = load_config(&state, &user.id, &id)
         .await
@@ -539,19 +573,27 @@ pub async fn broadcast(
                 .widget_id
                 .clone()
                 .filter(|w| !w.is_empty())
-                .ok_or_else(|| AppError::BadRequest("widgetId is required for widget_update".into()))?;
+                .ok_or_else(|| {
+                    AppError::BadRequest("widgetId is required for widget_update".into())
+                })?;
             state.realtime.global(
                 "dashboard_widget_update",
                 json!({"dashboardId": dashboard, "widgetId": widget, "data": body.data}),
             );
-            Ok(envelope::ok_msg(json!({"broadcast": true}), "widget_update broadcast dispatched"))
+            Ok(envelope::ok_msg(
+                json!({"broadcast": true}),
+                "widget_update broadcast dispatched",
+            ))
         }
         Some("config_change") => {
             state.realtime.global(
                 "dashboard_config_change",
                 json!({"dashboardId": dashboard, "config": body.data}),
             );
-            Ok(envelope::ok_msg(json!({"broadcast": true}), "config_change broadcast dispatched"))
+            Ok(envelope::ok_msg(
+                json!({"broadcast": true}),
+                "config_change broadcast dispatched",
+            ))
         }
         other => Err(AppError::BadRequest(format!(
             "Unsupported broadcast type '{}'",
@@ -639,11 +681,12 @@ pub async fn realtime_health(
     })))
 }
 
-pub async fn realtime_cleanup(
-    Extension(user): Extension<AuthUser>,
-) -> Result {
+pub async fn realtime_cleanup(Extension(user): Extension<AuthUser>) -> Result {
     if !user.is_admin() {
         return Err(AppError::Forbidden("Administrator role required".into()));
     }
-    Ok(envelope::ok_msg(json!({"cleaned": 0}), "Expired connections cleaned"))
+    Ok(envelope::ok_msg(
+        json!({"cleaned": 0}),
+        "Expired connections cleaned",
+    ))
 }

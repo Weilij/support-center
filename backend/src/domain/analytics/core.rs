@@ -2,7 +2,6 @@
 //! exports, metrics record/query, health (CRD 4212-4292).
 
 use axum::extract::{Path, Query, State};
-use axum::response::Response;
 use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -10,11 +9,9 @@ use std::sync::Arc;
 
 use crate::db::now_iso;
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::{is_manager_or_admin, AuthUser};
 use crate::state::AppState;
-
-type Result<T = Response> = std::result::Result<T, AppError>;
 
 /// Analytics permission levels (CRD 4224, 4256, 4264): every authenticated
 /// staff member may view; the query/export levels require admin or
@@ -23,7 +20,9 @@ pub fn require_query_permission(user: &AuthUser) -> Result<()> {
     if is_manager_or_admin(user) {
         Ok(())
     } else {
-        Err(AppError::Forbidden("Analytics query permission required".into()))
+        Err(AppError::Forbidden(
+            "Analytics query permission required".into(),
+        ))
     }
 }
 
@@ -51,9 +50,15 @@ pub fn resolve_window(
             .map_err(|_| AppError::BadRequest("Invalid endDate".into()))?
             .with_timezone(&chrono::Utc);
         if s >= e {
-            return Err(AppError::BadRequest("startDate must be before endDate".into()));
+            return Err(AppError::BadRequest(
+                "startDate must be before endDate".into(),
+            ));
         }
-        return Ok(Window { start: s, end: e, granularity: "daily" });
+        return Ok(Window {
+            start: s,
+            end: e,
+            granularity: "daily",
+        });
     }
     let now = chrono::Utc::now();
     let (hours, granularity) = match range.unwrap_or(default_range) {
@@ -68,7 +73,11 @@ pub fn resolve_window(
         "1y" => (365 * 24, "monthly"),
         _ => (7 * 24, "daily"), // 7d and unrecognized values
     };
-    Ok(Window { start: now - chrono::Duration::hours(hours), end: now, granularity })
+    Ok(Window {
+        start: now - chrono::Duration::hours(hours),
+        end: now,
+        granularity,
+    })
 }
 
 fn iso(t: &chrono::DateTime<chrono::Utc>) -> String {
@@ -125,7 +134,12 @@ pub async fn conversations(
     Query(q): Query<AnalyticsQuery>,
 ) -> Result {
     let started = std::time::Instant::now();
-    let w = resolve_window(q.time_range.as_deref(), q.start_date.as_deref(), q.end_date.as_deref(), "7d")?;
+    let w = resolve_window(
+        q.time_range.as_deref(),
+        q.start_date.as_deref(),
+        q.end_date.as_deref(),
+        "7d",
+    )?;
     let team = scope_team(&user, q.team_id);
     let (s, e) = (iso(&w.start), iso(&w.end));
 
@@ -189,7 +203,11 @@ pub async fn conversations(
     let distribution: Vec<Value> = by_channel
         .iter()
         .map(|(channel, count)| {
-            let pct = if total > 0 { *count as f64 * 100.0 / total as f64 } else { 0.0 };
+            let pct = if total > 0 {
+                *count as f64 * 100.0 / total as f64
+            } else {
+                0.0
+            };
             json!({
                 "category": channel.clone().unwrap_or_else(|| "unknown".into()),
                 "value": count,
@@ -229,7 +247,12 @@ pub async fn messages(
     Query(q): Query<AnalyticsQuery>,
 ) -> Result {
     let started = std::time::Instant::now();
-    let w = resolve_window(q.time_range.as_deref(), q.start_date.as_deref(), q.end_date.as_deref(), "7d")?;
+    let w = resolve_window(
+        q.time_range.as_deref(),
+        q.start_date.as_deref(),
+        q.end_date.as_deref(),
+        "7d",
+    )?;
     let team = scope_team(&user, q.team_id);
     let (s, e) = (iso(&w.start), iso(&w.end));
 
@@ -276,8 +299,7 @@ pub async fn messages(
     .fetch_all(&state.db)
     .await?;
 
-    let type_map: Map<String, Value> =
-        by_type.iter().map(|(t, c)| (t.clone(), json!(c))).collect();
+    let type_map: Map<String, Value> = by_type.iter().map(|(t, c)| (t.clone(), json!(c))).collect();
     Ok(envelope::ok(json!({
         "data": {
             "summary": {
@@ -310,10 +332,19 @@ pub async fn users(
     Query(q): Query<AnalyticsQuery>,
 ) -> Result {
     let started = std::time::Instant::now();
-    let w = resolve_window(q.time_range.as_deref(), q.start_date.as_deref(), q.end_date.as_deref(), "7d")?;
+    let w = resolve_window(
+        q.time_range.as_deref(),
+        q.start_date.as_deref(),
+        q.end_date.as_deref(),
+        "7d",
+    )?;
     let (s, e) = (iso(&w.start), iso(&w.end));
     // Agents are additionally scoped to themselves (CRD 4240).
-    let user_filter = if user.is_admin() { q.user_id.clone() } else { Some(user.id.clone()) };
+    let user_filter = if user.is_admin() {
+        q.user_id.clone()
+    } else {
+        Some(user.id.clone())
+    };
 
     let (total_users, active_users): (i64, i64) = sqlx::query_as(
         "SELECT COUNT(*), COALESCE(SUM(CASE WHEN last_active_at >= $1 THEN 1 ELSE 0 END), 0)::bigint
@@ -389,7 +420,12 @@ pub async fn performance(
     Query(q): Query<AnalyticsQuery>,
 ) -> Result {
     let started = std::time::Instant::now();
-    let w = resolve_window(q.time_range.as_deref(), q.start_date.as_deref(), q.end_date.as_deref(), "24h")?;
+    let w = resolve_window(
+        q.time_range.as_deref(),
+        q.start_date.as_deref(),
+        q.end_date.as_deref(),
+        "24h",
+    )?;
     let since_ms = w.start.timestamp_millis();
 
     // Sourced from the request-metrics accumulation (§7.1 middleware).
@@ -403,7 +439,11 @@ pub async fn performance(
     .await
     .unwrap_or((0, 0.0, 0));
     let secs = (w.end - w.start).num_seconds().max(1) as f64;
-    let error_rate = if count > 0 { errors as f64 * 100.0 / count as f64 } else { 0.0 };
+    let error_rate = if count > 0 {
+        errors as f64 * 100.0 / count as f64
+    } else {
+        0.0
+    };
 
     Ok(envelope::ok(json!({
         "data": {
@@ -481,8 +521,11 @@ pub struct ExportBody {
     pub metrics: Vec<String>,
 }
 
-const CONVERSATION_METRICS: &[&str] =
-    &["total_conversations", "active_conversations", "closed_conversations"];
+const CONVERSATION_METRICS: &[&str] = &[
+    "total_conversations",
+    "active_conversations",
+    "closed_conversations",
+];
 const MESSAGE_METRICS: &[&str] = &["total_messages", "messages_per_hour"];
 
 pub async fn export(
@@ -493,17 +536,28 @@ pub async fn export(
     require_query_permission(&user)?;
     let format = body.format.as_deref().unwrap_or("json");
     if !["json", "csv", "xlsx", "pdf"].contains(&format) {
-        return Err(AppError::BadRequest(format!("Unsupported export format '{format}'")));
+        return Err(AppError::BadRequest(format!(
+            "Unsupported export format '{format}'"
+        )));
     }
     // Dataset selection (CRD 4265).
     let dataset = if body.metrics.is_empty()
-        || body.metrics.iter().any(|m| CONVERSATION_METRICS.contains(&m.as_str()))
+        || body
+            .metrics
+            .iter()
+            .any(|m| CONVERSATION_METRICS.contains(&m.as_str()))
     {
         "conversations"
-    } else if body.metrics.iter().any(|m| MESSAGE_METRICS.contains(&m.as_str())) {
+    } else if body
+        .metrics
+        .iter()
+        .any(|m| MESSAGE_METRICS.contains(&m.as_str()))
+    {
         "messages"
     } else {
-        return Err(AppError::BadRequest("No exportable metrics in the selection".into()));
+        return Err(AppError::BadRequest(
+            "No exportable metrics in the selection".into(),
+        ));
     };
 
     let count: i64 = match dataset {
@@ -542,7 +596,10 @@ pub async fn export(
 // ------------------------------------------------------------ health & metrics
 
 pub async fn health(State(state): State<Arc<AppState>>) -> Result {
-    let db_ok = sqlx::query_scalar::<_, i64>("SELECT 1::bigint").fetch_one(&state.db).await.is_ok();
+    let db_ok = sqlx::query_scalar::<_, i64>("SELECT 1::bigint")
+        .fetch_one(&state.db)
+        .await
+        .is_ok();
     Ok(envelope::ok(json!({
         "status": if db_ok { "healthy" } else { "unhealthy" },
         "services": {
@@ -558,16 +615,45 @@ pub struct RecordMetricsBody {
     pub metric: Option<Value>,
 }
 
-fn validate_metric(m: &Value) -> std::result::Result<(), String> {
-    let id_ok = m.get("id").and_then(Value::as_str).map(|s| !s.is_empty()).unwrap_or(false);
-    let name_ok = m.get("name").and_then(Value::as_str).map(|s| !s.is_empty()).unwrap_or(false);
-    let value_ok = m.get("value").and_then(Value::as_f64).map(f64::is_finite).unwrap_or(false);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetricValidationError {
+    InvalidShape,
+}
+
+impl std::fmt::Display for MetricValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidShape => f.write_str(
+                "metric requires non-empty id, name, finite value, numeric timestamp, tags object",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MetricValidationError {}
+
+fn validate_metric(m: &Value) -> std::result::Result<(), MetricValidationError> {
+    let id_ok = m
+        .get("id")
+        .and_then(Value::as_str)
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    let name_ok = m
+        .get("name")
+        .and_then(Value::as_str)
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    let value_ok = m
+        .get("value")
+        .and_then(Value::as_f64)
+        .map(f64::is_finite)
+        .unwrap_or(false);
     let ts_ok = m.get("timestamp").and_then(Value::as_i64).is_some();
     let tags_ok = m.get("tags").map(Value::is_object).unwrap_or(false);
     if id_ok && name_ok && value_ok && ts_ok && tags_ok {
         Ok(())
     } else {
-        Err("metric requires non-empty id, name, finite value, numeric timestamp, tags object".into())
+        Err(MetricValidationError::InvalidShape)
     }
 }
 
@@ -583,19 +669,24 @@ pub async fn record_metrics(
         (None, None) => return Err(AppError::BadRequest("Missing metrics data".into())),
     };
     for m in &batch {
-        validate_metric(m).map_err(AppError::BadRequest)?;
+        validate_metric(m).map_err(|e| AppError::BadRequest(e.to_string()))?;
     }
     for m in &batch {
-        sqlx::query("INSERT INTO metrics (name, value, timestamp, tags, unit) VALUES ($1, $2, $3, $4, $5)")
-            .bind(m["name"].as_str())
-            .bind(m["value"].as_f64())
-            .bind(m["timestamp"].as_i64())
-            .bind(m["tags"].to_string())
-            .bind(m.get("unit").and_then(Value::as_str))
-            .execute(&state.db)
-            .await?;
+        sqlx::query(
+            "INSERT INTO metrics (name, value, timestamp, tags, unit) VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(m["name"].as_str())
+        .bind(m["value"].as_f64())
+        .bind(m["timestamp"].as_i64())
+        .bind(m["tags"].to_string())
+        .bind(m.get("unit").and_then(Value::as_str))
+        .execute(&state.db)
+        .await?;
     }
-    Ok(envelope::message_only(&format!("{} metrics recorded", batch.len())))
+    Ok(envelope::message_only(&format!(
+        "{} metrics recorded",
+        batch.len()
+    )))
 }
 
 #[derive(Deserialize)]
@@ -645,7 +736,9 @@ pub async fn query_metric(
 ) -> Result {
     let started = std::time::Instant::now();
     let start = q.start_time.unwrap_or(0);
-    let end = q.end_time.unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+    let end = q
+        .end_time
+        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
     if name.trim().is_empty() || start >= end {
         return Err(AppError::BadRequest(
             "Metric name and a valid time range (start before end) are required".into(),
@@ -665,15 +758,19 @@ pub async fn query_metric(
 
     let valid_aggs = ["sum", "avg", "min", "max", "count", "p50", "p95", "p99"];
     let agg = q.aggregation.as_deref().filter(|a| valid_aggs.contains(a));
-    let period = q.period.as_deref().filter(|p| {
-        ["1m", "5m", "15m", "1h", "6h", "1d", "1w", "1M"].contains(p)
-    });
+    let period = q
+        .period
+        .as_deref()
+        .filter(|p| ["1m", "5m", "15m", "1h", "6h", "1d", "1w", "1M"].contains(p));
 
     let entries: Vec<Value> = if let Some(agg) = agg {
         let bucket = period_ms(period.unwrap_or("1m"));
         let mut buckets: std::collections::BTreeMap<i64, Vec<f64>> = Default::default();
         for (value, ts, _) in &rows {
-            buckets.entry(ts / bucket * bucket).or_default().push(*value);
+            buckets
+                .entry(ts / bucket * bucket)
+                .or_default()
+                .push(*value);
         }
         buckets
             .iter()
@@ -719,4 +816,42 @@ pub async fn query_metric(
             "period": period.unwrap_or("1m"),
         },
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_metric, MetricValidationError};
+    use serde_json::json;
+
+    #[test]
+    fn validate_metric_accepts_required_shape() {
+        let metric = json!({
+            "id": "metric-1",
+            "name": "latency",
+            "value": 12.5,
+            "timestamp": 1_700_000_000,
+            "tags": {"route": "/api"},
+        });
+
+        validate_metric(&metric).unwrap();
+    }
+
+    #[test]
+    fn validate_metric_rejects_invalid_shape_with_typed_error() {
+        let metric = json!({
+            "id": "",
+            "name": "latency",
+            "value": null,
+            "timestamp": "later",
+            "tags": [],
+        });
+
+        let error = validate_metric(&metric).unwrap_err();
+
+        assert_eq!(error, MetricValidationError::InvalidShape);
+        assert_eq!(
+            error.to_string(),
+            "metric requires non-empty id, name, finite value, numeric timestamp, tags object"
+        );
+    }
 }

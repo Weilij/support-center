@@ -143,7 +143,10 @@ pub fn categorize(error: &str) -> &'static str {
 }
 
 pub fn is_retryable(category: &str) -> bool {
-    matches!(category, "network" | "timeout" | "rate-limit" | "temporary-failure" | "system")
+    matches!(
+        category,
+        "network" | "timeout" | "rate-limit" | "temporary-failure" | "system"
+    )
 }
 
 pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {

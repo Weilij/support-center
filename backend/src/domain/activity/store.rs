@@ -130,7 +130,11 @@ pub async fn list(
     for b in &binds {
         q = q.bind(b.clone());
     }
-    let rows = q.bind(limit).bind((page - 1) * limit).fetch_all(pool).await?;
+    let rows = q
+        .bind(limit)
+        .bind((page - 1) * limit)
+        .fetch_all(pool)
+        .await?;
     Ok((rows, total))
 }
 
@@ -146,10 +150,7 @@ pub async fn count(pool: &PgPool, f: &ListFilter) -> sqlx::Result<i64> {
 }
 
 /// `(action, count)` ordered by frequency.
-pub async fn action_breakdown(
-    pool: &PgPool,
-    f: &ListFilter,
-) -> sqlx::Result<Vec<(String, i64)>> {
+pub async fn action_breakdown(pool: &PgPool, f: &ListFilter) -> sqlx::Result<Vec<(String, i64)>> {
     let (w, binds) = where_clause(f);
     let sql = format!(
         "SELECT action, COUNT(*) AS c FROM activity_logs{w} GROUP BY action ORDER BY c DESC, action"
@@ -214,10 +215,7 @@ pub async fn daily_action_counts(
 }
 
 /// `(YYYY-MM-DD, hour-of-day, count)` buckets (heatmap, CRD 2534-2536).
-pub async fn heat_buckets(
-    pool: &PgPool,
-    f: &ListFilter,
-) -> sqlx::Result<Vec<(String, i64, i64)>> {
+pub async fn heat_buckets(pool: &PgPool, f: &ListFilter) -> sqlx::Result<Vec<(String, i64, i64)>> {
     let (w, binds) = where_clause(f);
     let sql = format!(
         "SELECT substr(created_at, 1, 10) AS d, CAST(substr(created_at, 12, 2) AS BIGINT) AS h,
@@ -247,10 +245,7 @@ pub async fn hour_counts(pool: &PgPool, f: &ListFilter) -> sqlx::Result<Vec<(i64
 }
 
 /// `(resource type, count)` ordered by frequency (CRD 2518-2520).
-pub async fn resource_counts(
-    pool: &PgPool,
-    f: &ListFilter,
-) -> sqlx::Result<Vec<(String, i64)>> {
+pub async fn resource_counts(pool: &PgPool, f: &ListFilter) -> sqlx::Result<Vec<(String, i64)>> {
     let (w, binds) = where_clause(f);
     let sql = format!(
         "SELECT COALESCE(resource_type, 'unknown') AS r, COUNT(*) AS c
@@ -281,9 +276,11 @@ pub async fn role_counts(pool: &PgPool, f: &ListFilter) -> sqlx::Result<Vec<(Str
 
 /// Hard-deletes entries older than the cutoff; returns the removed count (CRD 2495-2502).
 pub async fn purge_before(pool: &PgPool, cutoff_iso: &str) -> sqlx::Result<i64> {
-    let res = sqlx::query("DELETE FROM activity_logs WHERE (created_at)::timestamptz < ($1)::timestamptz")
-        .bind(cutoff_iso)
-        .execute(pool)
-        .await?;
+    let res = sqlx::query(
+        "DELETE FROM activity_logs WHERE (created_at)::timestamptz < ($1)::timestamptz",
+    )
+    .bind(cutoff_iso)
+    .execute(pool)
+    .await?;
     Ok(res.rows_affected() as i64)
 }

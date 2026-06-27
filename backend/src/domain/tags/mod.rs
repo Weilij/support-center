@@ -21,15 +21,23 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let public = Router::new().route("/api/tags/health", get(handlers::health));
 
     let authed = Router::new()
-        .route("/api/tags", get(handlers::list_tags).post(handlers::create_tag))
+        .route(
+            "/api/tags",
+            get(handlers::list_tags).post(handlers::create_tag),
+        )
         .route("/api/tags/bulk", post(handlers::bulk_operation))
         .route(
             "/api/tags/{id}",
-            get(handlers::get_tag).put(handlers::update_tag).delete(handlers::delete_tag),
+            get(handlers::get_tag)
+                .put(handlers::update_tag)
+                .delete(handlers::delete_tag),
         )
         .route("/api/tags/{id}/stats", get(handlers::tag_stats))
         .route("/api/tags/{id}/customers", get(handlers::tag_customers))
-        .route("/api/tags/{id}/conversations", get(handlers::tag_conversations))
+        .route(
+            "/api/tags/{id}/conversations",
+            get(handlers::tag_conversations),
+        )
         .route(
             "/api/conversations/{id}/tags",
             get(handlers::conversation_tags)

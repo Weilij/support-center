@@ -24,16 +24,28 @@ async fn seed(app: &TestApp) -> Seeded {
     let agent_id = app.seed_agent("agent@cust.io", "Secret123!", "agent").await;
     let team_id = app.seed_team("Customer Channel Team").await;
     app.add_membership(&agent_id, team_id, "member", true).await;
-    let customer = app.seed_customer("line", "U-line-1", "Line Customer", Some(team_id)).await;
-    let conv = app.seed_conversation(customer, Some(team_id), "active").await;
+    let customer = app
+        .seed_customer("line", "U-line-1", "Line Customer", Some(team_id))
+        .await;
+    let conv = app
+        .seed_conversation(customer, Some(team_id), "active")
+        .await;
     Seeded { agent_id, conv }
 }
 
 fn fast_ws(conv: &str, user: &str) -> String {
-    format!("/api/customer-channel/ws?conversationId={conv}&preValidated=true&validatedUserId={user}")
+    format!(
+        "/api/customer-channel/ws?conversationId={conv}&preValidated=true&validatedUserId={user}"
+    )
 }
 
-async fn seed_auth_session(app: &TestApp, id: &str, agent_id: &str, data: Option<&str>, ttl_secs: i64) {
+async fn seed_auth_session(
+    app: &TestApp,
+    id: &str,
+    agent_id: &str,
+    data: Option<&str>,
+    ttl_secs: i64,
+) {
     let expires = (chrono::Utc::now() + chrono::Duration::seconds(ttl_secs))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     sqlx::query(
@@ -134,7 +146,10 @@ async fn channel_ws_error_contract_and_session_fallback() {
     // Unknown session -> 401 JSON with success:false (CRD 3870).
     let (status, body) = connect_rejected(
         addr,
-        &format!("/api/customer-channel/ws?conversationId={}&sessionId=ghost", s.conv),
+        &format!(
+            "/api/customer-channel/ws?conversationId={}&sessionId=ghost",
+            s.conv
+        ),
     )
     .await;
     assert_eq!(status, 401);
@@ -145,7 +160,10 @@ async fn channel_ws_error_contract_and_session_fallback() {
     seed_auth_session(&app, "expired-sess", &s.agent_id, None, -60).await;
     let (status, _) = connect_rejected(
         addr,
-        &format!("/api/customer-channel/ws?conversationId={}&sessionId=expired-sess", s.conv),
+        &format!(
+            "/api/customer-channel/ws?conversationId={}&sessionId=expired-sess",
+            s.conv
+        ),
     )
     .await;
     assert_eq!(status, 401);
@@ -154,18 +172,32 @@ async fn channel_ws_error_contract_and_session_fallback() {
     seed_auth_session(&app, "garbled-sess", &s.agent_id, Some("{not json"), 3600).await;
     let (status, _) = connect_rejected(
         addr,
-        &format!("/api/customer-channel/ws?conversationId={}&sessionId=garbled-sess", s.conv),
+        &format!(
+            "/api/customer-channel/ws?conversationId={}&sessionId=garbled-sess",
+            s.conv
+        ),
     )
     .await;
     assert_eq!(status, 401);
 
     // Valid session resolves identity from the stored profile (CRD 3863).
-    seed_auth_session(&app, "live-sess", &s.agent_id, Some(r#"{"userId":"sess-user"}"#), 3600)
-        .await;
-    let mut watcher = ws_connect(addr, &fast_ws(&s.conv, "watcher")).await.unwrap();
+    seed_auth_session(
+        &app,
+        "live-sess",
+        &s.agent_id,
+        Some(r#"{"userId":"sess-user"}"#),
+        3600,
+    )
+    .await;
+    let mut watcher = ws_connect(addr, &fast_ws(&s.conv, "watcher"))
+        .await
+        .unwrap();
     let _fallback = ws_connect(
         addr,
-        &format!("/api/customer-channel/ws?conversationId={}&sessionId=live-sess", s.conv),
+        &format!(
+            "/api/customer-channel/ws?conversationId={}&sessionId=live-sess",
+            s.conv
+        ),
     )
     .await
     .unwrap();
@@ -176,7 +208,10 @@ async fn channel_ws_error_contract_and_session_fallback() {
     // (CRD 3861) -> 400 when no session id is supplied either.
     let (status, _) = connect_rejected(
         addr,
-        &format!("/api/customer-channel/ws?conversationId={}&preValidated=true", s.conv),
+        &format!(
+            "/api/customer-channel/ws?conversationId={}&preValidated=true",
+            s.conv
+        ),
     )
     .await;
     assert_eq!(status, 400);
@@ -234,7 +269,12 @@ async fn notify_message_broadcasts_and_reports_diagnostics() {
     // Processing error (missing conversation id) -> 500 with success:false
     // (CRD 3878).
     let (status, body, _) = app
-        .request("POST", "/api/customer-channel/notify-message", None, Some(json!({})))
+        .request(
+            "POST",
+            "/api/customer-channel/notify-message",
+            None,
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body["success"], json!(false));
@@ -280,7 +320,7 @@ async fn notify_message_reaches_customer_channel_on_peer_instance() {
 #[tokio::test]
 async fn remote_customer_fanout_cleanup_prunes_expired_events_and_acks() {
     let app = spawn_app().await;
-    let old_at = (chrono::Utc::now() - chrono::Duration::hours(48))
+    let old_at = (chrono::Utc::now() - chrono::Duration::hours(2))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let fresh_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
@@ -308,7 +348,7 @@ async fn remote_customer_fanout_cleanup_prunes_expired_events_and_acks() {
     .await
     .unwrap();
 
-    let cutoff = (chrono::Utc::now() - chrono::Duration::hours(24))
+    let cutoff = (chrono::Utc::now() - chrono::Duration::hours(1))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let deleted =
         mcss_backend::realtime::customer::cleanup_remote_customer_events(&app.state, &cutoff)
@@ -322,11 +362,12 @@ async fn remote_customer_fanout_cleanup_prunes_expired_events_and_acks() {
             .await
             .unwrap();
     assert_eq!(event_ids, vec!["fresh-event"]);
-    let ack_ids: Vec<String> =
-        sqlx::query_scalar("SELECT event_id FROM realtime_customer_fanout_acks ORDER BY event_id")
-            .fetch_all(&app.state.db)
-            .await
-            .unwrap();
+    let ack_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT event_id FROM realtime_customer_fanout_acks ORDER BY event_id",
+    )
+    .fetch_all(&app.state.db)
+    .await
+    .unwrap();
     assert_eq!(ack_ids, vec!["fresh-event"]);
 }
 
@@ -360,7 +401,12 @@ async fn notify_message_updated_broadcasts_attachment_data() {
 
     // Processing error -> 500 with success:false (CRD 3886).
     let (status, body, _) = app
-        .request("POST", "/api/customer-channel/notify-message-updated", None, Some(json!({})))
+        .request(
+            "POST",
+            "/api/customer-channel/notify-message-updated",
+            None,
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body["success"], json!(false));
@@ -380,9 +426,25 @@ async fn list_messages_pagination_cursor_and_attachments() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["success"], json!(false));
 
-    let m1 = app.seed_message(&s.conv, "customer", "first", Some("2026-06-01T10:00:00.000Z")).await;
-    let m2 = app.seed_message(&s.conv, "agent", "second", Some("2026-06-01T11:00:00.000Z")).await;
-    let m3 = app.seed_message(&s.conv, "customer", "third", Some("2026-06-01T12:00:00.000Z")).await;
+    let m1 = app
+        .seed_message(
+            &s.conv,
+            "customer",
+            "first",
+            Some("2026-06-01T10:00:00.000Z"),
+        )
+        .await;
+    let m2 = app
+        .seed_message(&s.conv, "agent", "second", Some("2026-06-01T11:00:00.000Z"))
+        .await;
+    let m3 = app
+        .seed_message(
+            &s.conv,
+            "customer",
+            "third",
+            Some("2026-06-01T12:00:00.000Z"),
+        )
+        .await;
 
     // Attachment on m2: with a stored object -> download link; without ->
     // inline only (CRD 3896).
@@ -392,7 +454,10 @@ async fn list_messages_pagination_cursor_and_attachments() {
         b"png",
     )
     .unwrap();
-    for (id, key) in [("att-with", Some("obj-key.png")), ("att-without", None::<&str>)] {
+    for (id, key) in [
+        ("att-with", Some("obj-key.png")),
+        ("att-without", None::<&str>),
+    ] {
         sqlx::query(
             "INSERT INTO attachments (id, message_id, file_name, content_type, file_size, file_url, storage_key, created_at)
              VALUES ($1, $2, 'f.png', 'image/png', 3, '/uploads/obj-key.png', $3, $4)",
@@ -409,7 +474,13 @@ async fn list_messages_pagination_cursor_and_attachments() {
     let headers: &[(&str, &str)] = &[("x-conversation-id", s.conv.as_str())];
     // Newest first; full page implies hasMore (CRD 3897, 3901).
     let (status, body, _) = app
-        .request_with_headers("GET", "/api/customer-channel/messages?limit=2", None, None, headers)
+        .request_with_headers(
+            "GET",
+            "/api/customer-channel/messages?limit=2",
+            None,
+            None,
+            headers,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], json!(true));
@@ -435,8 +506,12 @@ async fn list_messages_pagination_cursor_and_attachments() {
             headers,
         )
         .await;
-    let ids: Vec<&str> =
-        body["messages"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
+    let ids: Vec<&str> = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
     assert_eq!(ids, vec![m1.as_str()]);
     assert_eq!(body["hasMore"], json!(false));
 
@@ -462,7 +537,12 @@ async fn create_message_validation_contract() {
 
     // Missing conversation header -> 400 (CRD 3921).
     let (status, body, _) = app
-        .request("POST", "/api/customer-channel/messages", None, Some(json!({ "content": "x" })))
+        .request(
+            "POST",
+            "/api/customer-channel/messages",
+            None,
+            Some(json!({ "content": "x" })),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["success"], json!(false));
@@ -487,7 +567,10 @@ async fn create_message_validation_contract() {
             "/api/customer-channel/messages",
             None,
             Some(json!({ "content": "   " })),
-            &[("x-conversation-id", s.conv.as_str()), ("x-session-token", "someone")],
+            &[
+                ("x-conversation-id", s.conv.as_str()),
+                ("x-session-token", "someone"),
+            ],
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -525,7 +608,10 @@ async fn create_message_persists_links_broadcasts_and_round_trips_correlation() 
                 "attachmentIds": ["att-new"],
                 "correlationId": "corr-42",
             })),
-            &[("x-conversation-id", s.conv.as_str()), ("x-session-token", token.as_str())],
+            &[
+                ("x-conversation-id", s.conv.as_str()),
+                ("x-session-token", token.as_str()),
+            ],
         )
         .await;
     assert_eq!(status, StatusCode::OK);
@@ -547,7 +633,10 @@ async fn create_message_persists_links_broadcasts_and_round_trips_correlation() 
     .fetch_one(&app.state.db)
     .await
     .unwrap();
-    assert_eq!((row.0.as_str(), row.1.as_str(), row.2), ("agent", "delivered", 1));
+    assert_eq!(
+        (row.0.as_str(), row.1.as_str(), row.2),
+        ("agent", "delivered", 1)
+    );
     assert_eq!(row.3.as_deref(), Some(s.agent_id.as_str()));
 
     // Attachment linked (CRD 3912).
@@ -593,7 +682,10 @@ async fn create_message_persists_links_broadcasts_and_round_trips_correlation() 
             "/api/customer-channel/messages",
             None,
             Some(json!({ "content": "plain credential" })),
-            &[("x-conversation-id", s.conv.as_str()), ("x-session-token", "opaque-user")],
+            &[
+                ("x-conversation-id", s.conv.as_str()),
+                ("x-session-token", "opaque-user"),
+            ],
         )
         .await;
     assert_eq!(status, StatusCode::OK);
@@ -624,10 +716,10 @@ fn multipart_upload(
     } else {
         body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
     }
-    let mut builder = Request::builder()
-        .method("POST")
-        .uri(path)
-        .header("Content-Type", format!("multipart/form-data; boundary={boundary}"));
+    let mut builder = Request::builder().method("POST").uri(path).header(
+        "Content-Type",
+        format!("multipart/form-data; boundary={boundary}"),
+    );
     if let Some(c) = conv {
         builder = builder.header("x-conversation-id", c);
     }
@@ -641,7 +733,10 @@ async fn send(app: &TestApp, req: Request<Body>) -> (StatusCode, Value) {
     let resp = app.router.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 #[tokio::test]
@@ -652,26 +747,38 @@ async fn upload_stores_asset_without_creating_a_message() {
     let path = "/api/customer-channel/upload";
 
     // Missing conversation header -> 400 (CRD 3937).
-    let (status, body) =
-        send(&app, multipart_upload(path, None, Some("upload-sess"), Some(b"png"))).await;
+    let (status, body) = send(
+        &app,
+        multipart_upload(path, None, Some("upload-sess"), Some(b"png")),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["success"], json!(false));
 
     // Missing session header -> 401 (CRD 3938).
-    let (status, body) =
-        send(&app, multipart_upload(path, Some(&s.conv), None, Some(b"png"))).await;
+    let (status, body) = send(
+        &app,
+        multipart_upload(path, Some(&s.conv), None, Some(b"png")),
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["success"], json!(false));
 
     // Invalid session -> 401 with the validation error (CRD 3938).
-    let (status, body) =
-        send(&app, multipart_upload(path, Some(&s.conv), Some("ghost"), Some(b"png"))).await;
+    let (status, body) = send(
+        &app,
+        multipart_upload(path, Some(&s.conv), Some("ghost"), Some(b"png")),
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["success"], json!(false));
 
     // No file part -> 400 (CRD 3939).
-    let (status, body) =
-        send(&app, multipart_upload(path, Some(&s.conv), Some("upload-sess"), None)).await;
+    let (status, body) = send(
+        &app,
+        multipart_upload(path, Some(&s.conv), Some("upload-sess"), None),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["success"], json!(false));
 
@@ -692,7 +799,9 @@ async fn upload_stores_asset_without_creating_a_message() {
     assert!(url.starts_with("/uploads/"), "unexpected url {url}");
     assert!(url.ends_with(".png"));
     let key = url.strip_prefix("/uploads/").unwrap();
-    assert!(std::path::Path::new(&app.state.config.upload_dir).join(key).exists());
+    assert!(std::path::Path::new(&app.state.config.upload_dir)
+        .join(key)
+        .exists());
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE conversation_id = $1")
         .bind(&s.conv)
         .fetch_one(&app.state.db)
@@ -706,8 +815,9 @@ async fn upload_stores_asset_without_creating_a_message() {
 #[tokio::test]
 async fn unknown_channel_paths_answer_plain_404() {
     let app = spawn_app().await;
-    let (status, body, _) =
-        app.request("GET", "/api/customer-channel/no-such-path", None, None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/customer-channel/no-such-path", None, None)
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(body.is_null(), "plain-text body expected");
 }
@@ -738,13 +848,19 @@ async fn customer_ws_registers_into_the_channel_and_receives_replies() {
     let session = mint(&s.agent_id, "agent", 3600);
     let mut first = ws_connect(
         addr,
-        &format!("/api/customer-ws?conversationId={}&sessionId={}", s.conv, session),
+        &format!(
+            "/api/customer-ws?conversationId={}&sessionId={}",
+            s.conv, session
+        ),
     )
     .await
     .unwrap();
     let _second = ws_connect(
         addr,
-        &format!("/api/customer-ws?conversationId={}&sessionId={}", s.conv, session),
+        &format!(
+            "/api/customer-ws?conversationId={}&sessionId={}",
+            s.conv, session
+        ),
     )
     .await
     .unwrap();

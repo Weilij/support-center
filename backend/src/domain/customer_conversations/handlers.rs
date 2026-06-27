@@ -41,7 +41,10 @@ fn extract_credential(headers: &HeaderMap, query_session: Option<&str>) -> Optio
         }
     }
     if let Some(v) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
-        if let Some(token) = v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")) {
+        if let Some(token) = v
+            .strip_prefix("Bearer ")
+            .or_else(|| v.strip_prefix("bearer "))
+        {
             if !token.is_empty() {
                 return Some(token.to_string());
             }
@@ -55,7 +58,10 @@ fn extract_credential(headers: &HeaderMap, query_session: Option<&str>) -> Optio
 #[allow(clippy::result_large_err)] // the Err is the ready-to-send denial response
 fn validate_session(state: &AppState, token: &str) -> Result<CustomerSession, Response> {
     if state.config.jwt_secret.is_empty() {
-        return Err(fail(StatusCode::INTERNAL_SERVER_ERROR, "Server configuration error"));
+        return Err(fail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Server configuration error",
+        ));
     }
     let claims = tokens::verify(token, &state.config.jwt_secret)
         .map_err(|_| fail(StatusCode::UNAUTHORIZED, "Invalid or expired session"))?;
@@ -93,7 +99,12 @@ async fn check_access(
     .bind(conversation_id)
     .fetch_optional(&state.db)
     .await
-    .map_err(|_| fail(StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch conversation"))?;
+    .map_err(|_| {
+        fail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to fetch conversation",
+        )
+    })?;
     let Some((customer_id, team_id, cust_platform, cust_platform_user_id)) = row else {
         return Err(fail(StatusCode::NOT_FOUND, "Conversation not found"));
     };
@@ -110,16 +121,20 @@ async fn check_access(
                 .bind(tid)
                 .fetch_one(&state.db)
                 .await
-                .map_err(|_| {
-                    fail(StatusCode::INTERNAL_SERVER_ERROR, "Failed to verify access")
-                })?
+                .map_err(|_| fail(StatusCode::INTERNAL_SERVER_ERROR, "Failed to verify access"))?
                     > 0
             }
         };
     if !admitted {
-        return Err(fail(StatusCode::FORBIDDEN, "Access denied for this conversation"));
+        return Err(fail(
+            StatusCode::FORBIDDEN,
+            "Access denied for this conversation",
+        ));
     }
-    Ok(ConvContext { cust_platform, cust_platform_user_id })
+    Ok(ConvContext {
+        cust_platform,
+        cust_platform_user_id,
+    })
 }
 
 /// Entry gate shared by all operations: credential extraction, session
@@ -237,7 +252,12 @@ pub async fn history(
             Err(resp) => return resp,
         };
 
-    let limit = q.limit.as_deref().and_then(|v| v.parse::<i64>().ok()).unwrap_or(50).clamp(1, 200);
+    let limit = q
+        .limit
+        .as_deref()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(50)
+        .clamp(1, 200);
 
     // Timestamp-anchored cursor: entries strictly older than the referenced
     // message; an unresolvable cursor falls back to the most recent page
@@ -255,7 +275,10 @@ pub async fn history(
         {
             Ok(v) => v,
             Err(_) => {
-                return fail(StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch messages")
+                return fail(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to fetch messages",
+                )
             }
         };
         if let Some(at) = anchor {
@@ -277,7 +300,12 @@ pub async fn history(
     }
     let rows = match mq.bind(limit).fetch_all(&state.db).await {
         Ok(v) => v,
-        Err(_) => return fail(StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch messages"),
+        Err(_) => {
+            return fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to fetch messages",
+            )
+        }
     };
 
     let mut by_message: HashMap<String, Vec<Value>> = HashMap::new();
@@ -303,7 +331,12 @@ pub async fn history(
                     }
                 }
             }
-            Err(_) => return fail(StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch messages"),
+            Err(_) => {
+                return fail(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to fetch messages",
+                )
+            }
         }
     }
 
@@ -358,7 +391,10 @@ pub async fn send_reply(
     let content = body.content.as_deref().unwrap_or("").trim().to_string();
     let attachment_ids = body.attachment_ids.unwrap_or_default();
     if content.is_empty() && attachment_ids.is_empty() {
-        return fail(StatusCode::BAD_REQUEST, "Content or attachments are required");
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "Content or attachments are required",
+        );
     }
     // Attachments force a file kind regardless of the supplied value (CRD 1079).
     let message_type = if attachment_ids.is_empty() {
@@ -370,20 +406,29 @@ pub async fn send_reply(
     // Sender identity from the session credential, with a display-name snapshot
     // (CRD 1084). The agent reference column is only populated when the
     // identity resolves to a real agent record.
-    let agent: Option<(String, String)> =
-        match sqlx::query_as("SELECT id, display_name FROM agents WHERE id = $1 AND deleted_at IS NULL")
-            .bind(&session.user_id)
-            .fetch_optional(&state.db)
-            .await
-        {
-            Ok(v) => v,
-            Err(_) => return fail(StatusCode::INTERNAL_SERVER_ERROR, "Failed to create message"),
-        };
+    let agent: Option<(String, String)> = match sqlx::query_as(
+        "SELECT id, display_name FROM agents WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(&session.user_id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(v) => v,
+        Err(_) => {
+            return fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to create message",
+            )
+        }
+    };
     let agent_id = agent.as_ref().map(|(id, _)| id.clone());
     let sender_name = if !session.display_name.is_empty() {
         session.display_name.clone()
     } else {
-        agent.as_ref().map(|(_, n)| n.clone()).unwrap_or_else(|| "Unknown".to_string())
+        agent
+            .as_ref()
+            .map(|(_, n)| n.clone())
+            .unwrap_or_else(|| "Unknown".to_string())
     };
 
     let metadata = json!({
@@ -407,7 +452,11 @@ pub async fn send_reply(
         .bind(&message_id)
         .bind(&conversation_id)
         .bind(&agent_id)
-        .bind(if content.is_empty() { None } else { Some(content.clone()) })
+        .bind(if content.is_empty() {
+            None
+        } else {
+            Some(content.clone())
+        })
         .bind(&message_type)
         .bind(&now)
         .bind(metadata.to_string())
@@ -440,7 +489,10 @@ pub async fn send_reply(
     }
     .await;
     if insert.is_err() {
-        return fail(StatusCode::INTERNAL_SERVER_ERROR, "Failed to create message");
+        return fail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to create message",
+        );
     }
 
     let attachments: Vec<Value> = if attachment_ids.is_empty() {
@@ -600,13 +652,12 @@ pub async fn upload(
 
     // Storage-layer re-validation against the live session store: a session
     // record must exist and be unexpired (CRD 1109, 1119).
-    let live: Result<Option<String>, _> = sqlx::query_scalar(
-        "SELECT id FROM auth_sessions WHERE agent_id = $1 AND expires_at > $2",
-    )
-    .bind(&session.user_id)
-    .bind(crate::db::now_iso())
-    .fetch_optional(&state.db)
-    .await;
+    let live: Result<Option<String>, _> =
+        sqlx::query_scalar("SELECT id FROM auth_sessions WHERE agent_id = $1 AND expires_at > $2")
+            .bind(&session.user_id)
+            .bind(crate::db::now_iso())
+            .fetch_optional(&state.db)
+            .await;
     match live {
         Ok(Some(_)) => {}
         Ok(None) => return fail(StatusCode::UNAUTHORIZED, "Session not found or expired"),
@@ -617,7 +668,10 @@ pub async fn upload(
     while let Ok(Some(field)) = multipart.next_field().await {
         if field.name() == Some("file") {
             let filename = field.file_name().unwrap_or("upload.bin").to_string();
-            let mime = field.content_type().unwrap_or("application/octet-stream").to_string();
+            let mime = field
+                .content_type()
+                .unwrap_or("application/octet-stream")
+                .to_string();
             match field.bytes().await {
                 Ok(bytes) => {
                     file = Some((filename, mime, bytes.to_vec()));
@@ -638,12 +692,22 @@ pub async fn upload(
         .and_then(|e| e.to_str())
         .map(|e| {
             let safe: String = e.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
-            if safe.is_empty() { String::new() } else { format!(".{safe}") }
+            if safe.is_empty() {
+                String::new()
+            } else {
+                format!(".{safe}")
+            }
         })
         .unwrap_or_default();
     let safe_conv: String = conversation_id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let attachment_id = uuid::Uuid::new_v4().to_string();
     let storage_key = format!("conv_{safe_conv}_{attachment_id}{extension}");
@@ -735,7 +799,10 @@ pub async fn subscribe_ws(
     let _ = headers;
 
     match ws {
-        Err(_) => fail(StatusCode::BAD_REQUEST, "Expected a WebSocket upgrade request"),
+        Err(_) => fail(
+            StatusCode::BAD_REQUEST,
+            "Expected a WebSocket upgrade request",
+        ),
         Ok(ws) => {
             // Register against the conversation's isolated channel using the
             // validated identity: connections are tracked individually (one

@@ -87,23 +87,42 @@ mod tests {
     async fn single_holder_and_bounded_contention() {
         let locks = Arc::new(KeyedLeaseLock::default());
         let guard = locks
-            .acquire("customer:1", Duration::from_secs(5), Duration::from_millis(10))
+            .acquire(
+                "customer:1",
+                Duration::from_secs(5),
+                Duration::from_millis(10),
+            )
             .await
             .expect("first acquire succeeds");
         // A contender for the same key times out (guarantee 4)...
         let contender = locks
-            .acquire("customer:1", Duration::from_secs(5), Duration::from_millis(50))
+            .acquire(
+                "customer:1",
+                Duration::from_secs(5),
+                Duration::from_millis(50),
+            )
             .await;
-        assert!(contender.is_none(), "bounded wait elapsed -> failure, never parallel");
+        assert!(
+            contender.is_none(),
+            "bounded wait elapsed -> failure, never parallel"
+        );
         // ...while a different key is unaffected (per-resource isolation).
         let other = locks
-            .acquire("customer:2", Duration::from_secs(5), Duration::from_millis(10))
+            .acquire(
+                "customer:2",
+                Duration::from_secs(5),
+                Duration::from_millis(10),
+            )
             .await;
         assert!(other.is_some());
         drop(guard);
         // Released by the owner: immediately reacquirable (guarantee 3/5).
         let again = locks
-            .acquire("customer:1", Duration::from_secs(5), Duration::from_millis(10))
+            .acquire(
+                "customer:1",
+                Duration::from_secs(5),
+                Duration::from_millis(10),
+            )
             .await;
         assert!(again.is_some());
     }
@@ -112,7 +131,11 @@ mod tests {
     async fn lapsed_lease_is_reclaimed() {
         let locks = Arc::new(KeyedLeaseLock::default());
         let guard = locks
-            .acquire("conv:9", Duration::from_millis(30), Duration::from_millis(10))
+            .acquire(
+                "conv:9",
+                Duration::from_millis(30),
+                Duration::from_millis(10),
+            )
             .await
             .unwrap();
         // Simulate a crashed holder: never dropped, but the lease lapses.

@@ -22,7 +22,9 @@ async fn line_verify_server() -> String {
         Json(json!({ "sub": sub }))
     }
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, Router::new().route("/verify", post(verify)))
@@ -42,9 +44,13 @@ async fn line_push_server() -> (String, Arc<Mutex<Vec<Value>>>) {
         Json(json!({"sentMessages": [{"id": "line-welcome-1"}]}))
     }
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
     let addr = listener.local_addr().unwrap();
-    let app = Router::new().route("/push", post(push)).with_state(seen.clone());
+    let app = Router::new()
+        .route("/push", post(push))
+        .with_state(seen.clone());
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
@@ -110,16 +116,30 @@ async fn assign_team_is_idempotent_per_user_team_pair() {
     .unwrap();
 
     let (status, _, _) = app
-        .request("POST", "/api/liff/assign-team", None, Some(json!({"teamId": team})))
+        .request(
+            "POST",
+            "/api/liff/assign-team",
+            None,
+            Some(json!({"teamId": team})),
+        )
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "LINE ID token required");
     let (status, _, _) = app
-        .request("POST", "/api/liff/assign-team", None, Some(json!({"lineIdToken": "token:U-x"})))
+        .request(
+            "POST",
+            "/api/liff/assign-team",
+            None,
+            Some(json!({"lineIdToken": "token:U-x"})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "teamId required");
     let (status, _, _) = app
-        .request("POST", "/api/liff/assign-team", None,
-            Some(json!({"lineIdToken": "token:U-x", "lineUserId": "U-spoof", "teamId": 999})))
+        .request(
+            "POST",
+            "/api/liff/assign-team",
+            None,
+            Some(json!({"lineIdToken": "token:U-x", "lineUserId": "U-spoof", "teamId": 999})),
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
@@ -133,8 +153,12 @@ async fn assign_team_is_idempotent_per_user_team_pair() {
 
     // Repeat: same record, no duplicate, counter not re-incremented.
     let (status, body, _) = app
-        .request("POST", "/api/liff/assign-team", None,
-            Some(json!({"lineIdToken": "token:U-x", "teamId": team})))
+        .request(
+            "POST",
+            "/api/liff/assign-team",
+            None,
+            Some(json!({"lineIdToken": "token:U-x", "teamId": team})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["assignmentId"], first_id.as_str());
@@ -146,11 +170,12 @@ async fn assign_team_is_idempotent_per_user_team_pair() {
     .await
     .unwrap();
     assert_eq!(count, 1);
-    let scans: i64 = sqlx::query_scalar("SELECT scan_count FROM team_liff_links WHERE team_id = $1")
-        .bind(team)
-        .fetch_one(&app.state.db)
-        .await
-        .unwrap();
+    let scans: i64 =
+        sqlx::query_scalar("SELECT scan_count FROM team_liff_links WHERE team_id = $1")
+            .bind(team)
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
     assert_eq!(scans, 1, "scan counter incremented exactly once");
     let source: String = sqlx::query_scalar(
         "SELECT source FROM customer_team_assignments WHERE platform_user_id = 'U-x'",
@@ -172,28 +197,47 @@ async fn welcome_validates_and_reconciles_conversations() {
         c.line_channel_access_token = Some("test-push-token".into());
         c.line_id_token_verify_url = verify_url;
         c.line_push_url = push_url;
-    }).await;
+    })
+    .await;
     let team_a = app.seed_team("A").await;
     let team_b = app.seed_team("B").await;
 
     let (status, _, _) = app
-        .request("POST", "/api/liff/welcome", None, Some(json!({"teamId": team_a})))
+        .request(
+            "POST",
+            "/api/liff/welcome",
+            None,
+            Some(json!({"teamId": team_a})),
+        )
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, _, _) = app
-        .request("POST", "/api/liff/welcome", None, Some(json!({"lineIdToken": "token:U-w"})))
+        .request(
+            "POST",
+            "/api/liff/welcome",
+            None,
+            Some(json!({"lineIdToken": "token:U-w"})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _, _) = app
-        .request("POST", "/api/liff/welcome", None,
-            Some(json!({"lineIdToken": "token:U-w", "lineUserId": "U-spoof", "teamId": 999})))
+        .request(
+            "POST",
+            "/api/liff/welcome",
+            None,
+            Some(json!({"lineIdToken": "token:U-w", "lineUserId": "U-spoof", "teamId": 999})),
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // No customer record: reconciliation skipped, welcome still succeeds.
     let (status, body, _) = app
-        .request("POST", "/api/liff/welcome", None,
-            Some(json!({"lineIdToken": "token:U-ghost", "teamId": team_a})))
+        .request(
+            "POST",
+            "/api/liff/welcome",
+            None,
+            Some(json!({"lineIdToken": "token:U-ghost", "teamId": team_a})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["data"]["message"].is_string());
@@ -202,23 +246,37 @@ async fn welcome_validates_and_reconciles_conversations() {
         assert_eq!(received.len(), 1);
         assert_eq!(received[0]["to"], "U-ghost");
         assert_eq!(received[0]["messages"][0]["type"], "text");
-        assert!(received[0]["messages"][0]["text"].as_str().unwrap().contains("ขอบคุณ"));
+        assert!(received[0]["messages"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("ขอบคุณ"));
     }
 
     // Existing friend with an open conversation on another team: reassigned.
     let customer = app.seed_customer("line", "U-w", "Friend", None).await;
-    let conversation = app.seed_conversation(customer, Some(team_a), "active").await;
+    let conversation = app
+        .seed_conversation(customer, Some(team_a), "active")
+        .await;
     let (status, _, _) = app
-        .request("POST", "/api/liff/welcome", None,
-            Some(json!({"lineIdToken": "token:U-w", "lineUserId": "U-spoof", "teamId": team_b})))
+        .request(
+            "POST",
+            "/api/liff/welcome",
+            None,
+            Some(json!({"lineIdToken": "token:U-w", "lineUserId": "U-spoof", "teamId": team_b})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
-    let assigned: Option<i64> = sqlx::query_scalar("SELECT team_id FROM conversations WHERE id = $1")
-        .bind(&conversation)
-        .fetch_one(&app.state.db)
-        .await
-        .unwrap();
-    assert_eq!(assigned, Some(team_b), "open conversation reassigned to the target team");
+    let assigned: Option<i64> =
+        sqlx::query_scalar("SELECT team_id FROM conversations WHERE id = $1")
+            .bind(&conversation)
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        assigned,
+        Some(team_b),
+        "open conversation reassigned to the target team"
+    );
 
     // Closed conversations are never reassigned: a new one is created instead.
     sqlx::query("UPDATE conversations SET status = 'closed' WHERE id = $1")
@@ -227,8 +285,12 @@ async fn welcome_validates_and_reconciles_conversations() {
         .await
         .unwrap();
     let (status, _, _) = app
-        .request("POST", "/api/liff/welcome", None,
-            Some(json!({"lineIdToken": "token:U-w", "teamId": team_a})))
+        .request(
+            "POST",
+            "/api/liff/welcome",
+            None,
+            Some(json!({"lineIdToken": "token:U-w", "teamId": team_a})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     let open_count: i64 = sqlx::query_scalar(
@@ -239,7 +301,10 @@ async fn welcome_validates_and_reconciles_conversations() {
     .fetch_one(&app.state.db)
     .await
     .unwrap();
-    assert_eq!(open_count, 1, "new active conversation created for the target team");
+    assert_eq!(
+        open_count, 1,
+        "new active conversation created for the target team"
+    );
     let closed_team: Option<i64> =
         sqlx::query_scalar("SELECT team_id FROM conversations WHERE id = $1")
             .bind(&conversation)
@@ -255,11 +320,16 @@ async fn welcome_requires_push_credential() {
     let app = spawn_app_custom(|c| {
         c.line_channel_access_token = None;
         c.line_id_token_verify_url = verify_url;
-    }).await;
+    })
+    .await;
     let team = app.seed_team("A").await;
     let (status, _, _) = app
-        .request("POST", "/api/liff/welcome", None,
-            Some(json!({"lineIdToken": "token:U-w", "teamId": team})))
+        .request(
+            "POST",
+            "/api/liff/welcome",
+            None,
+            Some(json!({"lineIdToken": "token:U-w", "teamId": team})),
+        )
         .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
@@ -271,20 +341,26 @@ async fn join_page_renders_html_with_escaping() {
 
     let (status, _, headers) = app.request("GET", "/join", None, None).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(headers.get("content-type").unwrap().to_str().unwrap().contains("text/html"));
+    assert!(headers
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("text/html"));
 
-    use tower::ServiceExt;
     use http_body_util::BodyExt;
+    use tower::ServiceExt;
     let req = axum::http::Request::builder()
         .uri(format!("/join?team={team}"))
         .body(axum::body::Body::empty())
         .unwrap();
     let resp = app.router.clone().oneshot(req).await.unwrap();
-    let html = String::from_utf8_lossy(
-        &resp.into_body().collect().await.unwrap().to_bytes(),
-    )
-    .to_string();
-    assert!(html.contains("&lt;script&gt;"), "team name HTML-escaped: {html}");
+    let html =
+        String::from_utf8_lossy(&resp.into_body().collect().await.unwrap().to_bytes()).to_string();
+    assert!(
+        html.contains("&lt;script&gt;"),
+        "team name HTML-escaped: {html}"
+    );
     assert!(!html.contains("<script>alert"), "no raw injection");
 
     let req = axum::http::Request::builder()
@@ -309,7 +385,12 @@ async fn admin_batch_generate_and_coverage() {
 
     // Admin-only.
     let (status, _, _) = app
-        .request("POST", "/api/admin/liff-qr/batch-generate", Some(&agent), None)
+        .request(
+            "POST",
+            "/api/admin/liff-qr/batch-generate",
+            Some(&agent),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _, _) = app
@@ -318,13 +399,20 @@ async fn admin_batch_generate_and_coverage() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     // Coverage before: none covered.
-    let (_, body, _) = app.request("GET", "/api/admin/liff-qr/status", Some(&admin), None).await;
+    let (_, body, _) = app
+        .request("GET", "/api/admin/liff-qr/status", Some(&admin), None)
+        .await;
     assert_eq!(body["data"]["totalTeams"], 2);
     assert_eq!(body["data"]["teamsWithLiffQR"], 0);
 
     // Generate for all missing teams.
     let (status, body, _) = app
-        .request("POST", "/api/admin/liff-qr/batch-generate", Some(&admin), None)
+        .request(
+            "POST",
+            "/api/admin/liff-qr/batch-generate",
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["total"], 2);
@@ -332,14 +420,21 @@ async fn admin_batch_generate_and_coverage() {
     assert_eq!(body["data"]["failed"], 0);
 
     // Coverage after: 100%.
-    let (_, body, _) = app.request("GET", "/api/admin/liff-qr/status", Some(&admin), None).await;
+    let (_, body, _) = app
+        .request("GET", "/api/admin/liff-qr/status", Some(&admin), None)
+        .await;
     assert_eq!(body["data"]["teamsWithLiffQR"], 2);
     assert_eq!(body["data"]["coverage"], "100.00%");
     assert_eq!(body["data"]["teams"][0]["hasLiffQR"], true);
 
     // Early exit when everything is covered.
     let (status, body, _) = app
-        .request("POST", "/api/admin/liff-qr/batch-generate", Some(&admin), None)
+        .request(
+            "POST",
+            "/api/admin/liff-qr/batch-generate",
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["total"], 0);

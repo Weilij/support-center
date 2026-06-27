@@ -22,8 +22,7 @@ pub fn routes(_state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route(
             "/api/customer-conversations/{conversationId}/upload",
-            post(handlers::upload)
-                .layer(axum::extract::DefaultBodyLimit::max(50 * 1024 * 1024)),
+            post(handlers::upload).layer(axum::extract::DefaultBodyLimit::max(50 * 1024 * 1024)),
         )
         .route("/api/customer-ws", get(handlers::subscribe_ws))
 }

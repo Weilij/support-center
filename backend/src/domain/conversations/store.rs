@@ -88,7 +88,10 @@ fn visibility_clause(user: &AuthUser) -> String {
     if team_ids.is_empty() {
         " AND c.team_id IS NULL".to_string()
     } else {
-        format!(" AND (c.team_id IS NULL OR c.team_id IN ({}))", team_ids.join(", "))
+        format!(
+            " AND (c.team_id IS NULL OR c.team_id IN ({}))",
+            team_ids.join(", ")
+        )
     }
 }
 
@@ -112,7 +115,12 @@ pub async fn list_visible(
     // Labels match directly on the conversation or indirectly through the
     // conversation's customer (CRD 667). Ids are integers, safe to inline.
     if !f.tag_ids.is_empty() {
-        let ids = f.tag_ids.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");
+        let ids = f
+            .tag_ids
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         clause.push_str(&format!(
             " AND (EXISTS (SELECT 1 FROM conversation_tags vt
                             WHERE vt.conversation_id = c.id AND vt.tag_id IN ({ids}))
@@ -127,11 +135,21 @@ pub async fn list_visible(
             binds.push(format!("%{}%", term.to_lowercase()));
         }
     }
-    if let Some(after) = f.updated_after.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(after) = f
+        .updated_after
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         clause.push_str(" AND COALESCE(c.updated_at, c.created_at) >= ?");
         binds.push(after.to_string());
     }
-    if let Some(before) = f.updated_before.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(before) = f
+        .updated_before
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         clause.push_str(" AND COALESCE(c.updated_at, c.created_at) <= ?");
         binds.push(before.to_string());
     }
@@ -147,14 +165,14 @@ pub async fn list_visible(
 
 pub async fn find_full(db: &PgPool, id: &str) -> Result<Option<ConvRow>, AppError> {
     let sql = base_select(" AND c.id = ?");
-    Ok(sqlx::query_as::<_, ConvRow>(&crate::db::pg_params(&sql)).bind(id).fetch_optional(db).await?)
+    Ok(sqlx::query_as::<_, ConvRow>(&crate::db::pg_params(&sql))
+        .bind(id)
+        .fetch_optional(db)
+        .await?)
 }
 
 /// Bare assignment state: (team_id, status). None when the conversation is missing.
-pub async fn find_bare(
-    db: &PgPool,
-    id: &str,
-) -> Result<Option<(Option<i64>, String)>, AppError> {
+pub async fn find_bare(db: &PgPool, id: &str) -> Result<Option<(Option<i64>, String)>, AppError> {
     Ok(sqlx::query_as(
         "SELECT team_id, status FROM conversations WHERE id = $1 AND deleted_at IS NULL",
     )
@@ -188,7 +206,9 @@ fn customer_name(r: &ConvRow) -> String {
 }
 
 fn parse_json_text(raw: &Option<String>) -> Value {
-    raw.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or(Value::Null)
+    raw.as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(Value::Null)
 }
 
 /// Shared conversation view (CRD 674, 684): list items and detail/assignment
@@ -260,10 +280,12 @@ pub fn conversation_view(r: &ConvRow, detail: bool) -> Value {
 }
 
 pub async fn team_name(db: &PgPool, id: i64) -> Result<Option<String>, AppError> {
-    Ok(sqlx::query_scalar("SELECT name FROM teams WHERE id = $1 AND deleted_at IS NULL")
-        .bind(id)
-        .fetch_optional(db)
-        .await?)
+    Ok(
+        sqlx::query_scalar("SELECT name FROM teams WHERE id = $1 AND deleted_at IS NULL")
+            .bind(id)
+            .fetch_optional(db)
+            .await?,
+    )
 }
 
 /// Routing change applied atomically with its routing-history record and the
@@ -281,13 +303,15 @@ pub async fn apply_routing_change(
 ) -> Result<(), AppError> {
     let now = crate::db::now_iso();
     let mut tx = db.begin().await?;
-    sqlx::query("UPDATE conversations SET team_id = $1, status = $2, updated_at = $3 WHERE id = $4")
-        .bind(new_team)
-        .bind(new_status)
-        .bind(&now)
-        .bind(conversation_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE conversations SET team_id = $1, status = $2, updated_at = $3 WHERE id = $4",
+    )
+    .bind(new_team)
+    .bind(new_status)
+    .bind(&now)
+    .bind(conversation_id)
+    .execute(&mut *tx)
+    .await?;
     if let Some((from, to, reason, transfer_type)) = history {
         sqlx::query(
             "INSERT INTO conversation_transfers

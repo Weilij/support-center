@@ -6,13 +6,23 @@
 use serde_json::{json, Map, Value};
 use sqlx::PgPool;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use crate::db::now_iso;
 use crate::domain::auth::store::log_activity;
+use crate::domain::notifications::service::{self as notification_service, NewNotification};
 use crate::state::AppState;
+use parking_lot::Mutex;
 
 use super::parse::Normalized;
+
+#[derive(Debug, thiserror::Error)]
+pub enum IngestError {
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+type IngestResult<T> = Result<T, IngestError>;
 
 /// Sentinel actor for webhook-originated audit entries (soft-deleted so it
 /// never appears in member listings; mirrors the `deleted-user` precedent).
@@ -24,7 +34,7 @@ pub const DEFAULT_WELCOME: &str = "สวัสดีค่ะ ขอบคุ�
 
 async fn ensure_system_agent(db: &PgPool) {
     let now = now_iso();
-    let _ = sqlx::query(
+    if let Err(error) = sqlx::query(
         "INSERT INTO agents
             (id, email, password_hash, display_name, role, is_active, password_policy,
              deleted_at, created_at)
@@ -34,7 +44,10 @@ async fn ensure_system_agent(db: &PgPool) {
     .bind(&now)
     .bind(&now)
     .execute(db)
-    .await;
+    .await
+    {
+        tracing::warn!(error = %error, "webhook system-agent ensure failed");
+    }
 }
 
 /// Per-customer conversation-creation serialization (CRD 2790): concurrent
@@ -43,7 +56,7 @@ async fn ensure_system_agent(db: &PgPool) {
 fn customer_lock(key: &str) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
     let map = LOCKS.get_or_init(Default::default);
-    let mut guard = map.lock().expect("customer lock map");
+    let mut guard = map.lock();
     guard.entry(key.to_string()).or_default().clone()
 }
 
@@ -53,7 +66,7 @@ async fn push_default_welcome(state: &AppState, message_id: &str, user_id: &str)
     let now = now_iso();
     match gateway.send_batch("line", user_id, &[item]).await {
         Ok(platform_message_id) => {
-            let _ = sqlx::query(
+            if let Err(error) = sqlx::query(
                 "UPDATE messages
                     SET is_sent = 1, sent_at = $1, delivery_status = 'sent',
                         platform_message_id = $2, updated_at = $3
@@ -64,11 +77,14 @@ async fn push_default_welcome(state: &AppState, message_id: &str, user_id: &str)
             .bind(&now)
             .bind(message_id)
             .execute(&state.db)
-            .await;
+            .await
+            {
+                tracing::warn!(error = %error, message_id, "default welcome sent-state update failed");
+            }
         }
         Err(error) => {
             tracing::warn!(error = %error, "LINE default welcome push failed");
-            let _ = sqlx::query(
+            if let Err(error) = sqlx::query(
                 "UPDATE messages
                     SET is_sent = 0, delivery_status = 'failed', updated_at = $1
                  WHERE id = $2",
@@ -76,7 +92,70 @@ async fn push_default_welcome(state: &AppState, message_id: &str, user_id: &str)
             .bind(&now)
             .bind(message_id)
             .execute(&state.db)
-            .await;
+            .await
+            {
+                tracing::warn!(error = %error, message_id, "default welcome failed-state update failed");
+            }
+        }
+    }
+}
+
+async fn notification_recipients(db: &PgPool, team_id: Option<i64>) -> sqlx::Result<Vec<String>> {
+    if let Some(team_id) = team_id {
+        sqlx::query_scalar(
+            "SELECT DISTINCT a.id
+               FROM team_members tm
+               JOIN agents a ON a.id = tm.agent_id
+              WHERE tm.team_id = $1
+                AND a.deleted_at IS NULL
+                AND a.is_active = 1",
+        )
+        .bind(team_id)
+        .fetch_all(db)
+        .await
+    } else {
+        notification_service::active_staff(db).await
+    }
+}
+
+async fn notify_staff(
+    state: &AppState,
+    team_id: Option<i64>,
+    kind: &'static str,
+    title: &'static str,
+    content: String,
+    data: Value,
+    priority: &'static str,
+) {
+    let recipients = match notification_recipients(&state.db, team_id).await {
+        Ok(recipients) => recipients,
+        Err(error) => {
+            tracing::warn!(error = %error, team_id = ?team_id, kind, "webhook notification recipients lookup failed");
+            return;
+        }
+    };
+    for recipient in recipients {
+        if let Err(error) = notification_service::create(
+            state,
+            NewNotification {
+                recipient: &recipient,
+                kind,
+                title,
+                content: &content,
+                data: Some(data.clone()),
+                priority,
+                expires_at: notification_service::expiry(24),
+            },
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %error,
+                recipient,
+                team_id = ?team_id,
+                kind,
+                "webhook notification create failed"
+            );
         }
     }
 }
@@ -133,7 +212,7 @@ pub async fn reserve_webhook_event(
     platform: &str,
     event_type: &str,
     event_key: &str,
-) -> Result<bool, String> {
+) -> IngestResult<bool> {
     if event_key.trim().is_empty() {
         return Ok(true);
     }
@@ -147,8 +226,7 @@ pub async fn reserve_webhook_event(
     .bind(event_key)
     .bind(now_iso())
     .execute(db)
-    .await
-    .map_err(|e| e.to_string())?;
+    .await?;
     Ok(result.rows_affected() == 1)
 }
 
@@ -188,7 +266,7 @@ async fn find_customer(
     db: &PgPool,
     platform: &str,
     user_id: &str,
-) -> Result<Option<CustomerRow>, String> {
+) -> IngestResult<Option<CustomerRow>> {
     sqlx::query_as(
         "SELECT id, display_name, source_team_id FROM customers
          WHERE platform = $1 AND platform_user_id = $2 AND deleted_at IS NULL",
@@ -197,7 +275,7 @@ async fn find_customer(
     .bind(user_id)
     .fetch_optional(db)
     .await
-    .map_err(|e| e.to_string())
+    .map_err(IngestError::Database)
 }
 
 async fn find_or_create_customer(
@@ -205,7 +283,7 @@ async fn find_or_create_customer(
     platform: &str,
     user_id: &str,
     display_name: &str,
-) -> Result<CustomerRow, String> {
+) -> IngestResult<CustomerRow> {
     if let Some(c) = find_customer(db, platform, user_id).await? {
         return Ok(c);
     }
@@ -218,8 +296,7 @@ async fn find_or_create_customer(
     .bind(display_name)
     .bind(now_iso())
     .fetch_one(db)
-    .await
-    .map_err(|e| e.to_string())?;
+    .await?;
     Ok(CustomerRow {
         id,
         display_name: Some(display_name.into()),
@@ -228,7 +305,7 @@ async fn find_or_create_customer(
 }
 
 /// Most recent customer-to-team routing assignment wins (CRD 2845-2846).
-async fn routed_team(db: &PgPool, platform: &str, user_id: &str) -> Result<Option<i64>, String> {
+async fn routed_team(db: &PgPool, platform: &str, user_id: &str) -> IngestResult<Option<i64>> {
     let _ = platform; // assignments are keyed by platform user id alone (CRD 5747)
     sqlx::query_scalar(
         "SELECT team_id FROM customer_team_assignments
@@ -238,7 +315,7 @@ async fn routed_team(db: &PgPool, platform: &str, user_id: &str) -> Result<Optio
     .bind(user_id)
     .fetch_optional(db)
     .await
-    .map_err(|e| e.to_string())
+    .map_err(IngestError::Database)
 }
 
 /// Find the customer's open (non-closed) conversation or create a new active
@@ -247,7 +324,7 @@ async fn find_or_create_open_conversation(
     db: &PgPool,
     customer_id: i64,
     team_id: Option<i64>,
-) -> Result<(String, Option<i64>), String> {
+) -> IngestResult<(String, Option<i64>)> {
     let existing: Option<(String, Option<i64>)> = sqlx::query_as(
         "SELECT id, team_id FROM conversations
          WHERE customer_id = $1 AND status != 'closed' AND deleted_at IS NULL
@@ -255,8 +332,7 @@ async fn find_or_create_open_conversation(
     )
     .bind(customer_id)
     .fetch_optional(db)
-    .await
-    .map_err(|e| e.to_string())?;
+    .await?;
 
     if let Some((id, existing_team)) = existing {
         if existing_team.is_none() {
@@ -267,7 +343,7 @@ async fn find_or_create_open_conversation(
                     .bind(&id)
                     .execute(db)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(IngestError::Database)?;
                 return Ok((id, Some(t)));
             }
         }
@@ -284,8 +360,7 @@ async fn find_or_create_open_conversation(
     .bind(team_id)
     .bind(now_iso())
     .execute(db)
-    .await
-    .map_err(|e| e.to_string())?;
+    .await?;
     Ok((id, team_id))
 }
 
@@ -313,20 +388,28 @@ async fn bump_received(db: &PgPool, team_id: i64, platform: &str, now: &str) {
         .unwrap_or(0);
     parsed["messagesReceived"] = json!(received + 1);
     parsed["lastMessageAt"] = json!(now);
-    let _ =
+    if let Err(error) =
         sqlx::query("UPDATE channel_integrations SET stats = $1, updated_at = $2 WHERE id = $3")
             .bind(parsed.to_string())
             .bind(now)
             .bind(id)
             .execute(db)
-            .await;
+            .await
+    {
+        tracing::warn!(
+            error = %error,
+            channel_integration_id = id,
+            platform,
+            "channel received counter update failed"
+        );
+    }
 }
 
 /// Ingest one normalized inbound message end-to-end (CRD 2761-2791).
 pub async fn ingest_message(
     state: &Arc<AppState>,
     inbound: InboundMessage<'_>,
-) -> Result<IngestOutcome, String> {
+) -> IngestResult<IngestOutcome> {
     if inbound.platform_user_id.is_empty() {
         return Ok(IngestOutcome::Skipped);
     }
@@ -339,7 +422,7 @@ pub async fn ingest_message(
                 .bind(mid)
                 .fetch_optional(&state.db)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(IngestError::Database)?;
         if seen.is_some() {
             // Redelivery recovery (CRD 1430-1433): the ledger's duplicate
             // guard keeps the auto-reply at-most-once.
@@ -379,7 +462,7 @@ pub async fn ingest_message(
             .fetch_profile(inbound.platform, inbound.platform_user_id)
             .await;
         if profile.display_name.is_some() || profile.avatar_url.is_some() {
-            let _ = sqlx::query(
+            if let Err(error) = sqlx::query(
                 "UPDATE customers
                     SET display_name = COALESCE($1, display_name),
                         avatar_url   = COALESCE($2, avatar_url),
@@ -391,7 +474,16 @@ pub async fn ingest_message(
             .bind(now_iso())
             .bind(customer.id)
             .execute(&state.db)
-            .await;
+            .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    customer_id = customer.id,
+                    platform = inbound.platform,
+                    platform_user_id = inbound.platform_user_id,
+                    "webhook customer profile update failed"
+                );
+            }
             if let Some(name) = profile.display_name {
                 customer.display_name = Some(name);
             }
@@ -453,23 +545,31 @@ pub async fn ingest_message(
                     .bind(mid)
                     .fetch_optional(&state.db)
                     .await
-                    .map_err(|e2| e2.to_string())?;
+                    .map_err(IngestError::Database)?;
             if existing.is_some() {
                 return Ok(IngestOutcome::Duplicate);
             }
         }
-        return Err(e.to_string());
+        return Err(IngestError::Database(e));
     }
 
     // The most-recent-activity marker advances only when a row was actually
     // inserted (CRD 2791).
-    let _ =
+    if let Err(error) =
         sqlx::query("UPDATE conversations SET last_message_at = $1, updated_at = $2 WHERE id = $3")
             .bind(&now)
             .bind(&now)
             .bind(&conversation_id)
             .execute(&state.db)
-            .await;
+            .await
+    {
+        tracing::warn!(
+            error = %error,
+            conversation_id,
+            message_id,
+            "webhook conversation activity update failed"
+        );
+    }
 
     if let Some(t) = team_id {
         bump_received(&state.db, t, inbound.platform, &now).await;
@@ -531,6 +631,41 @@ struct FollowupContext {
     now: String,
 }
 
+fn new_conversation_notification_content(platform: &str) -> String {
+    format!("{platform} 客戶傳來新訊息")
+}
+
+fn new_conversation_notification_data(ctx: &FollowupContext) -> Value {
+    json!({
+        "platform": ctx.platform,
+        "conversationId": ctx.conversation_id,
+        "messageId": ctx.message_id,
+        "customerId": ctx.customer_id,
+        "messageType": ctx.kind,
+    })
+}
+
+fn customer_followed_notification_content(user_id: &str) -> String {
+    format!("LINE 客戶 {user_id} 已加入好友")
+}
+
+fn customer_followed_notification_data(
+    user_id: &str,
+    customer_id: i64,
+    conversation_id: Option<&str>,
+    team_id: Option<i64>,
+    routed_via_tracking: bool,
+) -> Value {
+    json!({
+        "platform": "line",
+        "platformUserId": user_id,
+        "customerId": customer_id,
+        "conversationId": conversation_id,
+        "teamId": team_id,
+        "assignedViaTracking": routed_via_tracking,
+    })
+}
+
 fn spawn_followups(state: Arc<AppState>, ctx: FollowupContext) {
     tokio::spawn(async move {
         // New-message event for every successfully persisted inbound message
@@ -554,8 +689,24 @@ fn spawn_followups(state: Arc<AppState>, ctx: FollowupContext) {
         state
             .realtime
             .to_conversation(&ctx.conversation_id, "new_message", payload.clone());
+        crate::realtime::broadcaster::publish_remote_event(
+            &state,
+            "new_message",
+            payload.clone(),
+            vec![json!({ "type": "conversation", "ids": [&ctx.conversation_id] })],
+            "high",
+        )
+        .await;
         if let Some(t) = ctx.team_id {
-            state.realtime.to_team(t, "new_message", payload);
+            state.realtime.to_team(t, "new_message", payload.clone());
+            crate::realtime::broadcaster::publish_remote_event(
+                &state,
+                "new_message",
+                payload,
+                vec![json!({ "type": "team", "ids": [t] })],
+                "high",
+            )
+            .await;
         }
 
         // Latest-message cache refresh (CRD 2769).
@@ -582,7 +733,16 @@ fn spawn_followups(state: Arc<AppState>, ctx: FollowupContext) {
                 }));
             }
         }
-        // TODO(notifications): new-conversation notification trigger (CRD 2860).
+        notify_staff(
+            &state,
+            ctx.team_id,
+            "new_conversation",
+            "新客戶訊息",
+            new_conversation_notification_content(&ctx.platform),
+            new_conversation_notification_data(&ctx),
+            "normal",
+        )
+        .await;
 
         ensure_system_agent(&state.db).await;
         log_activity(
@@ -745,7 +905,7 @@ pub async fn mark_read_by_mid(db: &PgPool, platform: &str, platform_user_id: &st
 // ------------------------------------------------------------ follow / unfollow (LINE)
 
 /// Follow / opt-in lifecycle handling (CRD 2814-2826).
-pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<(), String> {
+pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> IngestResult<()> {
     let Some(user_id) = event["source"]["userId"].as_str().filter(|s| !s.is_empty()) else {
         return Ok(()); // absent end-user identifier: silently ignored (CRD 2826)
     };
@@ -795,7 +955,7 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
                 .bind(token)
                 .fetch_optional(&state.db)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(IngestError::Database)?;
                 routed_via_tracking = resolved.is_some();
                 resolved
             }
@@ -809,7 +969,7 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
     if routed_via_tracking {
         meta["assignedViaTracking"] = json!(true);
     }
-    let _ = sqlx::query(
+    if let Err(error) = sqlx::query(
         "UPDATE customers SET display_name = $1,
                 avatar_url = COALESCE($2, avatar_url),
                 metadata = (COALESCE(metadata, '{}')::jsonb || $3::jsonb)::text,
@@ -822,11 +982,19 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
     .bind(&now)
     .bind(customer.id)
     .execute(&state.db)
-    .await;
+    .await
+    {
+        tracing::warn!(
+            error = %error,
+            customer_id = customer.id,
+            user_id,
+            "line follow customer profile update failed"
+        );
+    }
 
     if routed_via_tracking {
         if let Some(t) = team_id {
-            let _ = sqlx::query(
+            if let Err(error) = sqlx::query(
                 "INSERT INTO customer_team_assignments
                     (id, platform_user_id, team_id, source, assigned_at)
                  VALUES ($1, $2, $3, 'inbound', $4)
@@ -838,7 +1006,15 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
             .bind(t)
             .bind(&now)
             .execute(&state.db)
-            .await;
+            .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    user_id,
+                    team_id = t,
+                    "line follow team assignment upsert failed"
+                );
+            }
         }
     }
 
@@ -913,14 +1089,22 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
         .await;
         if inserted.is_ok() {
             push_default_welcome(state, &welcome_id, user_id).await;
-            let _ = sqlx::query(
+            if let Err(error) = sqlx::query(
                 "UPDATE conversations SET last_message_at = $1, updated_at = $2 WHERE id = $3",
             )
             .bind(&now)
             .bind(&now)
             .bind(cid)
             .execute(&state.db)
-            .await;
+            .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    conversation_id = %cid,
+                    message_id = %welcome_id,
+                    "line follow welcome conversation activity update failed"
+                );
+            }
         }
     }
 
@@ -943,13 +1127,28 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> Result<
         None,
     )
     .await;
-    // TODO(notifications): customer-followed notification trigger (CRD 2825).
+    notify_staff(
+        state,
+        team_id,
+        "customer_followed",
+        "客戶已加入好友",
+        customer_followed_notification_content(user_id),
+        customer_followed_notification_data(
+            user_id,
+            customer.id,
+            conversation_id.as_deref(),
+            team_id,
+            routed_via_tracking,
+        ),
+        "normal",
+    )
+    .await;
 
     Ok(())
 }
 
 /// Unfollow / opt-out lifecycle handling (CRD 2828-2833).
-pub async fn handle_line_unfollow(state: &Arc<AppState>, event: &Value) -> Result<(), String> {
+pub async fn handle_line_unfollow(state: &Arc<AppState>, event: &Value) -> IngestResult<()> {
     let Some(user_id) = event["source"]["userId"].as_str().filter(|s| !s.is_empty()) else {
         return Ok(()); // absent identifier: ignored (CRD 2833)
     };
@@ -967,7 +1166,7 @@ pub async fn handle_line_unfollow(state: &Arc<AppState>, event: &Value) -> Resul
         .bind(customer.id)
         .execute(&state.db)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(IngestError::Database)?;
 
     // Activity entry; failure tolerated (CRD 2832).
     ensure_system_agent(&state.db).await;
@@ -989,7 +1188,11 @@ pub async fn handle_line_unfollow(state: &Arc<AppState>, event: &Value) -> Resul
 
 #[cfg(test)]
 mod placeholder_tests {
-    use super::{default_display_name, is_placeholder_name, line_lifecycle_event_key};
+    use super::{
+        customer_followed_notification_content, customer_followed_notification_data,
+        default_display_name, is_placeholder_name, line_lifecycle_event_key,
+        new_conversation_notification_content, new_conversation_notification_data, FollowupContext,
+    };
     use serde_json::json;
 
     #[test]
@@ -1040,6 +1243,55 @@ mod placeholder_tests {
         assert_eq!(
             line_lifecycle_event_key("follow", &event, "U1"),
             "follow:U1:123:reply:track"
+        );
+    }
+
+    #[test]
+    fn new_conversation_notification_payload_names_message_context() {
+        let ctx = FollowupContext {
+            platform: "line".into(),
+            conversation_id: "conv-1".into(),
+            message_id: "msg-1".into(),
+            customer_id: 42,
+            team_id: Some(7),
+            content: "hello".into(),
+            kind: "text".into(),
+            media: None,
+            now: "2026-01-01T00:00:00.000Z".into(),
+        };
+
+        assert_eq!(
+            new_conversation_notification_content(&ctx.platform),
+            "line 客戶傳來新訊息"
+        );
+        assert_eq!(
+            new_conversation_notification_data(&ctx),
+            json!({
+                "platform": "line",
+                "conversationId": "conv-1",
+                "messageId": "msg-1",
+                "customerId": 42,
+                "messageType": "text",
+            })
+        );
+    }
+
+    #[test]
+    fn customer_followed_notification_payload_keeps_routing_context() {
+        assert_eq!(
+            customer_followed_notification_content("U1"),
+            "LINE 客戶 U1 已加入好友"
+        );
+        assert_eq!(
+            customer_followed_notification_data("U1", 42, Some("conv-1"), Some(7), true),
+            json!({
+                "platform": "line",
+                "platformUserId": "U1",
+                "customerId": 42,
+                "conversationId": "conv-1",
+                "teamId": 7,
+                "assignedViaTracking": true,
+            })
         );
     }
 }

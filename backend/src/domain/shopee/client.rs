@@ -30,6 +30,21 @@ pub struct TokenResponse {
     pub expire_in: i64,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ClientError {
+    #[error("Shopee request failed: {0}")]
+    Request(#[from] reqwest::Error),
+    #[error("Shopee token call failed ({status}): {body}")]
+    Http {
+        status: reqwest::StatusCode,
+        body: String,
+    },
+    #[error("bad token JSON: {0}")]
+    TokenJson(reqwest::Error),
+    #[error("no access_token: {0}")]
+    MissingAccessToken(serde_json::Value),
+}
+
 impl ShopeeClient {
     pub fn from_config(config: &Config) -> Option<Self> {
         match (config.shopee_partner_id, config.shopee_partner_key.clone()) {
@@ -47,10 +62,19 @@ impl ShopeeClient {
     }
 
     /// Query string `partner_id&timestamp&sign[&access_token&shop_id]`.
-    pub fn signed_query(&self, path: &str, timestamp: i64, access_token: Option<&str>, shop_id: Option<i64>) -> String {
+    pub fn signed_query(
+        &self,
+        path: &str,
+        timestamp: i64,
+        access_token: Option<&str>,
+        shop_id: Option<i64>,
+    ) -> String {
         let base = base_string(self.partner_id, path, timestamp, access_token, shop_id);
         let s = sign(&self.partner_key, &base);
-        let mut q = format!("partner_id={}&timestamp={}&sign={}", self.partner_id, timestamp, s);
+        let mut q = format!(
+            "partner_id={}&timestamp={}&sign={}",
+            self.partner_id, timestamp, s
+        );
         if let (Some(tok), Some(shop)) = (access_token, shop_id) {
             q.push_str(&format!("&access_token={tok}&shop_id={shop}"));
         }
@@ -78,29 +102,39 @@ impl ShopeeClient {
         .to_string()
     }
 
-    async fn post_token(&self, path: &str, body: serde_json::Value) -> Result<TokenResponse, String> {
+    async fn post_token(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+    ) -> Result<TokenResponse, ClientError> {
         let ts = chrono::Utc::now().timestamp();
         let url = self.url(path, &self.signed_query(path, ts, None, None));
-        let resp = http_client()
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("Shopee request failed: {e}"))?;
+        let resp = http_client().post(&url).json(&body).send().await?;
         if !resp.status().is_success() {
             let status = resp.status();
             let txt = resp.text().await.unwrap_or_default();
-            return Err(format!("Shopee token call failed ({status}): {txt}"));
+            return Err(ClientError::Http { status, body: txt });
         }
-        let v: serde_json::Value = resp.json().await.map_err(|e| format!("bad token JSON: {e}"))?;
-        let access_token = v["access_token"].as_str().ok_or_else(|| format!("no access_token: {v}"))?.to_string();
+        let v: serde_json::Value = resp.json().await.map_err(ClientError::TokenJson)?;
+        let access_token = v["access_token"]
+            .as_str()
+            .ok_or_else(|| ClientError::MissingAccessToken(v.clone()))?
+            .to_string();
         let refresh_token = v["refresh_token"].as_str().unwrap_or_default().to_string();
         let expire_in = v["expire_in"].as_i64().unwrap_or(14400);
-        Ok(TokenResponse { access_token, refresh_token, expire_in })
+        Ok(TokenResponse {
+            access_token,
+            refresh_token,
+            expire_in,
+        })
     }
 
     /// Exchange an authorization code for tokens (`/api/v2/auth/token/get`).
-    pub async fn fetch_token(&self, code: &str, shop_id: i64) -> Result<TokenResponse, String> {
+    pub async fn fetch_token(
+        &self,
+        code: &str,
+        shop_id: i64,
+    ) -> Result<TokenResponse, ClientError> {
         self.post_token(
             "/api/v2/auth/token/get",
             json!({ "code": code, "shop_id": shop_id, "partner_id": self.partner_id }),
@@ -109,7 +143,11 @@ impl ShopeeClient {
     }
 
     /// Refresh an access token (`/api/v2/auth/access_token/get`).
-    pub async fn refresh(&self, refresh_token: &str, shop_id: i64) -> Result<TokenResponse, String> {
+    pub async fn refresh(
+        &self,
+        refresh_token: &str,
+        shop_id: i64,
+    ) -> Result<TokenResponse, ClientError> {
         self.post_token(
             "/api/v2/auth/access_token/get",
             json!({ "refresh_token": refresh_token, "shop_id": shop_id, "partner_id": self.partner_id }),
@@ -123,7 +161,11 @@ mod tests {
     use super::*;
 
     fn client() -> ShopeeClient {
-        ShopeeClient { partner_id: 1, partner_key: "key".into(), host: "https://h".into() }
+        ShopeeClient {
+            partner_id: 1,
+            partner_key: "key".into(),
+            host: "https://h".into(),
+        }
     }
 
     #[test]
@@ -156,7 +198,9 @@ mod tests {
         assert!(url.contains("partner_id=1"));
         assert!(url.contains("timestamp=1610000000"));
         assert!(url.contains("sign="));
-        assert!(url.contains("redirect=https%3A%2F%2Fapp.example%2Fapi%2Fshopee%2Fauth%2Fcallback%3Fstate%3Dabc"));
+        assert!(url.contains(
+            "redirect=https%3A%2F%2Fapp.example%2Fapi%2Fshopee%2Fauth%2Fcallback%3Fstate%3Dabc"
+        ));
     }
 
     #[test]

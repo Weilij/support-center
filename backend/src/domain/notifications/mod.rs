@@ -21,20 +21,38 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/notifications/info", get(handlers::module_info));
 
     let inbox = Router::new()
-        .route("/api/notifications", get(handlers::list).post(handlers::create))
-        .route("/api/notifications/", get(handlers::list).post(handlers::create))
+        .route(
+            "/api/notifications",
+            get(handlers::list).post(handlers::create),
+        )
+        .route(
+            "/api/notifications/",
+            get(handlers::list).post(handlers::create),
+        )
         .route("/api/notifications/bulk", post(handlers::bulk_create))
-        .route("/api/notifications/mark-all-read", put(handlers::mark_all_read))
+        .route(
+            "/api/notifications/mark-all-read",
+            put(handlers::mark_all_read),
+        )
         .route("/api/notifications/stats", get(handlers::stats))
-        .route("/api/notifications/unread-count", get(handlers::unread_count))
+        .route(
+            "/api/notifications/unread-count",
+            get(handlers::unread_count),
+        )
         .route("/api/notifications/recent", get(handlers::recent))
         .route("/api/notifications/cleanup", delete(handlers::cleanup))
-        .route("/api/notifications/channels/stats", get(handlers::channel_stats))
+        .route(
+            "/api/notifications/channels/stats",
+            get(handlers::channel_stats),
+        )
         .route(
             "/api/notifications/channels/{channelType}/test",
             post(handlers::test_channel),
         )
-        .route("/api/notifications/new-message", post(handlers::trigger_new_message))
+        .route(
+            "/api/notifications/new-message",
+            post(handlers::trigger_new_message),
+        )
         .route(
             "/api/notifications/conversation-assigned",
             post(handlers::trigger_assigned),
@@ -48,13 +66,18 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/notifications/{id}/read", put(handlers::mark_read));
 
     let reminder_routes = Router::new()
-        .route("/api/reminders", post(reminders::create).get(reminders::list))
+        .route(
+            "/api/reminders",
+            post(reminders::create).get(reminders::list),
+        )
         .route("/api/reminders/upcoming", get(reminders::upcoming))
         .route("/api/reminders/stats", get(reminders::stats))
         .route("/api/reminders/process", post(reminders::process))
         .route(
             "/api/reminders/{id}",
-            get(reminders::get_one).put(reminders::update).delete(reminders::delete),
+            get(reminders::get_one)
+                .put(reminders::update)
+                .delete(reminders::delete),
         )
         .route("/api/reminders/{id}/complete", put(reminders::complete));
 

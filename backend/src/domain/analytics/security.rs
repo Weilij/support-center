@@ -2,7 +2,6 @@
 //! and cors_events.
 
 use axum::extract::{Query, State};
-use axum::response::Response;
 use axum::Extension;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -11,11 +10,9 @@ use std::sync::Arc;
 
 use crate::db::now_iso;
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
-
-type Result<T = Response> = std::result::Result<T, AppError>;
 
 pub async fn health() -> Result {
     Ok(envelope::ok(json!({
@@ -39,13 +36,26 @@ pub struct RangeQuery {
     pub limit: Option<String>,
 }
 
-type WebhookEvent = (String, String, Option<String>, Option<String>, Option<String>, Option<String>, String);
-type CorsEvent = (String, String, Option<String>, Option<String>, Option<String>, Option<String>, String);
+type WebhookEvent = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+);
+type CorsEvent = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+);
 
-async fn gather(
-    state: &AppState,
-    hours: i64,
-) -> sqlx::Result<(Vec<WebhookEvent>, Vec<CorsEvent>)> {
+async fn gather(state: &AppState, hours: i64) -> sqlx::Result<(Vec<WebhookEvent>, Vec<CorsEvent>)> {
     let since = (chrono::Utc::now() - chrono::Duration::hours(hours)).to_rfc3339();
     // At most the most recent 1000 events of each kind (CRD 4454).
     let webhook: Vec<WebhookEvent> = sqlx::query_as(
@@ -81,7 +91,9 @@ async fn compute_metrics(state: &AppState, hours: i64) -> Result<Value> {
 
     let mut by_severity: HashMap<&str, i64> = HashMap::new();
     for (_, _, severity, ..) in &webhook {
-        *by_severity.entry(severity.as_deref().unwrap_or("low")).or_default() += 1;
+        *by_severity
+            .entry(severity.as_deref().unwrap_or("low"))
+            .or_default() += 1;
     }
     let mut by_type: HashMap<String, (i64, String)> = HashMap::new();
     for (_, kind, severity, ..) in &webhook {
@@ -91,17 +103,23 @@ async fn compute_metrics(state: &AppState, hours: i64) -> Result<Value> {
     }
     let mut top_threats: Vec<Value> = by_type
         .iter()
-        .map(|(kind, (count, severity))| json!({"type": kind, "count": count, "severity": severity}))
+        .map(
+            |(kind, (count, severity))| json!({"type": kind, "count": count, "severity": severity}),
+        )
         .collect();
     top_threats.sort_by_key(|t| -t["count"].as_i64().unwrap_or(0));
     top_threats.truncate(5);
 
-    let rejected: Vec<&CorsEvent> =
-        cors.iter().filter(|(_, outcome, ..)| outcome == "rejected").collect();
+    let rejected: Vec<&CorsEvent> = cors
+        .iter()
+        .filter(|(_, outcome, ..)| outcome == "rejected")
+        .collect();
     let allowed = cors.len() - rejected.len();
     let mut origin_counts: HashMap<String, i64> = HashMap::new();
     for (_, _, origin, ..) in &rejected {
-        *origin_counts.entry(origin.clone().unwrap_or_default()).or_default() += 1;
+        *origin_counts
+            .entry(origin.clone().unwrap_or_default())
+            .or_default() += 1;
     }
     let mut top_origins: Vec<Value> = origin_counts
         .iter()
@@ -124,7 +142,9 @@ async fn compute_metrics(state: &AppState, hours: i64) -> Result<Value> {
         .iter()
         .rev()
         .take(24)
-        .map(|(hour, (count, critical))| json!({"hour": hour, "count": count, "critical": critical}))
+        .map(
+            |(hour, (count, critical))| json!({"hour": hour, "count": count, "critical": critical}),
+        )
         .collect();
 
     let platform_counts = count_map(webhook.iter().map(|(_, _, _, p, ..)| p.as_deref()));
@@ -132,7 +152,11 @@ async fn compute_metrics(state: &AppState, hours: i64) -> Result<Value> {
         .iter()
         .map(|(platform, count)| {
             let c = count.as_i64().unwrap_or(0);
-            let pct = if webhook.is_empty() { 0.0 } else { c as f64 * 100.0 / webhook.len() as f64 };
+            let pct = if webhook.is_empty() {
+                0.0
+            } else {
+                c as f64 * 100.0 / webhook.len() as f64
+            };
             json!({"platform": platform, "count": c, "percentage": (pct * 100.0).round() / 100.0})
         })
         .collect();
@@ -213,7 +237,9 @@ pub async fn recent_events(
                 .parse()
                 .map_err(|_| AppError::BadRequest("limit must be a positive integer".into()))?;
             if parsed < 1 {
-                return Err(AppError::BadRequest("limit must be a positive integer".into()));
+                return Err(AppError::BadRequest(
+                    "limit must be a positive integer".into(),
+                ));
             }
             parsed.min(200) as usize
         }

@@ -40,8 +40,9 @@ async fn health_and_info_are_public() {
 #[tokio::test]
 async fn qr_code_test_endpoint_is_public() {
     let app = spawn_app().await;
-    let (status, body, _) =
-        app.request("POST", "/api/teams/7/qr-code-test", None, None).await;
+    let (status, body, _) = app
+        .request("POST", "/api/teams/7/qr-code-test", None, None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["test"], true);
     assert!(body["data"]["imageUrl"].as_str().unwrap().contains("qr"));
@@ -73,7 +74,9 @@ async fn list_teams_admin_paginates_filters_and_searches() {
         .await;
     assert_eq!(body["data"].as_array().unwrap().len(), 3);
 
-    let (_, body, _) = app.request("GET", "/api/teams?search=alpha", Some(&token), None).await;
+    let (_, body, _) = app
+        .request("GET", "/api/teams?search=alpha", Some(&token), None)
+        .await;
     let items = body["data"].as_array().unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["id"], alpha);
@@ -89,7 +92,9 @@ async fn list_teams_agent_with_primary_team_gets_only_that_team() {
     app.add_membership(&agent, team, "member", true).await;
     let token = app.login("agent@test.com", "password1").await.0;
 
-    let (status, body, _) = app.request("GET", "/api/teams?page=2&limit=1", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/teams?page=2&limit=1", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     let items = body["data"].as_array().unwrap();
     assert_eq!(items.len(), 1);
@@ -108,8 +113,9 @@ async fn get_team_returns_statistics() {
     let agent = app.seed_agent("m1@test.com", "password1", "agent").await;
     app.add_membership(&agent, team, "member", true).await;
 
-    let (status, body, _) =
-        app.request("GET", &format!("/api/teams/{team}"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", &format!("/api/teams/{team}"), Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["memberCount"], 1);
     assert_eq!(body["data"]["activeMemberCount"], 1);
@@ -121,19 +127,31 @@ async fn get_team_error_conditions() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
     // Non-integer id -> 400 (CRD 1835).
-    let (status, _, _) = app.request("GET", "/api/teams/abc", Some(&token), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/teams/abc", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Nonexistent -> 404.
-    let (status, _, _) = app.request("GET", "/api/teams/9999", Some(&token), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/teams/9999", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     // Non-member agent -> 403 access denied.
     let mine = app.seed_team("Mine").await;
     let other = app.seed_team("Other").await;
-    let agent = app.seed_agent("agent2@test.com", "password1", "agent").await;
+    let agent = app
+        .seed_agent("agent2@test.com", "password1", "agent")
+        .await;
     app.add_membership(&agent, mine, "member", true).await;
     let agent_token = app.login("agent2@test.com", "password1").await.0;
-    let (status, body, _) =
-        app.request("GET", &format!("/api/teams/{other}"), Some(&agent_token), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/teams/{other}"),
+            Some(&agent_token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["success"], false);
 }
@@ -161,12 +179,11 @@ async fn create_team_persists_and_attaches_qr_artifacts() {
     assert!(body["data"]["liffQr"]["imageUrl"].is_string());
 
     // Reversible create audit entry recorded (CRD 1840).
-    let audits: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM activity_logs WHERE action = 'team create'",
-    )
-    .fetch_one(&app.state.db)
-    .await
-    .unwrap();
+    let audits: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM activity_logs WHERE action = 'team create'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
     assert_eq!(audits, 1);
 }
 
@@ -176,26 +193,48 @@ async fn create_team_error_conditions() {
     let token = admin_token(&app).await;
     // Empty name -> 400.
     let (status, _, _) = app
-        .request("POST", "/api/teams", Some(&token), Some(json!({"name": "   "})))
+        .request(
+            "POST",
+            "/api/teams",
+            Some(&token),
+            Some(json!({"name": "   "})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Duplicate qrCode -> 409.
     let (status, _, _) = app
-        .request("POST", "/api/teams", Some(&token), Some(json!({"name": "A", "qrCode": "DUP"})))
+        .request(
+            "POST",
+            "/api/teams",
+            Some(&token),
+            Some(json!({"name": "A", "qrCode": "DUP"})),
+        )
         .await;
     assert_eq!(status, StatusCode::CREATED);
     let (status, _, _) = app
-        .request("POST", "/api/teams", Some(&token), Some(json!({"name": "B", "qrCode": "DUP"})))
+        .request(
+            "POST",
+            "/api/teams",
+            Some(&token),
+            Some(json!({"name": "B", "qrCode": "DUP"})),
+        )
         .await;
     assert_eq!(status, StatusCode::CONFLICT);
     // Malformed JSON -> 400.
-    let (status, _) = app.request_raw("POST", "/api/teams", Some(&token), "{not json").await;
+    let (status, _) = app
+        .request_raw("POST", "/api/teams", Some(&token), "{not json")
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Non-admin -> 403.
     app.seed_agent("plain@test.com", "password1", "agent").await;
     let agent_token = app.login("plain@test.com", "password1").await.0;
     let (status, _, _) = app
-        .request("POST", "/api/teams", Some(&agent_token), Some(json!({"name": "X"})))
+        .request(
+            "POST",
+            "/api/teams",
+            Some(&agent_token),
+            Some(json!({"name": "X"})),
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
@@ -239,18 +278,33 @@ async fn update_team_error_conditions() {
     app.add_membership(&member, team, "member", true).await;
     let member_token = app.login("mem@test.com", "password1").await.0;
     let (status, body, _) = app
-        .request("PUT", &format!("/api/teams/{team}"), Some(&member_token), Some(json!({"name": "x"})))
+        .request(
+            "PUT",
+            &format!("/api/teams/{team}"),
+            Some(&member_token),
+            Some(json!({"name": "x"})),
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(body["error"].as_str().unwrap().contains("supervisor"));
     // Nonexistent team -> 404.
     let (status, _, _) = app
-        .request("PUT", "/api/teams/9999", Some(&admin), Some(json!({"name": "x"})))
+        .request(
+            "PUT",
+            "/api/teams/9999",
+            Some(&admin),
+            Some(json!({"name": "x"})),
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     // Non-integer id -> 400.
     let (status, _, _) = app
-        .request("PUT", "/api/teams/xyz", Some(&admin), Some(json!({"name": "x"})))
+        .request(
+            "PUT",
+            "/api/teams/xyz",
+            Some(&admin),
+            Some(json!({"name": "x"})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -262,8 +316,9 @@ async fn delete_team_is_soft_and_audited() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
     let team = app.seed_team("Doomed").await;
-    let (status, body, _) =
-        app.request("DELETE", &format!("/api/teams/{team}"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request("DELETE", &format!("/api/teams/{team}"), Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], true);
     let deleted_at: Option<String> =
@@ -274,11 +329,13 @@ async fn delete_team_is_soft_and_audited() {
             .unwrap();
     assert!(deleted_at.is_some());
     // Subsequent reads see 404; nonexistent delete -> 404.
-    let (status, _, _) =
-        app.request("GET", &format!("/api/teams/{team}"), Some(&token), None).await;
+    let (status, _, _) = app
+        .request("GET", &format!("/api/teams/{team}"), Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _, _) =
-        app.request("DELETE", &format!("/api/teams/{team}"), Some(&token), None).await;
+    let (status, _, _) = app
+        .request("DELETE", &format!("/api/teams/{team}"), Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -289,8 +346,9 @@ async fn delete_team_requires_admin() {
     let sup = app.seed_agent("sup2@test.com", "password1", "agent").await;
     app.add_membership(&sup, team, "supervisor", true).await;
     let token = app.login("sup2@test.com", "password1").await.0;
-    let (status, _, _) =
-        app.request("DELETE", &format!("/api/teams/{team}"), Some(&token), None).await;
+    let (status, _, _) = app
+        .request("DELETE", &format!("/api/teams/{team}"), Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
@@ -307,15 +365,38 @@ async fn search_teams_matches_name_or_description() {
         .unwrap();
     app.seed_team("Gemini").await;
 
-    let (status, body, _) =
-        app.request("GET", "/api/teams/search/LUNAR", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/teams/search/LUNAR", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"].as_array().unwrap().len(), 1);
     assert_eq!(body["data"][0]["name"], "Apollo");
 
     // Blank query -> 400 (CRD 1867).
-    let (status, _, _) = app.request("GET", "/api/teams/search/%20", Some(&token), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/teams/search/%20", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn search_teams_is_scoped_for_non_admins() {
+    let app = spawn_app().await;
+    let visible = app.seed_team("Visible Lunar").await;
+    app.seed_team("Hidden Lunar").await;
+    let agent = app
+        .seed_agent("scoped-search@test.com", "password1", "agent")
+        .await;
+    app.add_membership(&agent, visible, "member", true).await;
+    let token = app.login("scoped-search@test.com", "password1").await.0;
+
+    let (status, body, _) = app
+        .request("GET", "/api/teams/search/LUNAR", Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["data"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], visible);
 }
 
 // ------------------------------------------------------------------------- statistics
@@ -331,7 +412,12 @@ async fn team_stats_reports_aggregates_and_period() {
     let token = app.login("stat@test.com", "password1").await.0;
 
     let (status, body, _) = app
-        .request("GET", &format!("/api/teams/{team}/stats?includeMembers=true"), Some(&token), None)
+        .request(
+            "GET",
+            &format!("/api/teams/{team}/stats?includeMembers=true"),
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["totalMembers"], 1);
@@ -347,14 +433,23 @@ async fn team_stats_error_conditions() {
     let app = spawn_app().await;
     let admin = admin_token(&app).await;
     // Nonexistent team surfaces as a server error (CRD 1874).
-    let (status, _, _) = app.request("GET", "/api/teams/9999/stats", Some(&admin), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/teams/9999/stats", Some(&admin), None)
+        .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     // Non-member agent -> 403.
     let team = app.seed_team("Closed").await;
-    app.seed_agent("nostats@test.com", "password1", "agent").await;
+    app.seed_agent("nostats@test.com", "password1", "agent")
+        .await;
     let token = app.login("nostats@test.com", "password1").await.0;
-    let (status, _, _) =
-        app.request("GET", &format!("/api/teams/{team}/stats"), Some(&token), None).await;
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &format!("/api/teams/{team}/stats"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
@@ -364,13 +459,17 @@ async fn all_team_stats_is_admin_only() {
     let admin = admin_token(&app).await;
     app.seed_team("One").await;
     app.seed_team("Two").await;
-    let (status, body, _) = app.request("GET", "/api/teams/stats/all", Some(&admin), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/teams/stats/all", Some(&admin), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"].as_array().unwrap().len(), 2);
 
     app.seed_agent("nob@test.com", "password1", "agent").await;
     let token = app.login("nob@test.com", "password1").await.0;
-    let (status, _, _) = app.request("GET", "/api/teams/stats/all", Some(&token), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/teams/stats/all", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
@@ -411,11 +510,21 @@ async fn transfer_validation_errors() {
     let app = spawn_app().await;
     let admin = admin_token(&app).await;
     let (status, _, _) = app
-        .request("POST", "/api/teams/transfer", Some(&admin), Some(json!({"toTeamId": 1, "agentIds": ["x"]})))
+        .request(
+            "POST",
+            "/api/teams/transfer",
+            Some(&admin),
+            Some(json!({"toTeamId": 1, "agentIds": ["x"]})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _, _) = app
-        .request("POST", "/api/teams/transfer", Some(&admin), Some(json!({"fromTeamId": 1, "toTeamId": 2, "agentIds": []})))
+        .request(
+            "POST",
+            "/api/teams/transfer",
+            Some(&admin),
+            Some(json!({"fromTeamId": 1, "toTeamId": 2, "agentIds": []})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -442,8 +551,14 @@ async fn team_members_lists_sorted_by_name() {
     app.add_membership(&b, team, "member", true).await;
     app.add_membership(&a, team, "lead", true).await;
 
-    let (status, body, _) =
-        app.request("GET", &format!("/api/teams/{team}/members"), Some(&admin), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/teams/{team}/members"),
+            Some(&admin),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     let items = body["data"].as_array().unwrap();
     assert_eq!(items.len(), 2);
@@ -462,7 +577,12 @@ async fn add_member_creates_primary_first_membership_without_duplicates() {
     let newbie = app.seed_agent("new@test.com", "password1", "agent").await;
 
     let (status, body, _) = app
-        .request("POST", &format!("/api/teams/{team}/members"), Some(&token), Some(json!({"agentId": newbie, "role": "supervisor"})))
+        .request(
+            "POST",
+            &format!("/api/teams/{team}/members"),
+            Some(&token),
+            Some(json!({"agentId": newbie, "role": "supervisor"})),
+        )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     // First-ever membership is primary; in-team role is base member despite the
@@ -473,7 +593,12 @@ async fn add_member_creates_primary_first_membership_without_duplicates() {
 
     // Repeating does not duplicate.
     let (status, _, _) = app
-        .request("POST", &format!("/api/teams/{team}/members"), Some(&token), Some(json!({"agentId": newbie})))
+        .request(
+            "POST",
+            &format!("/api/teams/{team}/members"),
+            Some(&token),
+            Some(json!({"agentId": newbie})),
+        )
         .await;
     assert_eq!(status, StatusCode::CREATED);
     let count: i64 = sqlx::query_scalar(
@@ -488,7 +613,12 @@ async fn add_member_creates_primary_first_membership_without_duplicates() {
 
     // Blank agent id -> 400 (CRD 1900).
     let (status, _, _) = app
-        .request("POST", &format!("/api/teams/{team}/members"), Some(&token), Some(json!({"agentId": "  "})))
+        .request(
+            "POST",
+            &format!("/api/teams/{team}/members"),
+            Some(&token),
+            Some(json!({"agentId": "  "})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -502,7 +632,12 @@ async fn add_member_requires_lead_rank() {
     let token = app.login("base@test.com", "password1").await.0;
     let other = app.seed_agent("o@test.com", "password1", "agent").await;
     let (status, _, _) = app
-        .request("POST", &format!("/api/teams/{team}/members"), Some(&token), Some(json!({"agentId": other})))
+        .request(
+            "POST",
+            &format!("/api/teams/{team}/members"),
+            Some(&token),
+            Some(json!({"agentId": other})),
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
@@ -535,7 +670,12 @@ async fn batch_add_members_adds_and_skips() {
 
     // All skipped -> 200 (CRD 1906).
     let (status, _, _) = app
-        .request("POST", &format!("/api/teams/{team}/members/batch"), Some(&admin), Some(json!({"agentIds": [existing]})))
+        .request(
+            "POST",
+            &format!("/api/teams/{team}/members/batch"),
+            Some(&admin),
+            Some(json!({"agentIds": [existing]})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
 }
@@ -547,20 +687,34 @@ async fn batch_add_members_validation_errors() {
     let team = app.seed_team("Crew").await;
     let path = format!("/api/teams/{team}/members/batch");
     // Empty array -> 400.
-    let (status, _, _) = app.request("POST", &path, Some(&admin), Some(json!({"agentIds": []}))).await;
+    let (status, _, _) = app
+        .request("POST", &path, Some(&admin), Some(json!({"agentIds": []})))
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Over 50 -> 400.
     let many: Vec<String> = (0..51).map(|i| format!("id-{i}")).collect();
-    let (status, _, _) = app.request("POST", &path, Some(&admin), Some(json!({"agentIds": many}))).await;
+    let (status, _, _) = app
+        .request("POST", &path, Some(&admin), Some(json!({"agentIds": many})))
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Invalid role -> 400.
     let (status, _, _) = app
-        .request("POST", &path, Some(&admin), Some(json!({"agentIds": ["x"], "roleInTeam": "boss"})))
+        .request(
+            "POST",
+            &path,
+            Some(&admin),
+            Some(json!({"agentIds": ["x"], "roleInTeam": "boss"})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Nonexistent team -> 404.
     let (status, _, _) = app
-        .request("POST", "/api/teams/9999/members/batch", Some(&admin), Some(json!({"agentIds": ["x"]})))
+        .request(
+            "POST",
+            "/api/teams/9999/members/batch",
+            Some(&admin),
+            Some(json!({"agentIds": ["x"]})),
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -589,9 +743,45 @@ async fn update_team_member_updates_global_account() {
     assert_eq!(role, "member");
     // Blank agent id -> 400.
     let (status, _, _) = app
-        .request("PUT", &format!("/api/teams/{team}/members/%20"), Some(&admin), Some(json!({"isActive": true})))
+        .request(
+            "PUT",
+            &format!("/api/teams/{team}/members/%20"),
+            Some(&admin),
+            Some(json!({"isActive": true})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn update_team_member_global_account_fields_require_admin() {
+    let app = spawn_app().await;
+    let team = app.seed_team("Crew").await;
+    let lead = app
+        .seed_agent("team-lead@test.com", "password1", "agent")
+        .await;
+    let target = app
+        .seed_agent("target-global@test.com", "password1", "agent")
+        .await;
+    app.add_membership(&lead, team, "lead", true).await;
+    app.add_membership(&target, team, "member", true).await;
+    let token = app.login("team-lead@test.com", "password1").await.0;
+
+    let (status, _, _) = app
+        .request(
+            "PUT",
+            &format!("/api/teams/{team}/members/{target}"),
+            Some(&token),
+            Some(json!({"role": "admin", "isActive": false})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let row: (String, i64) = sqlx::query_as("SELECT role, is_active FROM agents WHERE id = $1")
+        .bind(&target)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+    assert_eq!(row, ("agent".to_string(), 1));
 }
 
 #[tokio::test]
@@ -605,7 +795,12 @@ async fn remove_team_member_promotes_new_primary() {
     app.add_membership(&agent, b, "member", false).await;
 
     let (status, body, _) = app
-        .request("DELETE", &format!("/api/teams/{a}/members/{agent}"), Some(&admin), None)
+        .request(
+            "DELETE",
+            &format!("/api/teams/{a}/members/{agent}"),
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["success"], true);
@@ -615,7 +810,12 @@ async fn remove_team_member_promotes_new_primary() {
 
     // Removing an agent not in the team is a no-success outcome (CRD 1922).
     let (status, body, _) = app
-        .request("DELETE", &format!("/api/teams/{a}/members/{agent}"), Some(&admin), None)
+        .request(
+            "DELETE",
+            &format!("/api/teams/{a}/members/{agent}"),
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], false);
@@ -643,7 +843,12 @@ async fn bulk_remove_members_reports_failures() {
 
     // Empty -> 400; over 50 -> 400.
     let (status, _, _) = app
-        .request("POST", &format!("/api/teams/{team}/members/bulk-remove"), Some(&admin), Some(json!({"agentIds": []})))
+        .request(
+            "POST",
+            &format!("/api/teams/{team}/members/bulk-remove"),
+            Some(&admin),
+            Some(json!({"agentIds": []})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -658,7 +863,9 @@ async fn list_all_members_is_admin_only_and_enriched() {
     let agent = app.seed_agent("enr@test.com", "password1", "agent").await;
     app.add_membership(&agent, team, "lead", true).await;
 
-    let (status, body, _) = app.request("GET", "/api/teams/members", Some(&admin), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/teams/members", Some(&admin), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     let items = body["data"].as_array().unwrap();
     assert_eq!(items.len(), 2);
@@ -669,7 +876,9 @@ async fn list_all_members_is_admin_only_and_enriched() {
     assert_eq!(enriched["teams"][0]["roleInTeam"], "lead");
 
     let token = app.login("enr@test.com", "password1").await.0;
-    let (status, _, _) = app.request("GET", "/api/teams/members", Some(&token), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/teams/members", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
@@ -678,19 +887,30 @@ async fn check_email_reports_active_and_deleted_accounts() {
     let app = spawn_app().await;
     let admin = admin_token(&app).await;
     // Missing email -> 400.
-    let (status, _, _) =
-        app.request("GET", "/api/teams/members/check-email", Some(&admin), None).await;
+    let (status, _, _) = app
+        .request("GET", "/api/teams/members/check-email", Some(&admin), None)
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Unknown email.
     let (status, body, _) = app
-        .request("GET", "/api/teams/members/check-email?email=nobody@x.com", Some(&admin), None)
+        .request(
+            "GET",
+            "/api/teams/members/check-email?email=nobody@x.com",
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["exists"], false);
     // Active account.
     app.seed_agent("known@test.com", "password1", "agent").await;
     let (_, body, _) = app
-        .request("GET", "/api/teams/members/check-email?email=known@test.com", Some(&admin), None)
+        .request(
+            "GET",
+            "/api/teams/members/check-email?email=known@test.com",
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(body["data"]["exists"], true);
     assert_eq!(body["data"]["isDeleted"], false);
@@ -702,7 +922,12 @@ async fn check_email_reports_active_and_deleted_accounts() {
         .await
         .unwrap();
     let (_, body, _) = app
-        .request("GET", "/api/teams/members/check-email?email=gone@test.com", Some(&admin), None)
+        .request(
+            "GET",
+            "/api/teams/members/check-email?email=gone@test.com",
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(body["data"]["exists"], true);
     assert_eq!(body["data"]["isDeleted"], true);
@@ -762,7 +987,12 @@ async fn create_member_with_team_and_reactivation() {
 
     // Missing required fields -> 400.
     let (status, _, _) = app
-        .request("POST", "/api/teams/members", Some(&admin), Some(json!({"email": "p@x.com"})))
+        .request(
+            "POST",
+            "/api/teams/members",
+            Some(&admin),
+            Some(json!({"email": "p@x.com"})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -786,21 +1016,37 @@ async fn set_member_status_with_guards() {
 
     // isActive omitted -> 400.
     let (status, _, _) = app
-        .request("PUT", &format!("/api/teams/members/{target}/status"), Some(&admin), Some(json!({})))
+        .request(
+            "PUT",
+            &format!("/api/teams/members/{target}/status"),
+            Some(&admin),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Own account -> 403.
-    let admin_id: String = sqlx::query_scalar("SELECT id FROM agents WHERE email = 'admin@test.com'")
-        .fetch_one(&app.state.db)
-        .await
-        .unwrap();
+    let admin_id: String =
+        sqlx::query_scalar("SELECT id FROM agents WHERE email = 'admin@test.com'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
     let (status, _, _) = app
-        .request("PUT", &format!("/api/teams/members/{admin_id}/status"), Some(&admin), Some(json!({"isActive": false})))
+        .request(
+            "PUT",
+            &format!("/api/teams/members/{admin_id}/status"),
+            Some(&admin),
+            Some(json!({"isActive": false})),
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     // Unknown member -> 404.
     let (status, _, _) = app
-        .request("PUT", "/api/teams/members/ghost/status", Some(&admin), Some(json!({"isActive": true})))
+        .request(
+            "PUT",
+            "/api/teams/members/ghost/status",
+            Some(&admin),
+            Some(json!({"isActive": true})),
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -812,28 +1058,49 @@ async fn set_member_role_with_guards() {
     let target = app.seed_agent("rl@test.com", "password1", "agent").await;
 
     let (status, body, _) = app
-        .request("PUT", &format!("/api/teams/members/{target}/role"), Some(&admin), Some(json!({"role": "admin"})))
+        .request(
+            "PUT",
+            &format!("/api/teams/members/{target}/role"),
+            Some(&admin),
+            Some(json!({"role": "admin"})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["role"], "admin");
 
     // role omitted -> 400.
     let (status, _, _) = app
-        .request("PUT", &format!("/api/teams/members/{target}/role"), Some(&admin), Some(json!({})))
+        .request(
+            "PUT",
+            &format!("/api/teams/members/{target}/role"),
+            Some(&admin),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Own account -> 403.
-    let admin_id: String = sqlx::query_scalar("SELECT id FROM agents WHERE email = 'admin@test.com'")
-        .fetch_one(&app.state.db)
-        .await
-        .unwrap();
+    let admin_id: String =
+        sqlx::query_scalar("SELECT id FROM agents WHERE email = 'admin@test.com'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
     let (status, _, _) = app
-        .request("PUT", &format!("/api/teams/members/{admin_id}/role"), Some(&admin), Some(json!({"role": "agent"})))
+        .request(
+            "PUT",
+            &format!("/api/teams/members/{admin_id}/role"),
+            Some(&admin),
+            Some(json!({"role": "agent"})),
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     // Unknown member -> 404.
     let (status, _, _) = app
-        .request("PUT", "/api/teams/members/ghost/role", Some(&admin), Some(json!({"role": "agent"})))
+        .request(
+            "PUT",
+            "/api/teams/members/ghost/role",
+            Some(&admin),
+            Some(json!({"role": "agent"})),
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -856,7 +1123,12 @@ async fn update_member_account_applies_subset() {
     assert_eq!(body["data"]["email"], "renamed@test.com");
     // Unknown member -> 404.
     let (status, _, _) = app
-        .request("PUT", "/api/teams/members/ghost", Some(&admin), Some(json!({"displayName": "X"})))
+        .request(
+            "PUT",
+            "/api/teams/members/ghost",
+            Some(&admin),
+            Some(json!({"displayName": "X"})),
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -877,7 +1149,12 @@ async fn delete_member_account_is_permanent() {
     .unwrap();
 
     let (status, body, _) = app
-        .request("DELETE", &format!("/api/teams/members/{target}"), Some(&admin), None)
+        .request(
+            "DELETE",
+            &format!("/api/teams/members/{target}"),
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["deletedMemberId"], target);
@@ -887,23 +1164,32 @@ async fn delete_member_account_is_permanent() {
         .await
         .unwrap();
     assert_eq!(remaining, 0);
-    let notifications: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE agent_id = $1")
-        .bind(&target)
-        .fetch_one(&app.state.db)
-        .await
-        .unwrap();
+    let notifications: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE agent_id = $1")
+            .bind(&target)
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
     assert_eq!(notifications, 0);
 
     // Own account -> 403; unknown -> 404.
-    let admin_id: String = sqlx::query_scalar("SELECT id FROM agents WHERE email = 'admin@test.com'")
-        .fetch_one(&app.state.db)
-        .await
-        .unwrap();
-    let (status, _, _) =
-        app.request("DELETE", &format!("/api/teams/members/{admin_id}"), Some(&admin), None).await;
+    let admin_id: String =
+        sqlx::query_scalar("SELECT id FROM agents WHERE email = 'admin@test.com'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    let (status, _, _) = app
+        .request(
+            "DELETE",
+            &format!("/api/teams/members/{admin_id}"),
+            Some(&admin),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    let (status, _, _) =
-        app.request("DELETE", "/api/teams/members/ghost", Some(&admin), None).await;
+    let (status, _, _) = app
+        .request("DELETE", "/api/teams/members/ghost", Some(&admin), None)
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -926,15 +1212,26 @@ async fn bulk_delete_members_with_guards() {
 
     // Empty -> 400; including own id -> 403.
     let (status, _, _) = app
-        .request("POST", "/api/teams/members/bulk-delete", Some(&admin), Some(json!({"memberIds": []})))
+        .request(
+            "POST",
+            "/api/teams/members/bulk-delete",
+            Some(&admin),
+            Some(json!({"memberIds": []})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    let admin_id: String = sqlx::query_scalar("SELECT id FROM agents WHERE email = 'admin@test.com'")
-        .fetch_one(&app.state.db)
-        .await
-        .unwrap();
+    let admin_id: String =
+        sqlx::query_scalar("SELECT id FROM agents WHERE email = 'admin@test.com'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
     let (status, _, _) = app
-        .request("POST", "/api/teams/members/bulk-delete", Some(&admin), Some(json!({"memberIds": [admin_id]})))
+        .request(
+            "POST",
+            "/api/teams/members/bulk-delete",
+            Some(&admin),
+            Some(json!({"memberIds": [admin_id]})),
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
@@ -943,10 +1240,11 @@ async fn bulk_delete_members_with_guards() {
 async fn bulk_update_members_skips_self_and_validates() {
     let app = spawn_app().await;
     let admin = admin_token(&app).await;
-    let admin_id: String = sqlx::query_scalar("SELECT id FROM agents WHERE email = 'admin@test.com'")
-        .fetch_one(&app.state.db)
-        .await
-        .unwrap();
+    let admin_id: String =
+        sqlx::query_scalar("SELECT id FROM agents WHERE email = 'admin@test.com'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
     let a = app.seed_agent("bu1@test.com", "password1", "agent").await;
 
     let (status, body, _) = app
@@ -973,11 +1271,21 @@ async fn bulk_update_members_skips_self_and_validates() {
 
     // No update field -> 400; invalid role -> 400.
     let (status, _, _) = app
-        .request("POST", "/api/teams/members/bulk-update", Some(&admin), Some(json!({"memberIds": [a], "updates": {}})))
+        .request(
+            "POST",
+            "/api/teams/members/bulk-update",
+            Some(&admin),
+            Some(json!({"memberIds": [a], "updates": {}})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _, _) = app
-        .request("POST", "/api/teams/members/bulk-update", Some(&admin), Some(json!({"memberIds": [a], "updates": {"role": "boss"}})))
+        .request(
+            "POST",
+            "/api/teams/members/bulk-update",
+            Some(&admin),
+            Some(json!({"memberIds": [a], "updates": {"role": "boss"}})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -1021,7 +1329,12 @@ async fn batch_edit_members_and_undo_restore() {
 
     // Undo restores prior profile and memberships (CRD 2007).
     let (status, body, _) = app
-        .request("POST", "/api/teams/members/batch-edit/undo", Some(&admin), Some(json!({"undoToken": undo_token})))
+        .request(
+            "POST",
+            "/api/teams/members/batch-edit/undo",
+            Some(&admin),
+            Some(json!({"undoToken": undo_token})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["restoredCount"], 1);
@@ -1037,7 +1350,12 @@ async fn batch_edit_members_and_undo_restore() {
 
     // A consumed token is invalid (CRD 2007).
     let (status, _, _) = app
-        .request("POST", "/api/teams/members/batch-edit/undo", Some(&admin), Some(json!({"undoToken": body["data"]["results"][0]["memberId"]})))
+        .request(
+            "POST",
+            "/api/teams/members/batch-edit/undo",
+            Some(&admin),
+            Some(json!({"undoToken": body["data"]["results"][0]["memberId"]})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -1048,16 +1366,28 @@ async fn batch_edit_validation_errors() {
     let admin = admin_token(&app).await;
     let path = "/api/teams/members/batch-edit";
     // Empty list -> 400.
-    let (status, _, _) = app.request("POST", path, Some(&admin), Some(json!({"members": []}))).await;
+    let (status, _, _) = app
+        .request("POST", path, Some(&admin), Some(json!({"members": []})))
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Missing memberId -> 400.
     let (status, _, _) = app
-        .request("POST", path, Some(&admin), Some(json!({"members": [{"profile": {"displayName": "X"}}]})))
+        .request(
+            "POST",
+            path,
+            Some(&admin),
+            Some(json!({"members": [{"profile": {"displayName": "X"}}]})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // No actual changes -> 400.
     let (status, _, _) = app
-        .request("POST", path, Some(&admin), Some(json!({"members": [{"memberId": "someone"}]})))
+        .request(
+            "POST",
+            path,
+            Some(&admin),
+            Some(json!({"members": [{"memberId": "someone"}]})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -1066,7 +1396,8 @@ async fn batch_edit_validation_errors() {
 async fn undo_is_owner_bound() {
     let app = spawn_app().await;
     let admin = admin_token(&app).await;
-    app.seed_agent("admin2@test.com", "password1", "admin").await;
+    app.seed_agent("admin2@test.com", "password1", "admin")
+        .await;
     let admin2 = app.login("admin2@test.com", "password1").await.0;
     let target = app.seed_agent("ob@test.com", "password1", "agent").await;
 
@@ -1082,17 +1413,32 @@ async fn undo_is_owner_bound() {
 
     // Missing token -> 400.
     let (status, _, _) = app
-        .request("POST", "/api/teams/members/batch-edit/undo", Some(&admin), Some(json!({})))
+        .request(
+            "POST",
+            "/api/teams/members/batch-edit/undo",
+            Some(&admin),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Different user -> 403, token survives.
     let (status, _, _) = app
-        .request("POST", "/api/teams/members/batch-edit/undo", Some(&admin2), Some(json!({"undoToken": token})))
+        .request(
+            "POST",
+            "/api/teams/members/batch-edit/undo",
+            Some(&admin2),
+            Some(json!({"undoToken": token})),
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     // Original user still succeeds.
     let (status, _, _) = app
-        .request("POST", "/api/teams/members/batch-edit/undo", Some(&admin), Some(json!({"undoToken": token})))
+        .request(
+            "POST",
+            "/api/teams/members/batch-edit/undo",
+            Some(&admin),
+            Some(json!({"undoToken": token})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
 }
@@ -1111,18 +1457,34 @@ async fn agent_teams_visibility_scoping() {
     let own_token = app.login("vis@test.com", "password1").await.0;
 
     // Admin sees anyone's teams.
-    let (status, body, _) =
-        app.request("GET", &format!("/api/teams/agent-teams/{agent}"), Some(&admin), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/teams/agent-teams/{agent}"),
+            Some(&admin),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"][0]["teamName"], "Visible");
     // Self access OK.
     let (status, _, _) = app
-        .request("GET", &format!("/api/teams/agent-teams/{agent}"), Some(&own_token), None)
+        .request(
+            "GET",
+            &format!("/api/teams/agent-teams/{agent}"),
+            Some(&own_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     // Another agent -> 403 (CRD 2034).
     let (status, _, _) = app
-        .request("GET", &format!("/api/teams/agent-teams/{agent}"), Some(&other_token), None)
+        .request(
+            "GET",
+            &format!("/api/teams/agent-teams/{agent}"),
+            Some(&other_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let _ = other;
@@ -1139,13 +1501,55 @@ async fn team_members_detail_includes_multi_team_info() {
     app.add_membership(&agent, b, "lead", false).await;
 
     let (status, body, _) = app
-        .request("GET", &format!("/api/teams/agent-teams/team/{a}/members"), Some(&admin), None)
+        .request(
+            "GET",
+            &format!("/api/teams/agent-teams/team/{a}/members"),
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     let items = body["data"].as_array().unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["teams"].as_array().unwrap().len(), 2);
     assert_eq!(items[0]["primaryTeamId"], a);
+}
+
+#[tokio::test]
+async fn team_members_detail_requires_team_access() {
+    let app = spawn_app().await;
+    let team = app.seed_team("Private").await;
+    let member = app
+        .seed_agent("private-member@test.com", "password1", "agent")
+        .await;
+    app.add_membership(&member, team, "member", true).await;
+    let outsider = app
+        .seed_agent("private-outsider@test.com", "password1", "agent")
+        .await;
+    let outsider_token = app.login("private-outsider@test.com", "password1").await.0;
+    let member_token = app.login("private-member@test.com", "password1").await.0;
+
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &format!("/api/teams/agent-teams/team/{team}/members"),
+            Some(&outsider_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/teams/agent-teams/team/{team}/members"),
+            Some(&member_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"].as_array().unwrap().len(), 1);
+    let _ = outsider;
 }
 
 #[tokio::test]
@@ -1175,11 +1579,21 @@ async fn join_team_creates_membership_with_primary_handling() {
 
     // Already a member -> 409; missing teamId -> 400.
     let (status, _, _) = app
-        .request("POST", &format!("/api/teams/agent-teams/{agent}/join"), Some(&admin), Some(json!({"teamId": b})))
+        .request(
+            "POST",
+            &format!("/api/teams/agent-teams/{agent}/join"),
+            Some(&admin),
+            Some(json!({"teamId": b})),
+        )
         .await;
     assert_eq!(status, StatusCode::CONFLICT);
     let (status, _, _) = app
-        .request("POST", &format!("/api/teams/agent-teams/{agent}/join"), Some(&admin), Some(json!({})))
+        .request(
+            "POST",
+            &format!("/api/teams/agent-teams/{agent}/join"),
+            Some(&admin),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -1211,7 +1625,12 @@ async fn join_multiple_adds_and_skips() {
 
     // Missing/empty teamIds -> 400.
     let (status, _, _) = app
-        .request("POST", &format!("/api/teams/agent-teams/{agent}/join-multiple"), Some(&admin), Some(json!({"teamIds": []})))
+        .request(
+            "POST",
+            &format!("/api/teams/agent-teams/{agent}/join-multiple"),
+            Some(&admin),
+            Some(json!({"teamIds": []})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -1229,7 +1648,12 @@ async fn leave_team_promotes_notifies_and_counts_conversations() {
     app.seed_conversation(customer, Some(a), "active").await;
 
     let (status, body, _) = app
-        .request("DELETE", &format!("/api/teams/agent-teams/{agent}/leave/{a}"), Some(&admin), None)
+        .request(
+            "DELETE",
+            &format!("/api/teams/agent-teams/{agent}/leave/{a}"),
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["teamName"], "Main");
@@ -1274,7 +1698,12 @@ async fn update_membership_role_and_primary() {
 
     // Missing membership surfaces as a server error (CRD 2067).
     let (status, _, _) = app
-        .request("PUT", &format!("/api/teams/agent-teams/ghost/role/{b}"), Some(&admin), Some(json!({"roleInTeam": "lead"})))
+        .request(
+            "PUT",
+            &format!("/api/teams/agent-teams/ghost/role/{b}"),
+            Some(&admin),
+            Some(json!({"roleInTeam": "lead"})),
+        )
         .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
@@ -1290,7 +1719,12 @@ async fn set_primary_team_requires_membership() {
     app.add_membership(&agent, b, "member", false).await;
 
     let (status, _, _) = app
-        .request("PUT", &format!("/api/teams/agent-teams/{agent}/primary/{b}"), Some(&admin), None)
+        .request(
+            "PUT",
+            &format!("/api/teams/agent-teams/{agent}/primary/{b}"),
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     let (_, a_primary) = membership(&app, &agent, a).await.unwrap();
@@ -1299,7 +1733,12 @@ async fn set_primary_team_requires_membership() {
 
     // Not a member -> server error (CRD 2074).
     let (status, _, _) = app
-        .request("PUT", &format!("/api/teams/agent-teams/ghost/primary/{b}"), Some(&admin), None)
+        .request(
+            "PUT",
+            &format!("/api/teams/agent-teams/ghost/primary/{b}"),
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
@@ -1328,12 +1767,24 @@ async fn generate_and_list_team_qr_codes() {
     assert_eq!(body["data"]["isActive"], true);
 
     // Missing body is tolerated (CRD 2079).
-    let (status, _) =
-        app.request_raw("POST", &format!("/api/teams/{team}/qr-code"), Some(&token), "").await;
+    let (status, _) = app
+        .request_raw(
+            "POST",
+            &format!("/api/teams/{team}/qr-code"),
+            Some(&token),
+            "",
+        )
+        .await;
     assert_eq!(status, StatusCode::CREATED);
 
-    let (status, body, _) =
-        app.request("GET", &format!("/api/teams/{team}/qr-codes"), Some(&token), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/teams/{team}/qr-codes"),
+            Some(&token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"].as_array().unwrap().len(), 2);
 }
@@ -1344,31 +1795,64 @@ async fn latest_and_fast_qr_lookup() {
     let admin = admin_token(&app).await;
     // Team with no QR at all -> 404.
     let bare = app.seed_team("Bare").await;
-    let (status, _, _) =
-        app.request("GET", &format!("/api/teams/{bare}/qr-code/latest"), Some(&admin), None).await;
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &format!("/api/teams/{bare}/qr-code/latest"),
+            Some(&admin),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _, _) =
-        app.request("GET", &format!("/api/teams/{bare}/qr-code/fast"), Some(&admin), None).await;
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &format!("/api/teams/{bare}/qr-code/fast"),
+            Some(&admin),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // Generate a QR record (team image not yet cached) -> sourced from records.
     let (_, created, _) = app
-        .request("POST", &format!("/api/teams/{bare}/qr-code"), Some(&admin), Some(json!({})))
+        .request(
+            "POST",
+            &format!("/api/teams/{bare}/qr-code"),
+            Some(&admin),
+            Some(json!({})),
+        )
         .await;
     assert!(created["data"]["imageUrl"].is_string());
-    let (status, body, _) =
-        app.request("GET", &format!("/api/teams/{bare}/qr-code/latest"), Some(&admin), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/teams/{bare}/qr-code/latest"),
+            Some(&admin),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["fromCache"], false);
     assert!(body["data"]["qrCodeImage"].is_string());
 
     // A team created through the API caches its QR image -> cache hit.
     let (_, team_body, _) = app
-        .request("POST", "/api/teams", Some(&admin), Some(json!({"name": "Cached"})))
+        .request(
+            "POST",
+            "/api/teams",
+            Some(&admin),
+            Some(json!({"name": "Cached"})),
+        )
         .await;
     let cached_id = team_body["data"]["id"].as_i64().unwrap();
     let (status, body, _) = app
-        .request("GET", &format!("/api/teams/{cached_id}/qr-code/fast"), Some(&admin), None)
+        .request(
+            "GET",
+            &format!("/api/teams/{cached_id}/qr-code/fast"),
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["source"], "cache");
@@ -1380,12 +1864,22 @@ async fn deactivate_qr_code() {
     let admin = admin_token(&app).await;
     let team = app.seed_team("QR").await;
     let (_, created, _) = app
-        .request("POST", &format!("/api/teams/{team}/qr-code"), Some(&admin), Some(json!({})))
+        .request(
+            "POST",
+            &format!("/api/teams/{team}/qr-code"),
+            Some(&admin),
+            Some(json!({})),
+        )
         .await;
     let qr_id = created["data"]["id"].as_str().unwrap().to_string();
 
     let (status, _, _) = app
-        .request("PUT", &format!("/api/teams/{team}/qr-codes/{qr_id}/deactivate"), Some(&admin), None)
+        .request(
+            "PUT",
+            &format!("/api/teams/{team}/qr-codes/{qr_id}/deactivate"),
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     let active: i64 = sqlx::query_scalar("SELECT is_active FROM qr_codes WHERE id = $1")
@@ -1397,11 +1891,21 @@ async fn deactivate_qr_code() {
 
     // Blank QR id -> 400 (CRD 2106); unknown -> 404.
     let (status, _, _) = app
-        .request("PUT", &format!("/api/teams/{team}/qr-codes/%20/deactivate"), Some(&admin), None)
+        .request(
+            "PUT",
+            &format!("/api/teams/{team}/qr-codes/%20/deactivate"),
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _, _) = app
-        .request("PUT", &format!("/api/teams/{team}/qr-codes/ghost/deactivate"), Some(&admin), None)
+        .request(
+            "PUT",
+            &format!("/api/teams/{team}/qr-codes/ghost/deactivate"),
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -1413,11 +1917,22 @@ async fn liff_qr_lifecycle() {
     let team = app.seed_team("Liff").await;
 
     // None exists yet -> 404 for read and stats.
-    let (status, _, _) =
-        app.request("GET", &format!("/api/teams/{team}/qr-code/liff"), Some(&admin), None).await;
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &format!("/api/teams/{team}/qr-code/liff"),
+            Some(&admin),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, _, _) = app
-        .request("GET", &format!("/api/teams/{team}/qr-code/liff/stats"), Some(&admin), None)
+        .request(
+            "GET",
+            &format!("/api/teams/{team}/qr-code/liff/stats"),
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
@@ -1425,30 +1940,53 @@ async fn liff_qr_lifecycle() {
     app.seed_agent("nl@test.com", "password1", "agent").await;
     let agent_token = app.login("nl@test.com", "password1").await.0;
     let (status, _, _) = app
-        .request("POST", &format!("/api/teams/{team}/qr-code/liff"), Some(&agent_token), None)
+        .request(
+            "POST",
+            &format!("/api/teams/{team}/qr-code/liff"),
+            Some(&agent_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
-    let (status, body, _) =
-        app.request("POST", &format!("/api/teams/{team}/qr-code/liff"), Some(&admin), None).await;
+    let (status, body, _) = app
+        .request(
+            "POST",
+            &format!("/api/teams/{team}/qr-code/liff"),
+            Some(&admin),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["data"]["url"].as_str().unwrap().contains("liff"));
 
-    let (status, body, _) =
-        app.request("GET", &format!("/api/teams/{team}/qr-code/liff"), Some(&admin), None).await;
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/teams/{team}/qr-code/liff"),
+            Some(&admin),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["isActive"], true);
 
     let (status, body, _) = app
-        .request("GET", &format!("/api/teams/{team}/qr-code/liff/stats"), Some(&admin), None)
+        .request(
+            "GET",
+            &format!("/api/teams/{team}/qr-code/liff/stats"),
+            Some(&admin),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["scanCount"], 0);
     assert_eq!(body["data"]["customerAssignments"], 0);
 
     // Regenerating a missing team -> 404.
-    let (status, _, _) =
-        app.request("POST", "/api/teams/9999/qr-code/liff", Some(&admin), None).await;
+    let (status, _, _) = app
+        .request("POST", "/api/teams/9999/qr-code/liff", Some(&admin), None)
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 

@@ -21,14 +21,12 @@ use std::sync::Arc;
 
 use crate::domain::auth::{store, tokens};
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::{authenticate, AuthUser, TEAM_CACHE_TTL};
 use crate::state::AppState;
 
 use super::hub::{ConnIdentity, RegisterError};
 use super::socket::{can_view, run_socket};
-
-type Result<T = Response> = std::result::Result<T, AppError>;
 
 // ----------------------------------------------------------- persistence
 
@@ -68,7 +66,7 @@ pub async fn persist_snapshot(db: &PgPool, snapshot: &Value) {
     let Some(user_id) = snapshot["userId"].as_str() else {
         return;
     };
-    let _ = sqlx::query(
+    if let Err(error) = sqlx::query(
         "INSERT INTO realtime_user_state
              (user_id, online, last_seen, subscriptions, preferences, stats, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -88,7 +86,10 @@ pub async fn persist_snapshot(db: &PgPool, snapshot: &Value) {
     .bind(snapshot["stats"].to_string())
     .bind(crate::db::now_iso())
     .execute(db)
-    .await;
+    .await
+    {
+        tracing::warn!(error = %error, user_id, "realtime user-state snapshot persist failed");
+    }
 }
 
 /// Snapshot the user's current hub state and persist it.

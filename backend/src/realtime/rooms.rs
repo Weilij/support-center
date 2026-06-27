@@ -8,9 +8,9 @@
 //! vs simplified, CRD 3479) is fixed at creation: the first request that
 //! touches a room may pass `mode=simplified`; rooms default to full-featured.
 //!
-//! TODO(scale-out): a single conversation served by multiple instances
-//! (CRD 3542, 3667) — single-process delivery is the observable equivalent:
-//! every participant is reached exactly once and per-room order is preserved.
+//! Room HTTP broadcasts are mirrored through the routed broadcaster fan-out
+//! table so peer instances serving the same conversation can deliver the same
+//! event (CRD 3542, 3667); local room ordering is still owned by each hub.
 
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::{Path, Query, State, WebSocketUpgrade};

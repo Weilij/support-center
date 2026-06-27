@@ -11,7 +11,7 @@ use axum::routing::{get, post, put};
 use axum::Router;
 use std::sync::Arc;
 
-use crate::middleware::auth::require_auth;
+use crate::middleware::auth::require_analytics_area;
 use crate::state::AppState;
 
 pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
@@ -142,7 +142,7 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(security::recent_events),
         )
         .route("/api/security/dashboard/summary", get(security::summary))
-        .layer(from_fn_with_state(state, require_auth));
+        .layer(from_fn_with_state(state, require_analytics_area));
 
     public.merge(authed)
 }

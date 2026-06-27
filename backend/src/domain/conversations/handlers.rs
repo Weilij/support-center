@@ -12,18 +12,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
 
 use super::channels::{self, OutboundItem};
 use super::store::{self, ListFilters};
 
-type Result<T = Response> = std::result::Result<T, AppError>;
 type JsonBody<T> = std::result::Result<Json<T>, JsonRejection>;
 
 fn parse_json<T>(body: JsonBody<T>) -> Result<T> {
-    body.map(|Json(b)| b).map_err(|_| AppError::BadRequest("Invalid JSON".into()))
+    body.map(|Json(b)| b)
+        .map_err(|_| AppError::BadRequest("Invalid JSON".into()))
 }
 
 fn permission_denied() -> AppError {
@@ -34,7 +34,9 @@ fn permission_denied() -> AppError {
 const OUTBOUND_MEDIA_TTL_SECS: i64 = 7 * 24 * 3600;
 
 fn epoch_ms(iso: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(iso).ok().map(|d| d.timestamp_millis())
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .ok()
+        .map(|d| d.timestamp_millis())
 }
 
 // ------------------------------------------------------- List conversations (CRD 664-677)
@@ -73,7 +75,10 @@ pub async fn list_conversations(
         updated_before: q.updated_before,
     };
     let rows = store::list_visible(&state.db, &user, &filters).await?;
-    let items: Vec<Value> = rows.iter().map(|r| store::conversation_view(r, false)).collect();
+    let items: Vec<Value> = rows
+        .iter()
+        .map(|r| store::conversation_view(r, false))
+        .collect();
     Ok(envelope::ok(items))
 }
 
@@ -169,8 +174,14 @@ pub async fn assign(
         "reason": body.reason,
     });
     store::apply_routing_change(
-        &state.db, &user, &id, Some(team_id), "assigned", history,
-        "conversation assign", details,
+        &state.db,
+        &user,
+        &id,
+        Some(team_id),
+        "assigned",
+        history,
+        "conversation assign",
+        details,
     )
     .await?;
 
@@ -187,8 +198,12 @@ pub async fn assign(
         "reason": body.reason,
         "timestamp": crate::db::now_iso(),
     });
-    state.realtime.to_conversation(&id, "conversation_assigned", assigned.clone());
-    state.realtime.to_teams_and_admins(&[team_id], "conversation_assigned", assigned);
+    state
+        .realtime
+        .to_conversation(&id, "conversation_assigned", assigned.clone());
+    state
+        .realtime
+        .to_teams_and_admins(&[team_id], "conversation_assigned", assigned);
     let view = reload_view(&state, &id).await?;
     Ok(envelope::ok_msg(view, "Conversation assigned successfully"))
 }
@@ -219,7 +234,11 @@ pub async fn unassign(
 
     // Reason-gated history; a blank reason defaults to a generic label (CRD 712).
     let history = body.reason.as_deref().map(|r| {
-        let reason = if r.trim().is_empty() { "Unassigned".to_string() } else { r.to_string() };
+        let reason = if r.trim().is_empty() {
+            "Unassigned".to_string()
+        } else {
+            r.to_string()
+        };
         (Some(current_team), None, reason, "unassign")
     });
     let details = json!({
@@ -229,7 +248,14 @@ pub async fn unassign(
         "reason": body.reason,
     });
     store::apply_routing_change(
-        &state.db, &user, &id, None, "active", history, "conversation unassign", details,
+        &state.db,
+        &user,
+        &id,
+        None,
+        "active",
+        history,
+        "conversation unassign",
+        details,
     )
     .await?;
 
@@ -246,10 +272,17 @@ pub async fn unassign(
         "priority": "high",
         "timestamp": crate::db::now_iso(),
     });
-    state.realtime.to_conversation(&id, "conversation_unassigned", unassigned.clone());
-    state.realtime.to_teams_and_admins(&[current_team], "conversation_unassigned", unassigned);
+    state
+        .realtime
+        .to_conversation(&id, "conversation_unassigned", unassigned.clone());
+    state
+        .realtime
+        .to_teams_and_admins(&[current_team], "conversation_unassigned", unassigned);
     let view = reload_view(&state, &id).await?;
-    Ok(envelope::ok_msg(view, "Conversation unassigned successfully"))
+    Ok(envelope::ok_msg(
+        view,
+        "Conversation unassigned successfully",
+    ))
 }
 
 // ------------------------------------------------- Transfer between teams (CRD 718-726)
@@ -306,8 +339,14 @@ pub async fn transfer(
         "reason": body.reason,
     });
     store::apply_routing_change(
-        &state.db, &user, &id, Some(to_team_id), "active", history,
-        "conversation transfer", details,
+        &state.db,
+        &user,
+        &id,
+        Some(to_team_id),
+        "active",
+        history,
+        "conversation transfer",
+        details,
     )
     .await?;
 
@@ -385,7 +424,9 @@ pub async fn transfer(
     }
 
     // The full conversation object is not returned by this endpoint (CRD 723).
-    Ok(envelope::message_only("Conversation transferred successfully"))
+    Ok(envelope::message_only(
+        "Conversation transferred successfully",
+    ))
 }
 
 // ------------------------------------------------------- List messages (CRD 755-763)
@@ -509,9 +550,18 @@ pub async fn list_messages(
     let conv = store::find_full(&state.db, &id)
         .await?
         .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
-    let page = q.page.as_deref().and_then(|v| v.parse::<i64>().ok()).unwrap_or(1).max(1);
-    let page_size =
-        q.page_size.as_deref().and_then(|v| v.parse::<i64>().ok()).unwrap_or(30).clamp(1, 100);
+    let page = q
+        .page
+        .as_deref()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(1)
+        .max(1);
+    let page_size = q
+        .page_size
+        .as_deref()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(30)
+        .clamp(1, 100);
 
     let total: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM messages WHERE conversation_id = $1 AND deleted_at IS NULL",
@@ -577,7 +627,11 @@ pub async fn list_messages(
         })
         .collect();
 
-    let total_pages = if total == 0 { 0 } else { (total + page_size - 1) / page_size };
+    let total_pages = if total == 0 {
+        0
+    } else {
+        (total + page_size - 1) / page_size
+    };
     Ok(envelope::ok(json!({
         "items": items,
         "page": page,
@@ -635,7 +689,9 @@ async fn proxy_media_inner(
     .await?;
     let row = row.ok_or_else(|| AppError::NotFound("Message not found".into()))?;
     if !["image", "video", "audio", "file"].contains(&row.content_type.as_str()) {
-        return Err(AppError::NotFound("No downloadable media for this message".into()));
+        return Err(AppError::NotFound(
+            "No downloadable media for this message".into(),
+        ));
     }
     let message_id = row
         .platform_message_id
@@ -659,13 +715,16 @@ async fn proxy_media_inner(
         h.insert(header::CONTENT_TYPE, v);
     }
     if row.content_type == "file" {
-        let name = file_name_from_metadata(row.metadata.as_deref())
-            .unwrap_or_else(|| msg_id.to_string());
+        let name =
+            file_name_from_metadata(row.metadata.as_deref()).unwrap_or_else(|| msg_id.to_string());
         if let Ok(v) = HeaderValue::from_str(&format!("inline; filename=\"{name}\"")) {
             h.insert(header::CONTENT_DISPOSITION, v);
         }
     }
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=3600"));
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=3600"),
+    );
     Ok(resp)
 }
 
@@ -711,7 +770,9 @@ pub async fn send_message(
     let content = body.content.as_deref().unwrap_or("").trim().to_string();
     let attachment_ids = body.attachment_ids.unwrap_or_default();
     if content.is_empty() && attachment_ids.is_empty() {
-        return Err(AppError::BadRequest("Message content or attachments are required".into()));
+        return Err(AppError::BadRequest(
+            "Message content or attachments are required".into(),
+        ));
     }
     let sender_id = body
         .sender_id
@@ -767,7 +828,11 @@ pub async fn send_message(
     .bind(&message_id)
     .bind(&id)
     .bind(&sender_id)
-    .bind(if content.is_empty() { None } else { Some(content.clone()) })
+    .bind(if content.is_empty() {
+        None
+    } else {
+        Some(content.clone())
+    })
     .bind(&message_type)
     .bind(&metadata_text)
     .bind(&sender_name)
@@ -814,13 +879,44 @@ pub async fn send_message(
             "attachmentIds": &attachment_ids,
             "timestamp": &now,
         });
-        state.realtime.to_conversation_message(&id, "message_sent", event_payload.clone());
+        state
+            .realtime
+            .to_conversation_message(&id, "message_sent", event_payload.clone());
+        crate::realtime::broadcaster::publish_remote_event(
+            &state,
+            "message_sent",
+            event_payload.clone(),
+            vec![json!({ "type": "conversation", "ids": [&id] })],
+            "high",
+        )
+        .await;
         match conv.team_id {
             Some(team) => {
-                state.realtime.to_teams_and_admins(&[team], "new_message", event_payload);
+                state
+                    .realtime
+                    .to_teams_and_admins(&[team], "new_message", event_payload.clone());
+                crate::realtime::broadcaster::publish_remote_event(
+                    &state,
+                    "new_message",
+                    event_payload,
+                    vec![
+                        json!({ "type": "team", "ids": [team] }),
+                        json!({ "type": "role", "ids": ["admin"] }),
+                    ],
+                    "high",
+                )
+                .await;
             }
             None => {
-                state.realtime.global("new_message", event_payload);
+                state.realtime.global("new_message", event_payload.clone());
+                crate::realtime::broadcaster::publish_remote_event(
+                    &state,
+                    "new_message",
+                    event_payload,
+                    vec![json!({ "type": "global" })],
+                    "high",
+                )
+                .await;
             }
         }
     }
@@ -846,7 +942,9 @@ pub async fn send_message(
             let name = a.file_name.clone();
             let public_url = match (has_public_base, a.storage_key.as_deref()) {
                 (true, Some(key)) => Some(crate::domain::files::handlers::signed_public_url(
-                    &state, key, OUTBOUND_MEDIA_TTL_SECS,
+                    &state,
+                    key,
+                    OUTBOUND_MEDIA_TTL_SECS,
                 )),
                 _ => None,
             };
@@ -960,7 +1058,10 @@ pub async fn upload_attachment(
     while let Ok(Some(field)) = multipart.next_field().await {
         if field.name() == Some("file") {
             let filename = field.file_name().unwrap_or("upload.bin").to_string();
-            let mime = field.content_type().unwrap_or("application/octet-stream").to_string();
+            let mime = field
+                .content_type()
+                .unwrap_or("application/octet-stream")
+                .to_string();
             match field.bytes().await {
                 Ok(bytes) => {
                     file = Some((filename, mime, bytes.to_vec()));
@@ -974,12 +1075,21 @@ pub async fn upload_attachment(
         return Ok(failure(StatusCode::BAD_REQUEST, "No file provided"));
     };
     if bytes.len() > MAX_UPLOAD_BYTES {
-        return Ok(failure(StatusCode::BAD_REQUEST, "File too large (max 10MB)"));
+        return Ok(failure(
+            StatusCode::BAD_REQUEST,
+            "File too large (max 10MB)",
+        ));
     }
 
     let safe_name: String = filename
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let attachment_id = uuid::Uuid::new_v4().to_string();
     let storage_key = format!("{attachment_id}_{safe_name}");
@@ -1055,9 +1165,7 @@ pub async fn bulk(
                 })
                 .collect()
         })
-        .ok_or_else(|| {
-            AppError::BadRequest("conversationIds must be a non-empty array".into())
-        })?;
+        .ok_or_else(|| AppError::BadRequest("conversationIds must be a non-empty array".into()))?;
 
     // A single unauthorized conversation blocks the entire batch (CRD 793, 798).
     let mut visible = 0usize;
@@ -1143,9 +1251,7 @@ pub async fn bulk(
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(Value::as_i64).collect())
                 .filter(|v: &Vec<i64>| !v.is_empty())
-                .ok_or_else(|| {
-                    AppError::BadRequest(format!("tagIds are required for {op}"))
-                })?;
+                .ok_or_else(|| AppError::BadRequest(format!("tagIds are required for {op}")))?;
             for cid in &ids {
                 if op == "add_tags" {
                     for tag_id in &tag_ids {
@@ -1199,12 +1305,10 @@ pub async fn bulk(
                 "Operation '{op}' is no longer supported"
             )));
         }
-        _ => {
-            return Err(AppError::BadRequest(
-                "Invalid operation. Valid operations are: assign, set_priority, add_tags, remove_tags"
-                    .into(),
-            ))
-        }
+        _ => return Err(AppError::BadRequest(
+            "Invalid operation. Valid operations are: assign, set_priority, add_tags, remove_tags"
+                .into(),
+        )),
     }
 
     let mut result = Map::new();

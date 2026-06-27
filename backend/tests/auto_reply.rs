@@ -2,13 +2,21 @@
 
 mod common;
 
+use axum::body::Bytes;
+use axum::extract::State;
 use axum::http::StatusCode;
+use axum::routing::post;
+use axum::{Json, Router};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use common::{spawn_app, TestApp};
 use hmac::{Hmac, Mac};
 use serde_json::json;
+use serde_json::Value;
 use sha2::Sha256;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 fn line_sig(body: &str) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(b"test-line-secret").unwrap();
@@ -28,6 +36,52 @@ async fn post_line(app: &TestApp, body: &str) -> StatusCode {
         .body(Body::from(body.to_string()))
         .unwrap();
     app.router.clone().oneshot(req).await.unwrap().status()
+}
+
+async fn mock_line_push_server() -> (String, Arc<Mutex<Vec<Value>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    async fn capture(
+        State(seen): State<Arc<Mutex<Vec<Value>>>>,
+        headers: axum::http::HeaderMap,
+        body: Bytes,
+    ) -> (StatusCode, Json<Value>) {
+        let token = headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        if token != "Bearer good-line" {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"message": "bad line token"})),
+            );
+        }
+        let parsed = serde_json::from_slice::<Value>(&body).unwrap_or_else(|_| json!({}));
+        seen.lock().await.push(parsed);
+        (
+            StatusCode::OK,
+            Json(json!({"sentMessages": [{"id": "line-auto-reply"}]})),
+        )
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route("/line/push", post(capture))
+        .with_state(seen.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}/line/push"), seen)
+}
+
+async fn spawn_auto_reply_app() -> (TestApp, Arc<Mutex<Vec<Value>>>) {
+    let (line_push_url, calls) = mock_line_push_server().await;
+    let app = common::spawn_app_custom(move |config| {
+        config.line_channel_access_token = Some("good-line".into());
+        config.line_push_url = line_push_url;
+    })
+    .await;
+    (app, calls)
 }
 
 fn line_text(user: &str, mid: &str, text: &str) -> String {
@@ -62,13 +116,21 @@ async fn rule_create_validates_inputs() {
         (json!({"triggerType": "keyword"}), "name"),
         (json!({"name": "  ", "triggerType": "keyword"}), "name"),
         (json!({"name": "r", "triggerType": "frobnicate"}), "trigger"),
-        (json!({"name": "r", "triggerType": "keyword",
-                "conditions": [{"conditionType": "telepathy", "value": "x"}]}), "condition"),
-        (json!({"name": "r", "triggerType": "keyword",
-                "actions": [{"actionType": "carrier-pigeon", "content": "x"}]}), "action"),
+        (
+            json!({"name": "r", "triggerType": "keyword",
+                "conditions": [{"conditionType": "telepathy", "value": "x"}]}),
+            "condition",
+        ),
+        (
+            json!({"name": "r", "triggerType": "keyword",
+                "actions": [{"actionType": "carrier-pigeon", "content": "x"}]}),
+            "action",
+        ),
     ];
     for (body, label) in cases {
-        let (status, _, _) = app.request("POST", "/api/auto-reply/rules", Some(&token), Some(body)).await;
+        let (status, _, _) = app
+            .request("POST", "/api/auto-reply/rules", Some(&token), Some(body))
+            .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "case: {label}");
     }
 
@@ -77,8 +139,12 @@ async fn rule_create_validates_inputs() {
     let _ = lone;
     let (lone_token, _, _) = app.login("lone@test.dev", "pw123456").await;
     let (status, _, _) = app
-        .request("POST", "/api/auto-reply/rules", Some(&lone_token),
-            Some(json!({"name": "r", "triggerType": "keyword"})))
+        .request(
+            "POST",
+            "/api/auto-reply/rules",
+            Some(&lone_token),
+            Some(json!({"name": "r", "triggerType": "keyword"})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -117,52 +183,99 @@ async fn rule_crud_round_trip_with_scope_and_priority_order() {
     assert_eq!(status, StatusCode::CREATED);
     assert!(gbody["data"]["teamId"].is_null());
 
-    let (_, list, _) = app.request("GET", "/api/auto-reply/rules", Some(&token), None).await;
+    let (_, list, _) = app
+        .request("GET", "/api/auto-reply/rules", Some(&token), None)
+        .await;
     let items = list["data"]["items"].as_array().unwrap();
     assert_eq!(items.len(), 1, "team listing excludes global rules");
     let (_, glist, _) = app
-        .request("GET", "/api/auto-reply/rules?scope=global", Some(&token), None)
+        .request(
+            "GET",
+            "/api/auto-reply/rules?scope=global",
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(glist["data"]["items"].as_array().unwrap().len(), 1);
 
     // Priority ascending ordering.
-    app.request("POST", "/api/auto-reply/rules", Some(&token),
-        Some(json!({"name": "Lower prio", "triggerType": "fallback", "priority": 200}))).await;
-    let (_, list, _) = app.request("GET", "/api/auto-reply/rules", Some(&token), None).await;
+    app.request(
+        "POST",
+        "/api/auto-reply/rules",
+        Some(&token),
+        Some(json!({"name": "Lower prio", "triggerType": "fallback", "priority": 200})),
+    )
+    .await;
+    let (_, list, _) = app
+        .request("GET", "/api/auto-reply/rules", Some(&token), None)
+        .await;
     let items = list["data"]["items"].as_array().unwrap();
     assert_eq!(items[0]["priority"], 10);
     assert_eq!(items[1]["priority"], 200);
 
     // Partial update + wholesale condition replace (CRD 1364).
     let (status, upd, _) = app
-        .request("PUT", &format!("/api/auto-reply/rules/{rule_id}"), Some(&token),
-            Some(json!({"priority": 7, "conditions": []})))
+        .request(
+            "PUT",
+            &format!("/api/auto-reply/rules/{rule_id}"),
+            Some(&token),
+            Some(json!({"priority": 7, "conditions": []})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(upd["data"]["priority"], 7);
-    assert_eq!(upd["data"]["conditions"].as_array().unwrap().len(), 0, "empty array clears all");
-    assert_eq!(upd["data"]["name"], "Price keyword", "absent fields unchanged");
+    assert_eq!(
+        upd["data"]["conditions"].as_array().unwrap().len(),
+        0,
+        "empty array clears all"
+    );
+    assert_eq!(
+        upd["data"]["name"], "Price keyword",
+        "absent fields unchanged"
+    );
 
     let (status, _, _) = app
-        .request("PUT", "/api/auto-reply/rules/abc", Some(&token), Some(json!({"priority": 1})))
+        .request(
+            "PUT",
+            "/api/auto-reply/rules/abc",
+            Some(&token),
+            Some(json!({"priority": 1})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _, _) = app
-        .request("PUT", "/api/auto-reply/rules/99999", Some(&token), Some(json!({"priority": 1})))
+        .request(
+            "PUT",
+            "/api/auto-reply/rules/99999",
+            Some(&token),
+            Some(json!({"priority": 1})),
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // Soft delete: echoes id, second delete 404, excluded from listing.
     let (status, del, _) = app
-        .request("DELETE", &format!("/api/auto-reply/rules/{rule_id}"), Some(&token), None)
+        .request(
+            "DELETE",
+            &format!("/api/auto-reply/rules/{rule_id}"),
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(del["data"]["id"], rule_id);
     let (status, _, _) = app
-        .request("DELETE", &format!("/api/auto-reply/rules/{rule_id}"), Some(&token), None)
+        .request(
+            "DELETE",
+            &format!("/api/auto-reply/rules/{rule_id}"),
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (_, list, _) = app.request("GET", "/api/auto-reply/rules", Some(&token), None).await;
+    let (_, list, _) = app
+        .request("GET", "/api/auto-reply/rules", Some(&token), None)
+        .await;
     assert!(list["data"]["items"]
         .as_array()
         .unwrap()
@@ -187,23 +300,41 @@ async fn schedules_validate_and_replace_wholesale() {
     let bad = [
         (json!({}), "missing schedules"),
         (json!({"schedules": []}), "empty schedules"),
-        (json!({"schedules": [{"dayOfWeek": 7, "startTime": "09:00", "endTime": "18:00"}]}), "day 7"),
-        (json!({"schedules": [{"dayOfWeek": 1, "startTime": "25:00", "endTime": "18:00"}]}), "hour 25"),
-        (json!({"schedules": [{"dayOfWeek": 1, "startTime": "09:00", "endTime": "9pm"}]}), "format"),
+        (
+            json!({"schedules": [{"dayOfWeek": 7, "startTime": "09:00", "endTime": "18:00"}]}),
+            "day 7",
+        ),
+        (
+            json!({"schedules": [{"dayOfWeek": 1, "startTime": "25:00", "endTime": "18:00"}]}),
+            "hour 25",
+        ),
+        (
+            json!({"schedules": [{"dayOfWeek": 1, "startTime": "09:00", "endTime": "9pm"}]}),
+            "format",
+        ),
     ];
     for (body, label) in bad {
         let (status, _, _) = app
-            .request("POST", "/api/auto-reply/schedules", Some(&token), Some(body))
+            .request(
+                "POST",
+                "/api/auto-reply/schedules",
+                Some(&token),
+                Some(body),
+            )
             .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "case: {label}");
     }
 
     let (status, body, _) = app
-        .request("POST", "/api/auto-reply/schedules", Some(&token),
+        .request(
+            "POST",
+            "/api/auto-reply/schedules",
+            Some(&token),
             Some(json!({"timezone": "Asia/Taipei", "schedules": [
                 {"dayOfWeek": 1, "startTime": "09:00", "endTime": "18:00"},
                 {"dayOfWeek": 2, "startTime": "09:00", "endTime": "18:00"},
-            ]})))
+            ]})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"].as_array().unwrap().len(), 2);
@@ -212,13 +343,21 @@ async fn schedules_validate_and_replace_wholesale() {
 
     // Wholesale replace: a day not in the new payload becomes absent.
     let (_, body, _) = app
-        .request("POST", "/api/auto-reply/schedules", Some(&token),
-            Some(json!({"schedules": [{"dayOfWeek": 5, "startTime": "10:00", "endTime": "16:00"}]})))
+        .request(
+            "POST",
+            "/api/auto-reply/schedules",
+            Some(&token),
+            Some(
+                json!({"schedules": [{"dayOfWeek": 5, "startTime": "10:00", "endTime": "16:00"}]}),
+            ),
+        )
         .await;
     assert_eq!(body["data"].as_array().unwrap().len(), 1);
     assert_eq!(body["data"][0]["dayOfWeek"], 5);
 
-    let (status, body, _) = app.request("GET", "/api/auto-reply/schedules", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/auto-reply/schedules", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"].as_array().unwrap().len(), 1);
 }
@@ -260,20 +399,27 @@ async fn route_user(app: &TestApp, user: &str, team: i64) {
 
 #[tokio::test]
 async fn keyword_rule_fires_once_per_platform_message() {
-    let app = spawn_app().await;
+    let (app, calls) = spawn_auto_reply_app().await;
     let (token, team) = operator(&app).await;
     route_user(&app, "U-kw", team).await;
 
-    app.request("POST", "/api/auto-reply/rules", Some(&token),
+    app.request(
+        "POST",
+        "/api/auto-reply/rules",
+        Some(&token),
         Some(json!({
             "name": "Price", "triggerType": "keyword",
             "conditions": [{"conditionType": "contains", "value": "price"}],
             "actions": [{"actionType": "text", "content": json!({"text": "From $10"}).to_string()}],
-        })))
-        .await;
+        })),
+    )
+    .await;
 
     // Case-insensitive contains match.
-    assert_eq!(post_line(&app, &line_text("U-kw", "kw-1", "What is the PRICE?")).await, StatusCode::OK);
+    assert_eq!(
+        post_line(&app, &line_text("U-kw", "kw-1", "What is the PRICE?")).await,
+        StatusCode::OK
+    );
 
     let (status, method, sent_at): (String, Option<String>, Option<String>) = sqlx::query_as(
         "SELECT status, delivery_method, sent_at FROM auto_reply_deliveries
@@ -299,15 +445,18 @@ async fn keyword_rule_fires_once_per_platform_message() {
         .await
         .unwrap();
     assert_eq!(logs, 1, "audit log written");
+    assert_eq!(calls.lock().await.len(), 1, "one real push attempt");
 
     // Webhook redelivery: at-most-once successful auto-reply (CRD 1422).
-    assert_eq!(post_line(&app, &line_text("U-kw", "kw-1", "What is the PRICE?")).await, StatusCode::OK);
-    let replies: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM messages WHERE sender_type = 'system'",
-    )
-    .fetch_one(&app.state.db)
-    .await
-    .unwrap();
+    assert_eq!(
+        post_line(&app, &line_text("U-kw", "kw-1", "What is the PRICE?")).await,
+        StatusCode::OK
+    );
+    let replies: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE sender_type = 'system'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
     assert_eq!(replies, 1, "no second send on redelivery");
     let attempts: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM auto_reply_deliveries WHERE platform_message_id = 'kw-1'",
@@ -320,7 +469,7 @@ async fn keyword_rule_fires_once_per_platform_message() {
 
 #[tokio::test]
 async fn first_match_wins_and_keyword_without_conditions_never_matches() {
-    let app = spawn_app().await;
+    let (app, _calls) = spawn_auto_reply_app().await;
     let (token, team) = operator(&app).await;
     route_user(&app, "U-fm", team).await;
 
@@ -336,26 +485,27 @@ async fn first_match_wins_and_keyword_without_conditions_never_matches() {
         .await;
 
     post_line(&app, &line_text("U-fm", "fm-1", "anything at all")).await;
-    let content: String = sqlx::query_scalar(
-        "SELECT content FROM messages WHERE sender_type = 'system' LIMIT 1",
-    )
-    .fetch_one(&app.state.db)
-    .await
-    .unwrap();
+    let content: String =
+        sqlx::query_scalar("SELECT content FROM messages WHERE sender_type = 'system' LIMIT 1")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
     assert_eq!(content, "fallback reply");
 
-    let (matched, _rule): (String, Option<i64>) = sqlx::query_as(
-        "SELECT matched_condition, rule_id FROM auto_reply_logs LIMIT 1",
-    )
-    .fetch_one(&app.state.db)
-    .await
-    .unwrap();
-    assert!(matched.contains("fallback"), "non-keyword matches record the trigger: {matched}");
+    let (matched, _rule): (String, Option<i64>) =
+        sqlx::query_as("SELECT matched_condition, rule_id FROM auto_reply_logs LIMIT 1")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    assert!(
+        matched.contains("fallback"),
+        "non-keyword matches record the trigger: {matched}"
+    );
 }
 
 #[tokio::test]
 async fn off_hours_rule_respects_business_hours_and_absent_schedule() {
-    let app = spawn_app().await;
+    let (app, _calls) = spawn_auto_reply_app().await;
     let (token, team) = operator(&app).await;
     route_user(&app, "U-oh", team).await;
 
@@ -366,51 +516,70 @@ async fn off_hours_rule_respects_business_hours_and_absent_schedule() {
 
     // No schedule at all: always within hours, off-hours rules never fire (CRD 1417).
     post_line(&app, &line_text("U-oh", "oh-1", "hello")).await;
-    let replies: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE sender_type = 'system'")
-        .fetch_one(&app.state.db)
-        .await
-        .unwrap();
+    let replies: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE sender_type = 'system'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
     assert_eq!(replies, 0, "no schedule -> off-hours suppressed");
 
     // A one-minute window at 00:00 leaves the rest of the day outside hours.
     // (Use UTC so "now" is deterministic relative to the stored window.)
-    app.request("POST", "/api/auto-reply/schedules", Some(&token),
-        Some(json!({"timezone": "UTC", "schedules": (0..7).map(|d| json!({
+    app.request(
+        "POST",
+        "/api/auto-reply/schedules",
+        Some(&token),
+        Some(
+            json!({"timezone": "UTC", "schedules": (0..7).map(|d| json!({
             "dayOfWeek": d, "startTime": "00:00", "endTime": "00:01"
-        })).collect::<Vec<_>>()})))
-        .await;
+        })).collect::<Vec<_>>()}),
+        ),
+    )
+    .await;
     // Outside the window for almost the entire day; tolerate the one minute.
     let now = chrono::Utc::now().format("%H:%M").to_string();
     post_line(&app, &line_text("U-oh", "oh-2", "hello again")).await;
-    let replies: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE sender_type = 'system'")
-        .fetch_one(&app.state.db)
-        .await
-        .unwrap();
+    let replies: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE sender_type = 'system'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
     if now != "00:00" {
         assert_eq!(replies, 1, "outside business hours -> off-hours rule fires");
     }
 
     // Full-day windows put us inside hours: rule suppressed again.
-    app.request("POST", "/api/auto-reply/schedules", Some(&token),
-        Some(json!({"timezone": "UTC", "schedules": (0..7).map(|d| json!({
+    app.request(
+        "POST",
+        "/api/auto-reply/schedules",
+        Some(&token),
+        Some(
+            json!({"timezone": "UTC", "schedules": (0..7).map(|d| json!({
             "dayOfWeek": d, "startTime": "00:00", "endTime": "23:59"
-        })).collect::<Vec<_>>()})))
-        .await;
-    let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE sender_type = 'system'")
-        .fetch_one(&app.state.db)
-        .await
-        .unwrap();
+        })).collect::<Vec<_>>()}),
+        ),
+    )
+    .await;
+    let before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE sender_type = 'system'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
     post_line(&app, &line_text("U-oh", "oh-3", "third")).await;
-    let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE sender_type = 'system'")
-        .fetch_one(&app.state.db)
-        .await
-        .unwrap();
-    assert_eq!(before, after, "within business hours -> off-hours rule suppressed");
+    let after: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE sender_type = 'system'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        before, after,
+        "within business hours -> off-hours rule suppressed"
+    );
 }
 
 #[tokio::test]
 async fn welcome_rule_replaces_default_follow_greeting() {
-    let app = spawn_app().await;
+    let (app, _calls) = spawn_auto_reply_app().await;
     let (token, team) = operator(&app).await;
     route_user(&app, "U-wel", team).await;
 
@@ -434,10 +603,11 @@ async fn welcome_rule_replaces_default_follow_greeting() {
     assert_eq!(contents.len(), 1, "rule reply replaces the default welcome");
     assert_eq!(contents[0].0, "Welcome aboard!");
 
-    let matched: String = sqlx::query_scalar("SELECT matched_condition FROM auto_reply_logs LIMIT 1")
-        .fetch_one(&app.state.db)
-        .await
-        .unwrap();
+    let matched: String =
+        sqlx::query_scalar("SELECT matched_condition FROM auto_reply_logs LIMIT 1")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
     assert!(matched.contains("welcome"), "{matched}");
 }
 
@@ -451,18 +621,22 @@ async fn welcome_rules_do_not_fire_on_ordinary_messages() {
                     "actions": [{"actionType": "text", "content": json!({"text": "hi"}).to_string()}]})))
         .await;
     post_line(&app, &line_text("U-nw", "nw-1", "ordinary text")).await;
-    let replies: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE sender_type = 'system'")
-        .fetch_one(&app.state.db)
-        .await
-        .unwrap();
-    assert_eq!(replies, 0, "greeting rules fire only via the follow path (CRD 1415)");
+    let replies: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE sender_type = 'system'")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        replies, 0,
+        "greeting rules fire only via the follow path (CRD 1415)"
+    );
 }
 
 // ---------------------------------------------------------------- audit logs
 
 #[tokio::test]
 async fn logs_listing_filters_and_validates() {
-    let app = spawn_app().await;
+    let (app, _calls) = spawn_auto_reply_app().await;
     let (token, team) = operator(&app).await;
     route_user(&app, "U-log", team).await;
     app.request("POST", "/api/auto-reply/rules", Some(&token),
@@ -471,7 +645,9 @@ async fn logs_listing_filters_and_validates() {
         .await;
     post_line(&app, &line_text("U-log", "log-1", "ping")).await;
 
-    let (status, body, _) = app.request("GET", "/api/auto-reply/logs", Some(&token), None).await;
+    let (status, body, _) = app
+        .request("GET", "/api/auto-reply/logs", Some(&token), None)
+        .await;
     assert_eq!(status, StatusCode::OK);
     let data = &body["data"];
     assert_eq!(data["total"], 1);
@@ -487,11 +663,21 @@ async fn logs_listing_filters_and_validates() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _, _) = app
-        .request("GET", "/api/auto-reply/logs?platform=telegram", Some(&token), None)
+        .request(
+            "GET",
+            "/api/auto-reply/logs?platform=telegram",
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _, _) = app
-        .request("GET", "/api/auto-reply/logs?dateFrom=not-a-date", Some(&token), None)
+        .request(
+            "GET",
+            "/api/auto-reply/logs?dateFrom=not-a-date",
+            Some(&token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
@@ -500,11 +686,25 @@ async fn logs_listing_filters_and_validates() {
         .fetch_one(&app.state.db)
         .await
         .unwrap();
-    app.request("DELETE", &format!("/api/auto-reply/rules/{rule_id}"), Some(&token), None).await;
+    app.request(
+        "DELETE",
+        &format!("/api/auto-reply/rules/{rule_id}"),
+        Some(&token),
+        None,
+    )
+    .await;
     let (_, body, _) = app
-        .request("GET", "/api/auto-reply/logs?platform=line", Some(&token), None)
+        .request(
+            "GET",
+            "/api/auto-reply/logs?platform=line",
+            Some(&token),
+            None,
+        )
         .await;
-    assert_eq!(body["data"]["items"][0]["ruleName"], "CA", "left-join keeps deleted rule name");
+    assert_eq!(
+        body["data"]["items"][0]["ruleName"], "CA",
+        "left-join keeps deleted rule name"
+    );
 }
 
 #[tokio::test]
@@ -515,15 +715,33 @@ async fn logs_platform_filter_accepts_instagram_and_shopee_rejects_whatsapp() {
     // Instagram and Shopee are now valid platforms: the filter is accepted.
     for platform in ["instagram", "shopee"] {
         let (status, _, _) = app
-            .request("GET", &format!("/api/auto-reply/logs?platform={platform}"), Some(&token), None)
+            .request(
+                "GET",
+                &format!("/api/auto-reply/logs?platform={platform}"),
+                Some(&token),
+                None,
+            )
             .await;
-        assert_ne!(status, StatusCode::BAD_REQUEST, "{platform} must be an accepted platform filter");
+        assert_ne!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{platform} must be an accepted platform filter"
+        );
         assert_eq!(status, StatusCode::OK, "{platform} filter should list logs");
     }
 
     // whatsapp is no longer a canonical platform: the filter is now rejected.
     let (status, _, _) = app
-        .request("GET", "/api/auto-reply/logs?platform=whatsapp", Some(&token), None)
+        .request(
+            "GET",
+            "/api/auto-reply/logs?platform=whatsapp",
+            Some(&token),
+            None,
+        )
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "whatsapp is no longer an accepted platform");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "whatsapp is no longer an accepted platform"
+    );
 }

@@ -11,15 +11,13 @@ use std::sync::Arc;
 
 use crate::db::now_iso;
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
 
 use super::limiter::{ADMIN_UPLOADS, STANDARD_UPLOADS};
 use super::store::{self, FileRow, NewFile};
 use super::{sign, validate};
-
-type Result<T = Response> = std::result::Result<T, AppError>;
 
 const UPLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const DOWNLOAD_URL_TTL: i64 = 3600;
@@ -29,7 +27,9 @@ const PRESIGNED_TTL: i64 = 900; // ~15 minutes
 fn valid_file_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
-        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 fn require_file_id(id: &str) -> Result<()> {
@@ -60,7 +60,10 @@ fn user_can_access_file(user: &AuthUser, row: &FileRow) -> bool {
 fn signed_download_url(state: &AppState, file_id: &str, key: &str, ttl: i64) -> (String, i64) {
     let (sig, expires) = sign::sign(state.config.file_signing_key(), key, ttl);
     let base = state.config.backend_url.clone().unwrap_or_default();
-    (format!("{base}/api/files/download/{file_id}?expires={expires}&sig={sig}"), expires)
+    (
+        format!("{base}/api/files/download/{file_id}?expires={expires}&sig={sig}"),
+        expires,
+    )
 }
 
 pub(crate) fn signed_public_url(state: &AppState, key: &str, ttl: i64) -> String {
@@ -72,8 +75,13 @@ pub(crate) fn signed_public_url(state: &AppState, key: &str, ttl: i64) -> String
 // ================================================================ public ops
 
 pub async fn health(State(state): State<Arc<AppState>>) -> Response {
-    let db_ok = sqlx::query_scalar::<_, i64>("SELECT 1::bigint").fetch_one(&state.db).await.is_ok();
-    let store_ok = tokio::fs::create_dir_all(&state.config.upload_dir).await.is_ok();
+    let db_ok = sqlx::query_scalar::<_, i64>("SELECT 1::bigint")
+        .fetch_one(&state.db)
+        .await
+        .is_ok();
+    let store_ok = tokio::fs::create_dir_all(&state.config.upload_dir)
+        .await
+        .is_ok();
     envelope::ok(json!({
         "status": if db_ok && store_ok { "healthy" } else { "degraded" },
         "module": "files",
@@ -177,7 +185,13 @@ pub async fn public_proxy(
 /// `previewImageUrl` for outbound LINE video messages (public, no auth).
 pub async fn video_placeholder() -> Response {
     const PNG: &[u8] = include_bytes!("../../../assets/video-placeholder.png");
-    stream_bytes(PNG.to_vec(), "image/png", None, "public, max-age=604800", None)
+    stream_bytes(
+        PNG.to_vec(),
+        "image/png",
+        None,
+        "public, max-age=604800",
+        None,
+    )
 }
 
 async fn content_type_for_key(state: &AppState, key: &str) -> String {
@@ -201,7 +215,9 @@ pub async fn public_download(
     Query(q): Query<SignedQuery>,
 ) -> Result {
     if attachment_id.is_empty() {
-        return Err(AppError::BadRequest("Attachment identifier is required".into()));
+        return Err(AppError::BadRequest(
+            "Attachment identifier is required".into(),
+        ));
     }
     let row = store::find(&state.db, &attachment_id)
         .await?
@@ -217,10 +233,15 @@ pub async fn public_download(
     let Some(bytes) = store::get_object(&state.config.upload_dir, &key).await else {
         return Err(AppError::NotFound("File not found".into()));
     };
-    let content_type =
-        row.content_type.clone().unwrap_or_else(|| "application/octet-stream".into());
+    let content_type = row
+        .content_type
+        .clone()
+        .unwrap_or_else(|| "application/octet-stream".into());
     // Extension-less stored names still download as openable files (CRD 3127).
-    let mut filename = row.file_name.clone().unwrap_or_else(|| attachment_id.clone());
+    let mut filename = row
+        .file_name
+        .clone()
+        .unwrap_or_else(|| attachment_id.clone());
     if validate::extension_of(&filename).is_none() {
         if let Some(ext) = validate::extension_for_type(&content_type) {
             filename = format!("{filename}.{ext}");
@@ -242,7 +263,9 @@ pub async fn line_proxy(
     Path(line_message_id): Path<String>,
 ) -> Result {
     if line_message_id.is_empty() || !line_message_id.chars().all(|c| c.is_ascii_digit()) {
-        return Err(AppError::BadRequest("LINE message identifier must be numeric".into()));
+        return Err(AppError::BadRequest(
+            "LINE message identifier must be numeric".into(),
+        ));
     }
     let key = format!("line/media/{line_message_id}");
     if let Some(bytes) = store::get_object(&state.config.upload_dir, &key).await {
@@ -256,11 +279,37 @@ pub async fn line_proxy(
             cors.as_deref(),
         ));
     }
-    if state.config.line_channel_access_token.is_none() {
-        return Err(AppError::Internal("LINE channel token is not configured".into()));
+    let Some(token) = state
+        .config
+        .line_channel_access_token
+        .as_deref()
+        .filter(|token| !token.is_empty())
+    else {
+        return Err(AppError::Internal(
+            "LINE channel token is not configured".into(),
+        ));
+    };
+    if let Some((bytes, content_type)) =
+        crate::domain::conversations::channels::fetch_line_media_from_base(
+            &state.config.line_content_api_base_url,
+            token,
+            &line_message_id,
+            false,
+        )
+        .await
+    {
+        if let Err(error) = store::put_object(&state.config.upload_dir, &key, &bytes).await {
+            tracing::warn!(error = %error, line_message_id, "LINE proxy cache write failed");
+        }
+        let cors = frontend_origin(&state);
+        return Ok(stream_bytes(
+            bytes,
+            &content_type,
+            public_disposition_for(&content_type),
+            "public, max-age=86400",
+            cors.as_deref(),
+        ));
     }
-    // TODO(channels): live fetch from the LINE content API, stream the bytes,
-    // then self-heal in the background (persist object + attachment record).
     // Without a live upstream, the fallback reports bad-gateway (CRD 3138).
     Ok((
         StatusCode::BAD_GATEWAY,
@@ -317,14 +366,19 @@ pub async fn direct_upload(
     if !verify_signature(&state, &key, &q) {
         return Err(AppError::NotFound("File not found".into()));
     }
-    let content_type = row.content_type.as_deref().unwrap_or("application/octet-stream");
+    let content_type = row
+        .content_type
+        .as_deref()
+        .unwrap_or("application/octet-stream");
     let platform = row.platform.as_deref().unwrap_or("system");
     let reject = if !validate::allowed_types(platform).contains(&content_type) {
         Some(format!("Content type '{content_type}' is not allowed"))
     } else if body.len() > validate::size_cap(content_type, platform) {
         Some("File exceeds the maximum allowed size".to_string())
     } else {
-        validate::check_signature(content_type, &body).err()
+        validate::check_signature(content_type, &body)
+            .err()
+            .map(|e| e.to_string())
     };
     if let Some(message) = reject {
         mark_upload_failed(&state, &file_id).await?;
@@ -396,7 +450,11 @@ async fn read_multipart(mut multipart: Multipart) -> Result<UploadForm> {
                     if filename.is_empty() {
                         return Err(AppError::BadRequest("File is required".into()));
                     }
-                    form.files.push(UploadedPart { filename, content_type, bytes: bytes.to_vec() });
+                    form.files.push(UploadedPart {
+                        filename,
+                        content_type,
+                        bytes: bytes.to_vec(),
+                    });
                 }
                 "platform" => {
                     let v = field.text().await.unwrap_or_default();
@@ -405,8 +463,8 @@ async fn read_multipart(mut multipart: Multipart) -> Result<UploadForm> {
                     }
                 }
                 "conversationId" => {
-                    form.conversation_id = Some(field.text().await.unwrap_or_default())
-                        .filter(|s| !s.is_empty());
+                    form.conversation_id =
+                        Some(field.text().await.unwrap_or_default()).filter(|s| !s.is_empty());
                 }
                 "messageId" => {
                     form.message_id =
@@ -423,20 +481,20 @@ async fn read_multipart(mut multipart: Multipart) -> Result<UploadForm> {
     }
 }
 
-fn validate_part(part: &UploadedPart, platform: &str) -> std::result::Result<(), String> {
+fn validate_part(part: &UploadedPart, platform: &str) -> validate::FileValidationResult {
     validate::validate_filename(&part.filename)?;
     if !validate::allowed_types(platform).contains(&part.content_type.as_str()) {
-        return Err(format!(
-            "Content type '{}' is not allowed for platform '{platform}'",
-            part.content_type
-        ));
+        return Err(validate::FileValidationError::ContentTypeNotAllowed {
+            content_type: part.content_type.clone(),
+            platform: platform.to_string(),
+        });
     }
     let cap = validate::size_cap(&part.content_type, platform);
     if part.bytes.is_empty() {
-        return Err("File is empty".into());
+        return Err(validate::FileValidationError::EmptyFile);
     }
     if part.bytes.len() > cap {
-        return Err(format!("File too large (max {} bytes)", cap));
+        return Err(validate::FileValidationError::FileTooLarge { max_bytes: cap });
     }
     validate::check_signature(&part.content_type, &part.bytes)?;
     Ok(())
@@ -510,12 +568,19 @@ async fn upload_with_platform(
         return Err(AppError::BadRequest("File is required".into()));
     }
     let part = &form.files[0];
-    let policy = if form.platform == "admin" { ADMIN_UPLOADS } else { STANDARD_UPLOADS };
+    let policy = if form.platform == "admin" {
+        ADMIN_UPLOADS
+    } else {
+        STANDARD_UPLOADS
+    };
     let _guard = state
         .files_limiter
         .admit(&user.id, part.bytes.len() as u64, &policy)
-        .map_err(|m| AppError::TooManyRequests { message: m, retry_after: 60 })?;
-    validate_part(part, &form.platform).map_err(AppError::BadRequest)?;
+        .map_err(|m| AppError::TooManyRequests {
+            message: m,
+            retry_after: 60,
+        })?;
+    validate_part(part, &form.platform).map_err(|e| AppError::BadRequest(e.to_string()))?;
     let view = persist_part(
         &state,
         &user,
@@ -566,13 +631,14 @@ pub async fn upload_multiple(
     let mut successful = Vec::new();
     let mut failed = Vec::new();
     for part in &form.files {
-        let admitted = state
-            .files_limiter
-            .admit(&user.id, part.bytes.len() as u64, &STANDARD_UPLOADS);
+        let admitted =
+            state
+                .files_limiter
+                .admit(&user.id, part.bytes.len() as u64, &STANDARD_UPLOADS);
         let result = match admitted {
             Err(m) => Err(m),
             Ok(_guard) => match validate_part(part, &form.platform) {
-                Err(m) => Err(m),
+                Err(m) => Err(m.to_string()),
                 Ok(()) => persist_part(
                     &state,
                     &user,
@@ -746,7 +812,9 @@ pub async fn get_file(
             Some(key) => signed_download_url(&state, &row.id, key, DOWNLOAD_URL_TTL).0,
             None => row.file_url.clone().unwrap_or_default(),
         };
-        return Ok(envelope::ok(json!({ "url": url, "file": store::file_view(&row) })));
+        return Ok(envelope::ok(
+            json!({ "url": url, "file": store::file_view(&row) }),
+        ));
     }
     let key = row
         .storage_key
@@ -756,8 +824,10 @@ pub async fn get_file(
     let Some(bytes) = store::get_object(&state.config.upload_dir, &key).await else {
         return Err(AppError::NotFound("File data not found".into()));
     };
-    let content_type =
-        row.content_type.clone().unwrap_or_else(|| "application/octet-stream".into());
+    let content_type = row
+        .content_type
+        .clone()
+        .unwrap_or_else(|| "application/octet-stream".into());
     let filename = row.file_name.clone().unwrap_or_else(|| file_id.clone());
     Ok(stream_bytes(
         bytes,
@@ -810,7 +880,10 @@ pub async fn download_url(
         .clone()
         .filter(|k| !k.is_empty())
         .ok_or_else(|| AppError::NotFound("File not found".into()))?;
-    let ttl = q.expires_in.unwrap_or(DOWNLOAD_URL_TTL).clamp(60, 7 * 86_400);
+    let ttl = q
+        .expires_in
+        .unwrap_or(DOWNLOAD_URL_TTL)
+        .clamp(60, 7 * 86_400);
     let (url, expires) = signed_download_url(&state, &row.id, &key, ttl);
     Ok(envelope::ok(json!({ "url": url, "expiresAt": expires })))
 }
@@ -823,7 +896,10 @@ pub async fn conversation_files(
     Path(conversation_id): Path<String>,
     Query(q): Query<ListQuery>,
 ) -> Result {
-    let q2 = ListQuery { conversation_id: Some(conversation_id), ..q };
+    let q2 = ListQuery {
+        conversation_id: Some(conversation_id),
+        ..q
+    };
     list(State(state), Extension(user), Query(q2)).await
 }
 
@@ -846,7 +922,9 @@ pub async fn message_files(
     .bind(&scope_user)
     .fetch_all(&state.db)
     .await?;
-    Ok(envelope::ok(rows.iter().map(store::file_view).collect::<Vec<_>>()))
+    Ok(envelope::ok(
+        rows.iter().map(store::file_view).collect::<Vec<_>>(),
+    ))
 }
 
 /// GET /api/files/search (CRD 3169-3171): case-insensitive filename contains.
@@ -855,12 +933,11 @@ pub async fn search(
     Extension(user): Extension<AuthUser>,
     Query(q): Query<ListQuery>,
 ) -> Result {
-    let query = q
-        .q
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| AppError::BadRequest("Search query is required".into()))?;
+    let query =
+        q.q.as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::BadRequest("Search query is required".into()))?;
     let (page, size) = envelope::clamp_page(q.page, q.page_size.or(q.limit));
     let scope_user = (!user.is_admin()).then_some(user.id.clone());
     let pattern = format!("%{}%", query.to_lowercase());
@@ -949,10 +1026,15 @@ pub async fn batch(
                 if let Some(key) = row.storage_key.as_deref().filter(|k| !k.is_empty()) {
                     store::delete_object(&state.config.upload_dir, key).await;
                 }
-                let _ = sqlx::query("DELETE FROM attachments WHERE id = $1")
+                if let Err(error) = sqlx::query("DELETE FROM attachments WHERE id = $1")
                     .bind(id)
                     .execute(&state.db)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(error = %error, file_id = %id, "batch attachment delete failed");
+                    failed.push(json!({"id": id, "error": error.to_string()}));
+                    continue;
+                }
                 successful.push(json!({"id": id}));
             }
             Ok(None) => failed.push(json!({"id": id, "error": "File not found"})),
@@ -1003,9 +1085,11 @@ pub async fn presigned_url(
         ));
     }
     if filename.chars().count() > 255 {
-        return Err(AppError::BadRequest("filename exceeds 255 characters".into()));
+        return Err(AppError::BadRequest(
+            "filename exceeds 255 characters".into(),
+        ));
     }
-    validate::validate_filename(filename).map_err(AppError::BadRequest)?;
+    validate::validate_filename(filename).map_err(|e| AppError::BadRequest(e.to_string()))?;
     let content_type = body.content_type.as_deref().unwrap_or("");
     if content_type.is_empty() || !validate::allowed_types("admin").contains(&content_type) {
         return Err(AppError::BadRequest(format!(
@@ -1014,13 +1098,19 @@ pub async fn presigned_url(
     }
     let size = body.size.unwrap_or(0);
     if size <= 0 || size as usize > validate::GLOBAL_MAX {
-        return Err(AppError::BadRequest("size must be a positive number up to 10MB".into()));
+        return Err(AppError::BadRequest(
+            "size must be a positive number up to 10MB".into(),
+        ));
     }
 
     let file_id = uuid::Uuid::new_v4().to_string();
     let sanitized = validate::sanitize_filename(filename);
     let file_type = validate::file_category(content_type);
-    let key = store::storage_key("system", file_type, validate::extension_of(&sanitized).as_deref());
+    let key = store::storage_key(
+        "system",
+        file_type,
+        validate::extension_of(&sanitized).as_deref(),
+    );
     let (sig, expires) = sign::sign(state.config.file_signing_key(), &key, PRESIGNED_TTL);
     let base = state.config.backend_url.clone().unwrap_or_default();
     let upload_url = format!("{base}/api/files/direct/{file_id}?expires={expires}&sig={sig}");
@@ -1088,7 +1178,9 @@ pub async fn confirm_upload(
     require_file_id(&file_id)?;
     let size = body.size.unwrap_or(0);
     if size <= 0 {
-        return Err(AppError::BadRequest("size must be a positive number".into()));
+        return Err(AppError::BadRequest(
+            "size must be a positive number".into(),
+        ));
     }
     let row = store::find(&state.db, &file_id)
         .await?
@@ -1106,18 +1198,27 @@ pub async fn confirm_upload(
     let object = store::get_object(&state.config.upload_dir, &key).await;
     let Some(bytes) = object else {
         mark_upload_failed(&state, &file_id).await?;
-        return Err(AppError::BadRequest("Uploaded object not found in store".into()));
+        return Err(AppError::BadRequest(
+            "Uploaded object not found in store".into(),
+        ));
     };
     if bytes.len() as i64 != size {
         mark_upload_failed(&state, &file_id).await?;
-        return Err(AppError::BadRequest("Uploaded size does not match the confirmed size".into()));
+        return Err(AppError::BadRequest(
+            "Uploaded size does not match the confirmed size".into(),
+        ));
     }
     if let Some(expected) = body.checksum.as_deref().filter(|c| !c.is_empty()) {
         let digest = Sha256::digest(&bytes);
-        let actual = digest.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let actual = digest
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         if !actual.eq_ignore_ascii_case(expected) {
             mark_upload_failed(&state, &file_id).await?;
-            return Err(AppError::BadRequest("Uploaded checksum does not match".into()));
+            return Err(AppError::BadRequest(
+                "Uploaded checksum does not match".into(),
+            ));
         }
     }
     sqlx::query(
@@ -1167,10 +1268,12 @@ pub async fn chunked_init(
     Json(body): Json<ChunkInitBody>,
 ) -> Result {
     let filename = body.filename.as_deref().unwrap_or("");
-    validate::validate_filename(filename).map_err(AppError::BadRequest)?;
+    validate::validate_filename(filename).map_err(|e| AppError::BadRequest(e.to_string()))?;
     let size = body.size.unwrap_or(0);
     if size <= 0 {
-        return Err(AppError::BadRequest("size must be a positive number".into()));
+        return Err(AppError::BadRequest(
+            "size must be a positive number".into(),
+        ));
     }
     if body.content_type.as_deref().unwrap_or("").is_empty() {
         return Err(AppError::BadRequest("contentType is required".into()));
@@ -1188,7 +1291,10 @@ pub async fn chunked_chunk(
     Extension(_user): Extension<AuthUser>,
     Path(session_id): Path<String>,
 ) -> Result {
-    Ok(envelope::ok_msg(json!({"uploadId": session_id}), "Chunk received"))
+    Ok(envelope::ok_msg(
+        json!({"uploadId": session_id}),
+        "Chunk received",
+    ))
 }
 
 pub async fn chunked_complete(
@@ -1209,7 +1315,10 @@ pub async fn chunked_cancel(
     Extension(_user): Extension<AuthUser>,
     Path(session_id): Path<String>,
 ) -> Result {
-    Ok(envelope::ok_msg(json!({"uploadId": session_id}), "Upload cancelled"))
+    Ok(envelope::ok_msg(
+        json!({"uploadId": session_id}),
+        "Upload cancelled",
+    ))
 }
 
 #[cfg(test)]
@@ -1227,13 +1336,22 @@ mod tests {
             Some("https://app.example"),
         );
         let headers = resp.headers();
-        assert_eq!(headers.get(header::X_CONTENT_TYPE_OPTIONS).unwrap(), "nosniff");
+        assert_eq!(
+            headers.get(header::X_CONTENT_TYPE_OPTIONS).unwrap(),
+            "nosniff"
+        );
         assert_eq!(
             headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
             "https://app.example"
         );
-        assert_ne!(headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(), "*");
-        assert_eq!(headers.get(header::CONTENT_DISPOSITION).unwrap(), "attachment");
+        assert_ne!(
+            headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+            "*"
+        );
+        assert_eq!(
+            headers.get(header::CONTENT_DISPOSITION).unwrap(),
+            "attachment"
+        );
     }
 
     #[test]
@@ -1245,7 +1363,10 @@ mod tests {
             "private, max-age=60",
             None,
         );
-        assert!(resp.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+        assert!(resp
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none());
     }
 
     #[test]
@@ -1253,6 +1374,9 @@ mod tests {
         assert_eq!(public_disposition_for("image/png"), None);
         assert_eq!(public_disposition_for("video/mp4"), None);
         assert_eq!(public_disposition_for("text/html"), Some("attachment"));
-        assert_eq!(public_disposition_for("application/pdf"), Some("attachment"));
+        assert_eq!(
+            public_disposition_for("application/pdf"),
+            Some("attachment")
+        );
     }
 }
