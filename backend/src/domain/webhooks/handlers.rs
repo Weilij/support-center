@@ -149,7 +149,7 @@ async fn security_event(
     source_ip: Option<&str>,
     details: Value,
 ) {
-    let _ = sqlx::query(
+    if let Err(error) = sqlx::query(
         "INSERT INTO webhook_security_events
             (id, event_type, severity, platform, source_ip, details, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7)",
@@ -162,7 +162,62 @@ async fn security_event(
     .bind(details.to_string())
     .bind(now_iso())
     .execute(db)
+    .await
+    {
+        tracing::warn!(
+            error = %error,
+            event_type,
+            severity,
+            platform,
+            "webhook security event write failed"
+        );
+    }
+}
+
+fn processing_failure_alert(
+    platform: &str,
+    failed: usize,
+    total: usize,
+    source_ip: Option<&str>,
+    details: Value,
+) -> (String, String, Value) {
+    let title = format!("{platform} webhook processing failure");
+    let message = format!("{failed} of {total} {platform} webhook events failed");
+    let metadata = json!({
+        "platform": platform,
+        "failed": failed,
+        "total": total,
+        "sourceIp": source_ip,
+        "details": details,
+    });
+    (title, message, metadata)
+}
+
+async fn dispatch_processing_failure_alert(
+    platform: &str,
+    failed: usize,
+    total: usize,
+    source_ip: Option<&str>,
+    details: Value,
+) {
+    let (title, message, metadata) =
+        processing_failure_alert(platform, failed, total, source_ip, details);
+    let (successes, failures, errors) = crate::domain::notifications::alerts::send_security_alert(
+        &title,
+        &message,
+        "high",
+        Some(metadata),
+    )
     .await;
+    if failures > 0 {
+        tracing::warn!(
+            platform,
+            successes,
+            failures,
+            errors = ?errors,
+            "webhook processing failure alert dispatch incomplete"
+        );
+    }
 }
 
 fn fail(status: StatusCode, error: &str) -> Response {
@@ -309,54 +364,55 @@ pub async fn line_webhook(
     let mut failed = 0usize;
     let mut last_error: Option<String> = None;
     for event in events {
-        let result: Result<(), String> = match event.get("type").and_then(Value::as_str) {
-            Some("message") => match event.get("message").filter(|m| m.is_object()) {
-                Some(message) => {
-                    let normalized = parse::normalize_line(message);
-                    let mid = message.get("id").and_then(Value::as_str);
-                    let user_id = event["source"]["userId"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string();
-                    ingest::ingest_message(
-                        &state,
-                        InboundMessage {
-                            platform: "line",
-                            platform_user_id: &user_id,
-                            default_display_name: ingest::default_display_name("line"),
-                            platform_message_id: mid,
-                            normalized,
-                        },
-                    )
-                    .await
-                    .map(|_| ())
-                }
-                None => Ok(()),
-            },
-            Some("follow") => ingest::handle_line_follow(&state, event).await,
-            Some("unfollow") => ingest::handle_line_unfollow(&state, event).await,
-            _ => Ok(()), // other event kinds are ignored (CRD 2746)
-        };
+        let result: Result<(), ingest::IngestError> =
+            match event.get("type").and_then(Value::as_str) {
+                Some("message") => match event.get("message").filter(|m| m.is_object()) {
+                    Some(message) => {
+                        let normalized = parse::normalize_line(message);
+                        let mid = message.get("id").and_then(Value::as_str);
+                        let user_id = event["source"]["userId"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string();
+                        ingest::ingest_message(
+                            &state,
+                            InboundMessage {
+                                platform: "line",
+                                platform_user_id: &user_id,
+                                default_display_name: ingest::default_display_name("line"),
+                                platform_message_id: mid,
+                                normalized,
+                            },
+                        )
+                        .await
+                        .map(|_| ())
+                    }
+                    None => Ok(()),
+                },
+                Some("follow") => ingest::handle_line_follow(&state, event).await,
+                Some("unfollow") => ingest::handle_line_unfollow(&state, event).await,
+                _ => Ok(()), // other event kinds are ignored (CRD 2746)
+            };
         if let Err(e) = result {
             failed += 1;
-            last_error = Some(e);
+            last_error = Some(e.to_string());
         }
     }
 
     // 10. On partial failure: record (and defer-dispatch) an alert, report the
     //     whole batch as failed so the platform retries (CRD 2747, 2761).
     if failed > 0 {
+        let details = json!({ "failed": failed, "total": total, "lastError": last_error });
         security_event(
             &state.db,
             "webhook_processing_failure",
             "high",
             "line",
             ip.as_deref(),
-            json!({ "failed": failed, "total": total, "lastError": last_error }),
+            details.clone(),
         )
         .await;
-        // TODO(alerts): when an external alert sink URL is configured, post a
-        // formatted alert message to it (best-effort, CRD 2859).
+        dispatch_processing_failure_alert("line", failed, total, ip.as_deref(), details).await;
         return fail(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("{failed} of {total} events failed"),
@@ -367,7 +423,7 @@ pub async fn line_webhook(
 
 enum ItemResult {
     None,
-    Ingested(Result<(), String>),
+    Ingested(Result<(), ingest::IngestError>),
 }
 
 /// Handle one `messaging[]` item for a Meta platform (facebook | instagram).
@@ -589,7 +645,7 @@ pub async fn facebook_webhook(
                         total += 1;
                         if let Err(e) = r {
                             failed += 1;
-                            last_error = Some(e);
+                            last_error = Some(e.to_string());
                         }
                     }
                     ItemResult::None => {}
@@ -599,16 +655,17 @@ pub async fn facebook_webhook(
     }
 
     if failed > 0 {
+        let details = json!({ "failed": failed, "total": total, "lastError": last_error });
         security_event(
             &state.db,
             "webhook_processing_failure",
             "high",
             "facebook",
             ip.as_deref(),
-            json!({ "failed": failed, "total": total, "lastError": last_error }),
+            details.clone(),
         )
         .await;
-        // TODO(alerts): optional external alert dispatch (CRD 2859).
+        dispatch_processing_failure_alert("facebook", failed, total, ip.as_deref(), details).await;
         return fail(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("{failed} of {total} Facebook events failed"),
@@ -746,15 +803,18 @@ pub async fn shopee_webhook(
     .await;
 
     if let Err(e) = result {
+        let error = e.to_string();
+        let details = json!({ "lastError": error });
         security_event(
             &state.db,
             "webhook_processing_failure",
             "high",
             "shopee",
             ip.as_deref(),
-            json!({ "lastError": e }),
+            details.clone(),
         )
         .await;
+        dispatch_processing_failure_alert("shopee", 1, 1, ip.as_deref(), details).await;
         return fail(StatusCode::INTERNAL_SERVER_ERROR, "Shopee event failed");
     }
     batch_ok()
@@ -786,6 +846,25 @@ mod tests {
         assert!(!valid_facebook_signature("other", body, &sig));
         assert!(!valid_facebook_signature("secret", body, "sha256=not-hex"));
         assert!(!valid_facebook_signature("secret", body, "sha256=abc"));
+    }
+
+    #[test]
+    fn processing_failure_alert_payload_carries_retry_context() {
+        let (title, message, metadata) = processing_failure_alert(
+            "line",
+            2,
+            3,
+            Some("203.0.113.7"),
+            json!({ "lastError": "insert failed" }),
+        );
+
+        assert_eq!(title, "line webhook processing failure");
+        assert_eq!(message, "2 of 3 line webhook events failed");
+        assert_eq!(metadata["platform"], "line");
+        assert_eq!(metadata["failed"], 2);
+        assert_eq!(metadata["total"], 3);
+        assert_eq!(metadata["sourceIp"], "203.0.113.7");
+        assert_eq!(metadata["details"]["lastError"], "insert failed");
     }
 
     #[test]

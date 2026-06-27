@@ -21,6 +21,83 @@ const CONFIG_KEY: &str = "alerting_config";
 const DEFAULT_MAX_PER_HOUR: i64 = 20;
 const SMTP_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[derive(Debug)]
+enum AlertDispatchError {
+    NotConfigured(&'static str),
+    InvalidUrl(&'static str),
+    RequestFailed {
+        destination: &'static str,
+        source: reqwest::Error,
+    },
+    HttpStatus {
+        destination: &'static str,
+        status: reqwest::StatusCode,
+    },
+    SmtpReadTimedOut,
+    SmtpConnectTimedOut,
+    SmtpReadFailed(String),
+    SmtpConnectFailed(String),
+    SmtpWriteFailed(String),
+    SmtpConnectionClosed,
+    InvalidSmtpReply(String),
+    SmtpCodeRejected {
+        context: String,
+        code: u16,
+    },
+    EmailHostNotConfigured,
+    EmailInvalidPort,
+    EmailSenderNotConfigured,
+    EmailRecipientsNotConfigured,
+    CredentialReveal(String),
+    UnsupportedChannel(String),
+}
+
+impl std::fmt::Display for AlertDispatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotConfigured(destination) => write!(f, "{destination}: not configured"),
+            Self::InvalidUrl(destination) => write!(f, "{destination}: invalid URL"),
+            Self::RequestFailed {
+                destination,
+                source,
+            } => write!(f, "{destination}: request failed: {source}"),
+            Self::HttpStatus {
+                destination,
+                status,
+            } => write!(f, "{destination}: HTTP {status}"),
+            Self::SmtpReadTimedOut => f.write_str("email: SMTP read timed out"),
+            Self::SmtpConnectTimedOut => f.write_str("email: SMTP connect timed out"),
+            Self::SmtpReadFailed(error) => write!(f, "email: SMTP read failed: {error}"),
+            Self::SmtpConnectFailed(error) => write!(f, "email: SMTP connect failed: {error}"),
+            Self::SmtpWriteFailed(error) => write!(f, "email: SMTP write failed: {error}"),
+            Self::SmtpConnectionClosed => f.write_str("email: SMTP connection closed"),
+            Self::InvalidSmtpReply(reply) => write!(f, "email: invalid SMTP reply: {reply}"),
+            Self::SmtpCodeRejected { context, code } => {
+                write!(f, "email: SMTP {context} failed with {code}")
+            }
+            Self::EmailHostNotConfigured => f.write_str("email: host not configured"),
+            Self::EmailInvalidPort => f.write_str("email: invalid port"),
+            Self::EmailSenderNotConfigured => f.write_str("email: sender not configured"),
+            Self::EmailRecipientsNotConfigured => f.write_str("email: recipients not configured"),
+            Self::CredentialReveal(error) => {
+                write!(f, "email: credential reveal failed: {error}")
+            }
+            Self::UnsupportedChannel(channel) => write!(f, "{channel}: not configured"),
+        }
+    }
+}
+
+impl std::error::Error for AlertDispatchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::RequestFailed { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+type AlertDispatchResult<T = ()> = std::result::Result<T, AlertDispatchError>;
+
 fn http_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {
@@ -36,17 +113,17 @@ fn severity_rank(s: &str) -> usize {
 }
 
 async fn post_alert_json(
-    destination: &str,
+    destination: &'static str,
     url: &str,
     payload: &Value,
     bearer: Option<&str>,
-) -> Result<(), String> {
+) -> AlertDispatchResult {
     let url = url
         .trim()
         .strip_prefix("http://")
         .map(|_| url.trim())
         .or_else(|| url.trim().strip_prefix("https://").map(|_| url.trim()))
-        .ok_or_else(|| format!("{destination}: invalid URL"))?;
+        .ok_or(AlertDispatchError::InvalidUrl(destination))?;
     let mut req = http_client().post(url).json(payload);
     if let Some(token) = bearer.filter(|t| !t.trim().is_empty()) {
         req = req.bearer_auth(token);
@@ -54,19 +131,20 @@ async fn post_alert_json(
     let resp = req
         .send()
         .await
-        .map_err(|e| format!("{destination}: request failed: {e}"))?;
+        .map_err(|source| AlertDispatchError::RequestFailed {
+            destination,
+            source,
+        })?;
     if !resp.status().is_success() {
-        return Err(format!("{destination}: HTTP {}", resp.status()));
+        return Err(AlertDispatchError::HttpStatus {
+            destination,
+            status: resp.status(),
+        });
     }
     Ok(())
 }
 
-fn security_payload(
-    title: &str,
-    message: &str,
-    severity: &str,
-    metadata: Option<&Value>,
-) -> Value {
+fn security_payload(title: &str, message: &str, severity: &str, metadata: Option<&Value>) -> Value {
     json!({
         "type": "security_alert",
         "title": title,
@@ -119,17 +197,22 @@ pub async fn send_security_alert(
             name: "email",
             configured: email_api_key.as_ref().is_some_and(|v| !v.trim().is_empty())
                 && email_api_url.as_ref().is_some_and(|v| !v.trim().is_empty()),
-            min_severity: std::env::var("ALERT_EMAIL_MIN_SEVERITY").unwrap_or_else(|_| "high".into()),
+            min_severity: std::env::var("ALERT_EMAIL_MIN_SEVERITY")
+                .unwrap_or_else(|_| "high".into()),
         },
         Destination {
             name: "chat-webhook",
-            configured: chat_webhook_url.as_ref().is_some_and(|v| !v.trim().is_empty()),
-            min_severity: std::env::var("ALERT_CHAT_MIN_SEVERITY").unwrap_or_else(|_| "medium".into()),
+            configured: chat_webhook_url
+                .as_ref()
+                .is_some_and(|v| !v.trim().is_empty()),
+            min_severity: std::env::var("ALERT_CHAT_MIN_SEVERITY")
+                .unwrap_or_else(|_| "medium".into()),
         },
         Destination {
             name: "webhook",
             configured: webhook_url.as_ref().is_some_and(|v| !v.trim().is_empty()),
-            min_severity: std::env::var("ALERT_WEBHOOK_MIN_SEVERITY").unwrap_or_else(|_| "low".into()),
+            min_severity: std::env::var("ALERT_WEBHOOK_MIN_SEVERITY")
+                .unwrap_or_else(|_| "low".into()),
         },
     ];
     let generic_payload = security_payload(title, message, severity, metadata.as_ref());
@@ -139,7 +222,7 @@ pub async fn send_security_alert(
         }
         if !dest.configured {
             failures += 1;
-            errors.push(format!("{}: not configured", dest.name));
+            errors.push(AlertDispatchError::NotConfigured(dest.name).to_string());
             continue;
         }
         let result = match dest.name {
@@ -172,16 +255,22 @@ pub async fn send_security_alert(
                 )
                 .await
             }
-            _ => Err(format!("{}: not configured", dest.name)),
+            _ => Err(AlertDispatchError::NotConfigured(dest.name)),
         };
         match result {
             Ok(()) => {
-                tracing::info!(destination = dest.name, severity, title, message, "security alert dispatched");
+                tracing::info!(
+                    destination = dest.name,
+                    severity,
+                    title,
+                    message,
+                    "security alert dispatched"
+                );
                 successes += 1;
             }
             Err(e) => {
                 failures += 1;
-                errors.push(e);
+                errors.push(e.to_string());
             }
         }
     }
@@ -225,7 +314,7 @@ pub async fn update_config(db: &PgPool, partial: &Value) -> Value {
             base.insert(k.clone(), v.clone());
         }
     }
-    let _ = sqlx::query(
+    if let Err(error) = sqlx::query(
         "INSERT INTO system_settings (key, value, updated_at) VALUES ($1, $2, $3)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
     )
@@ -233,7 +322,10 @@ pub async fn update_config(db: &PgPool, partial: &Value) -> Value {
     .bind(config.to_string())
     .bind(now_iso())
     .execute(db)
-    .await;
+    .await
+    {
+        tracing::warn!(error = %error, key = CONFIG_KEY, "alerting config write failed");
+    }
     config
 }
 
@@ -252,15 +344,15 @@ async fn dispatch_webhook(
     state: &AppState,
     payload: &Value,
     setting_key: &str,
-) -> Result<(), String> {
+) -> AlertDispatchResult {
     let setting = get_channel_setting(&state.db, setting_key)
         .await
-        .ok_or_else(|| "webhook: not configured".to_string())?;
+        .ok_or(AlertDispatchError::NotConfigured("webhook"))?;
     let url = setting["url"]
         .as_str()
         .or_else(|| setting["webhookUrl"].as_str())
         .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
-        .ok_or_else(|| "webhook: invalid URL".to_string())?;
+        .ok_or(AlertDispatchError::InvalidUrl("webhook"))?;
 
     let mut req = http_client().post(url).json(payload);
     if let Some(headers) = setting["headers"].as_object() {
@@ -273,9 +365,15 @@ async fn dispatch_webhook(
     let resp = req
         .send()
         .await
-        .map_err(|e| format!("webhook: request failed: {e}"))?;
+        .map_err(|source| AlertDispatchError::RequestFailed {
+            destination: "webhook",
+            source,
+        })?;
     if !resp.status().is_success() {
-        return Err(format!("webhook: HTTP {}", resp.status()));
+        return Err(AlertDispatchError::HttpStatus {
+            destination: "webhook",
+            status: resp.status(),
+        });
     }
     Ok(())
 }
@@ -310,7 +408,7 @@ fn email_message(
     body
 }
 
-async fn read_smtp_reply<R>(reader: &mut R) -> Result<u16, String>
+async fn read_smtp_reply<R>(reader: &mut R) -> AlertDispatchResult<u16>
 where
     R: AsyncBufRead + Unpin,
 {
@@ -319,29 +417,34 @@ where
         line.clear();
         let read = tokio::time::timeout(SMTP_TIMEOUT, reader.read_line(&mut line))
             .await
-            .map_err(|_| "email: SMTP read timed out".to_string())?
-            .map_err(|e| format!("email: SMTP read failed: {e}"))?;
+            .map_err(|_| AlertDispatchError::SmtpReadTimedOut)?
+            .map_err(|e| AlertDispatchError::SmtpReadFailed(e.to_string()))?;
         if read == 0 {
-            return Err("email: SMTP connection closed".into());
+            return Err(AlertDispatchError::SmtpConnectionClosed);
         }
         let bytes = line.as_bytes();
         if bytes.len() >= 4 && bytes[3] == b' ' {
             let code = line[..3]
                 .parse::<u16>()
-                .map_err(|_| format!("email: invalid SMTP reply: {}", line.trim_end()))?;
+                .map_err(|_| AlertDispatchError::InvalidSmtpReply(line.trim_end().to_string()))?;
             return Ok(code);
         }
         if bytes.len() < 4 || bytes[3] != b'-' {
-            return Err(format!("email: invalid SMTP reply: {}", line.trim_end()));
+            return Err(AlertDispatchError::InvalidSmtpReply(
+                line.trim_end().to_string(),
+            ));
         }
     }
 }
 
-fn ensure_smtp_code(code: u16, accepted: &[u16], context: &str) -> Result<(), String> {
+fn ensure_smtp_code(code: u16, accepted: &[u16], context: &str) -> AlertDispatchResult {
     if accepted.contains(&code) {
         Ok(())
     } else {
-        Err(format!("email: SMTP {context} failed with {code}"))
+        Err(AlertDispatchError::SmtpCodeRejected {
+            context: context.to_string(),
+            code,
+        })
     }
 }
 
@@ -367,11 +470,11 @@ async fn send_plain_smtp(
     recipients: &[String],
     message: &str,
     auth: Option<(&str, &str)>,
-) -> Result<(), String> {
+) -> AlertDispatchResult {
     let stream = tokio::time::timeout(SMTP_TIMEOUT, TcpStream::connect((host, port)))
         .await
-        .map_err(|_| "email: SMTP connect timed out".to_string())?
-        .map_err(|e| format!("email: SMTP connect failed: {e}"))?;
+        .map_err(|_| AlertDispatchError::SmtpConnectTimedOut)?
+        .map_err(|e| AlertDispatchError::SmtpConnectFailed(e.to_string()))?;
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
 
@@ -380,7 +483,7 @@ async fn send_plain_smtp(
     writer
         .write_all(b"HELO localhost\r\n")
         .await
-        .map_err(|e| format!("email: SMTP write failed: {e}"))?;
+        .map_err(|e| AlertDispatchError::SmtpWriteFailed(e.to_string()))?;
     ensure_smtp_code(read_smtp_reply(&mut reader).await?, &[250], "HELO")?;
 
     if let Some((username, password)) = auth {
@@ -388,34 +491,38 @@ async fn send_plain_smtp(
         writer
             .write_all(format!("AUTH PLAIN {auth}\r\n").as_bytes())
             .await
-            .map_err(|e| format!("email: SMTP write failed: {e}"))?;
-        ensure_smtp_code(read_smtp_reply(&mut reader).await?, &[235, 503], "AUTH PLAIN")?;
+            .map_err(|e| AlertDispatchError::SmtpWriteFailed(e.to_string()))?;
+        ensure_smtp_code(
+            read_smtp_reply(&mut reader).await?,
+            &[235, 503],
+            "AUTH PLAIN",
+        )?;
     }
 
     writer
         .write_all(format!("MAIL FROM:<{sender}>\r\n").as_bytes())
         .await
-        .map_err(|e| format!("email: SMTP write failed: {e}"))?;
+        .map_err(|e| AlertDispatchError::SmtpWriteFailed(e.to_string()))?;
     ensure_smtp_code(read_smtp_reply(&mut reader).await?, &[250], "MAIL FROM")?;
 
     for recipient in recipients {
         writer
             .write_all(format!("RCPT TO:<{recipient}>\r\n").as_bytes())
             .await
-            .map_err(|e| format!("email: SMTP write failed: {e}"))?;
+            .map_err(|e| AlertDispatchError::SmtpWriteFailed(e.to_string()))?;
         ensure_smtp_code(read_smtp_reply(&mut reader).await?, &[250, 251], "RCPT TO")?;
     }
 
     writer
         .write_all(b"DATA\r\n")
         .await
-        .map_err(|e| format!("email: SMTP write failed: {e}"))?;
+        .map_err(|e| AlertDispatchError::SmtpWriteFailed(e.to_string()))?;
     ensure_smtp_code(read_smtp_reply(&mut reader).await?, &[354], "DATA")?;
 
     writer
         .write_all(format!("{}\r\n.\r\n", dot_stuff(message)).as_bytes())
         .await
-        .map_err(|e| format!("email: SMTP write failed: {e}"))?;
+        .map_err(|e| AlertDispatchError::SmtpWriteFailed(e.to_string()))?;
     ensure_smtp_code(read_smtp_reply(&mut reader).await?, &[250], "message")?;
 
     let _ = writer.write_all(b"QUIT\r\n").await;
@@ -428,22 +535,22 @@ async fn dispatch_email(
     title: &str,
     description: &str,
     metadata: Option<&Value>,
-) -> Result<(), String> {
+) -> AlertDispatchResult {
     let setting = get_channel_setting(&state.db, "alert.email")
         .await
-        .ok_or_else(|| "email: not configured".to_string())?;
+        .ok_or(AlertDispatchError::NotConfigured("email"))?;
     let host = setting["host"]
         .as_str()
         .filter(|h| !h.is_empty())
-        .ok_or_else(|| "email: host not configured".to_string())?;
+        .ok_or(AlertDispatchError::EmailHostNotConfigured)?;
     let port = setting["port"]
         .as_u64()
         .and_then(|p| u16::try_from(p).ok())
-        .ok_or_else(|| "email: invalid port".to_string())?;
+        .ok_or(AlertDispatchError::EmailInvalidPort)?;
     let sender = setting["sender"]
         .as_str()
         .filter(|s| s.contains('@'))
-        .ok_or_else(|| "email: sender not configured".to_string())?;
+        .ok_or(AlertDispatchError::EmailSenderNotConfigured)?;
     let recipients: Vec<String> = setting["recipients"]
         .as_array()
         .map(|items| {
@@ -454,13 +561,13 @@ async fn dispatch_email(
         })
         .unwrap_or_default();
     if recipients.is_empty() {
-        return Err("email: recipients not configured".into());
+        return Err(AlertDispatchError::EmailRecipientsNotConfigured);
     }
     let password = setting["password"]
         .as_str()
         .map(|stored| {
             crypto::reveal(state.config.encryption_key.as_deref(), stored)
-                .map_err(|e| format!("email: credential reveal failed: {e}"))
+                .map_err(|e| AlertDispatchError::CredentialReveal(e.to_string()))
         })
         .transpose()?;
 
@@ -497,7 +604,9 @@ pub async fn send_monitoring_alert(
             .fetch_one(&state.db)
             .await
             .unwrap_or(0);
-    let max_per_hour = config["rateLimiting"]["maxPerHour"].as_i64().unwrap_or(DEFAULT_MAX_PER_HOUR);
+    let max_per_hour = config["rateLimiting"]["maxPerHour"]
+        .as_i64()
+        .unwrap_or(DEFAULT_MAX_PER_HOUR);
     let limit_on = config["rateLimiting"]["enabled"].as_bool().unwrap_or(true);
     let rate_limited = limit_on && level != "emergency" && recent >= max_per_hour;
 
@@ -505,7 +614,11 @@ pub async fn send_monitoring_alert(
     if enabled && !rate_limited {
         let channels: Vec<String> = config["levelChannels"][level]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_else(|| vec!["console".into()]);
         for channel in &channels {
             let payload = json!({
@@ -524,21 +637,20 @@ pub async fn send_monitoring_alert(
                 }
                 "webhook" => dispatch_webhook(state, &payload, "alert.webhook").await,
                 "chat" => {
-                    let payload =
-                        slack_payload(level, title, description, metadata.as_ref());
+                    let payload = slack_payload(level, title, description, metadata.as_ref());
                     dispatch_webhook(state, &payload, "alert.slack").await
                 }
                 "email" => {
                     dispatch_email(state, level, title, description, metadata.as_ref()).await
                 }
-                other => Err(format!("{other}: not configured")),
+                other => Err(AlertDispatchError::UnsupportedChannel(other.to_string())),
             };
             let success = result.is_ok();
             attempts.push(json!({
                 "channel": channel,
                 "time": now_iso(),
                 "success": success,
-                "error": result.err().map(Value::String).unwrap_or(Value::Null),
+                "error": result.err().map(|e| Value::String(e.to_string())).unwrap_or(Value::Null),
             }));
         }
         // Escalation for critical/emergency is scheduled (logged) only (CRD 5066).
@@ -547,7 +659,7 @@ pub async fn send_monitoring_alert(
         }
     }
 
-    let _ = sqlx::query(
+    if let Err(error) = sqlx::query(
         "INSERT INTO monitoring_alerts
             (id, level, title, description, channel_attempts, metadata, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7)",
@@ -560,7 +672,10 @@ pub async fn send_monitoring_alert(
     .bind(metadata.map(|m| m.to_string()))
     .bind(&now)
     .execute(&state.db)
-    .await;
+    .await
+    {
+        tracing::warn!(error = %error, alert = %id, level, "monitoring alert record write failed");
+    }
 
     json!({
         "id": id,
@@ -596,4 +711,44 @@ pub async fn resolve(db: &PgPool, alert_id: &str) -> bool {
         .await
         .map(|r| r.rows_affected() == 1)
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn read_smtp_reply_returns_final_multiline_code() {
+        let input = b"250-first line\r\n250 second line\r\n";
+        let mut reader = BufReader::new(&input[..]);
+
+        let code = read_smtp_reply(&mut reader).await.unwrap();
+
+        assert_eq!(code, 250);
+    }
+
+    #[tokio::test]
+    async fn read_smtp_reply_rejects_invalid_reply_with_typed_error() {
+        let input = b"not smtp\r\n";
+        let mut reader = BufReader::new(&input[..]);
+
+        let error = read_smtp_reply(&mut reader).await.unwrap_err();
+
+        assert!(matches!(error, AlertDispatchError::InvalidSmtpReply(_)));
+        assert_eq!(error.to_string(), "email: invalid SMTP reply: not smtp");
+    }
+
+    #[test]
+    fn ensure_smtp_code_reports_rejected_context() {
+        let error = ensure_smtp_code(550, &[250], "MAIL FROM").unwrap_err();
+
+        assert!(matches!(
+            error,
+            AlertDispatchError::SmtpCodeRejected {
+                ref context,
+                code: 550
+            } if context == "MAIL FROM"
+        ));
+        assert_eq!(error.to_string(), "email: SMTP MAIL FROM failed with 550");
+    }
 }

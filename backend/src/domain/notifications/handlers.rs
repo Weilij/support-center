@@ -1,7 +1,6 @@
 //! In-app notification inbox endpoints (CRD 4890-5002).
 
 use axum::extract::{Path, Query, State};
-use axum::response::Response;
 use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -9,16 +8,18 @@ use std::sync::Arc;
 
 use crate::db::now_iso;
 use crate::envelope;
-use crate::error::{AppError, FieldProblem};
+use crate::error::{AppError, FieldProblem, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
 
 use super::service::{self, NewNotification, CHANNELS, PRIORITIES, TYPES};
 
-type Result<T = Response> = std::result::Result<T, AppError>;
-
 fn problem(field: &str, message: &str) -> FieldProblem {
-    FieldProblem { field: field.into(), message: message.into(), value: None }
+    FieldProblem {
+        field: field.into(),
+        message: message.into(),
+        value: None,
+    }
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -177,11 +178,7 @@ pub async fn list(
     })))
 }
 
-async fn find_owned(
-    state: &AppState,
-    user_id: &str,
-    id: &str,
-) -> Result<NotificationRow> {
+async fn find_owned(state: &AppState, user_id: &str, id: &str) -> Result<NotificationRow> {
     sqlx::query_as::<_, NotificationRow>(&crate::db::pg_params(&format!(
         "SELECT {COLUMNS} FROM notifications WHERE id = $1 AND agent_id = $2"
     )))
@@ -307,15 +304,23 @@ pub async fn bulk_create(
     let items = body
         .notifications
         .filter(|v| !v.is_empty() && v.len() <= 1000)
-        .ok_or_else(|| AppError::BadRequest("notifications must be an array of 1-1000 items".into()))?;
+        .ok_or_else(|| {
+            AppError::BadRequest("notifications must be an array of 1-1000 items".into())
+        })?;
     let mut validation = Vec::new();
     for (i, item) in items.iter().enumerate() {
         for p in validate_create(item) {
-            validation.push(problem(&format!("notifications[{i}].{}", p.field), &p.message));
+            validation.push(problem(
+                &format!("notifications[{i}].{}", p.field),
+                &p.message,
+            ));
         }
     }
     if !validation.is_empty() {
-        return Err(AppError::Validation("Batch validation failed".into(), validation));
+        return Err(AppError::Validation(
+            "Batch validation failed".into(),
+            validation,
+        ));
     }
     let mut created = Vec::new();
     let mut failures = Vec::new();
@@ -468,7 +473,11 @@ pub async fn stats(
     let week_start = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
     let month_start = (chrono::Utc::now() - chrono::Duration::days(30)).to_rfc3339();
     let mut ranges = serde_json::Map::new();
-    for (label, since) in [("today", day_start), ("thisWeek", week_start), ("thisMonth", month_start)] {
+    for (label, since) in [
+        ("today", day_start),
+        ("thisWeek", week_start),
+        ("thisMonth", month_start),
+    ] {
         let c: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM notifications WHERE agent_id = $1 AND created_at >= $2",
         )
@@ -481,7 +490,12 @@ pub async fn stats(
     }
     let channel_stats: serde_json::Map<String, Value> = CHANNELS
         .iter()
-        .map(|c| (c.to_string(), json!({"sent": 0, "delivered": 0, "failed": 0})))
+        .map(|c| {
+            (
+                c.to_string(),
+                json!({"sent": 0, "delivered": 0, "failed": 0}),
+            )
+        })
         .collect();
     Ok(envelope::ok(json!({
         "total": total,
@@ -553,17 +567,19 @@ pub async fn cleanup(
     if !user.is_admin() {
         return Err(AppError::Forbidden("Administrator role required".into()));
     }
-    let deleted = sqlx::query("DELETE FROM notifications WHERE expires_at IS NOT NULL AND expires_at <= $1")
-        .bind(now_iso())
-        .execute(&state.db)
-        .await?
-        .rows_affected();
-    Ok(envelope::ok_msg(json!({"deleted": deleted}), &format!("{deleted} expired notifications removed")))
+    let deleted =
+        sqlx::query("DELETE FROM notifications WHERE expires_at IS NOT NULL AND expires_at <= $1")
+            .bind(now_iso())
+            .execute(&state.db)
+            .await?
+            .rows_affected();
+    Ok(envelope::ok_msg(
+        json!({"deleted": deleted}),
+        &format!("{deleted} expired notifications removed"),
+    ))
 }
 
-pub async fn channel_stats(
-    Extension(user): Extension<AuthUser>,
-) -> Result {
+pub async fn channel_stats(Extension(user): Extension<AuthUser>) -> Result {
     if !user.is_admin() {
         return Err(AppError::Forbidden("Administrator role required".into()));
     }
@@ -571,7 +587,10 @@ pub async fn channel_stats(
         .iter()
         .map(|c| {
             let enabled = matches!(*c, "database" | "realtime");
-            (c.to_string(), json!({"enabled": enabled, "type": c, "stats": null}))
+            (
+                c.to_string(),
+                json!({"enabled": enabled, "type": c, "stats": null}),
+            )
         })
         .collect();
     Ok(envelope::ok(json!({ "channels": channels })))
@@ -620,7 +639,10 @@ pub async fn test_channel(
             "error": format!("Channel '{other}' is not configured"),
         }),
     };
-    Ok(envelope::ok_msg(result, &format!("Channel test: {channel}")))
+    Ok(envelope::ok_msg(
+        result,
+        &format!("Channel test: {channel}"),
+    ))
 }
 
 // ------------------------------------------------ internal trigger endpoints
@@ -648,7 +670,13 @@ pub async fn trigger_new_message(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::BadRequest("userId is required".into()))?;
     let sender = body.sender_name.as_deref().unwrap_or("Unknown");
-    let preview: String = body.content.as_deref().unwrap_or("").chars().take(100).collect();
+    let preview: String = body
+        .content
+        .as_deref()
+        .unwrap_or("")
+        .chars()
+        .take(100)
+        .collect();
     let id = service::create(
         &state,
         NewNotification {
@@ -730,7 +758,9 @@ pub async fn trigger_system(
     let title = body.title.as_deref().unwrap_or("").trim();
     let content = body.content.as_deref().unwrap_or("").trim();
     if title.is_empty() || content.is_empty() {
-        return Err(AppError::BadRequest("title and content are required".into()));
+        return Err(AppError::BadRequest(
+            "title and content are required".into(),
+        ));
     }
     let broadcast = body.broadcast_to_all.unwrap_or(false)
         || body.user_ids.as_ref().map(|v| v.is_empty()).unwrap_or(true);
@@ -780,7 +810,9 @@ pub async fn broadcast(
     let title = body.title.as_deref().unwrap_or("").trim();
     let content = body.content.as_deref().unwrap_or("").trim();
     if title.is_empty() || content.is_empty() {
-        return Err(AppError::BadRequest("title and content are required".into()));
+        return Err(AppError::BadRequest(
+            "title and content are required".into(),
+        ));
     }
     let recipients = service::active_staff(&state.db).await?;
     if recipients.is_empty() {
