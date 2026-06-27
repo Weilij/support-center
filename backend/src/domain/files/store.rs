@@ -51,10 +51,12 @@ pub fn file_view(row: &FileRow) -> Value {
 }
 
 pub async fn find(pool: &PgPool, id: &str) -> sqlx::Result<Option<FileRow>> {
-    sqlx::query_as(&crate::db::pg_params(&format!("SELECT {COLUMNS} FROM attachments WHERE id = $1")))
-        .bind(id)
-        .fetch_optional(pool)
-        .await
+    sqlx::query_as(&crate::db::pg_params(&format!(
+        "SELECT {COLUMNS} FROM attachments WHERE id = $1"
+    )))
+    .bind(id)
+    .fetch_optional(pool)
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -140,7 +142,10 @@ async fn canonical_upload_dir(upload_dir: &str) -> std::io::Result<PathBuf> {
 async fn ensure_parent_under_upload_dir(upload_dir: &str, path: &Path) -> std::io::Result<()> {
     let base = canonical_upload_dir(upload_dir).await?;
     let parent = path.parent().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "storage key has no parent")
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "storage key has no parent",
+        )
     })?;
     tokio::fs::create_dir_all(parent).await?;
     let parent = tokio::fs::canonicalize(parent).await?;
@@ -154,7 +159,10 @@ async fn ensure_parent_under_upload_dir(upload_dir: &str, path: &Path) -> std::i
     }
 }
 
-async fn canonical_object_under_upload_dir(upload_dir: &str, path: &Path) -> std::io::Result<PathBuf> {
+async fn canonical_object_under_upload_dir(
+    upload_dir: &str,
+    path: &Path,
+) -> std::io::Result<PathBuf> {
     let base = canonical_upload_dir(upload_dir).await?;
     let object = tokio::fs::canonicalize(path).await?;
     if object.starts_with(base) {
@@ -175,14 +183,20 @@ pub async fn put_object(upload_dir: &str, key: &str, bytes: &[u8]) -> std::io::R
 
 pub async fn get_object(upload_dir: &str, key: &str) -> Option<Vec<u8>> {
     let path = object_path(upload_dir, key).ok()?;
-    let path = canonical_object_under_upload_dir(upload_dir, &path).await.ok()?;
+    let path = canonical_object_under_upload_dir(upload_dir, &path)
+        .await
+        .ok()?;
     tokio::fs::read(path).await.ok()
 }
 
 /// Idempotent delete: an absent object is treated as already deleted (CRD 3060).
 pub async fn delete_object(upload_dir: &str, key: &str) {
-    let Ok(path) = object_path(upload_dir, key) else { return };
-    let Ok(path) = canonical_object_under_upload_dir(upload_dir, &path).await else { return };
+    let Ok(path) = object_path(upload_dir, key) else {
+        return;
+    };
+    let Ok(path) = canonical_object_under_upload_dir(upload_dir, &path).await else {
+        return;
+    };
     let _ = tokio::fs::remove_file(path).await;
 }
 
@@ -210,6 +224,8 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
         assert!(!outside.exists());
-        assert!(get_object(upload_dir.to_str().unwrap(), key).await.is_none());
+        assert!(get_object(upload_dir.to_str().unwrap(), key)
+            .await
+            .is_none());
     }
 }
