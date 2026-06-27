@@ -26,12 +26,33 @@ export const tagsStore = new Store<TagsState>({
   error: null,
 })
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function normalizeTag(value: unknown): Tag | null {
+  if (!isRecord(value)) return null
+  const id = value.id
+  const name = value.name
+  if (typeof id !== 'number' || !Number.isFinite(id) || typeof name !== 'string') return null
+  return {
+    ...value,
+    id,
+    name,
+    color: typeof value.color === 'string' ? value.color : undefined,
+    isActive: typeof value.isActive === 'boolean' ? value.isActive : undefined,
+  }
+}
+
+function normalizeTags(value: unknown): Tag[] {
+  return Array.isArray(value) ? value.map(normalizeTag).filter((tag): tag is Tag => tag !== null) : []
+}
+
 function readTags(data: unknown): Tag[] {
-  if (Array.isArray(data)) return data as Tag[]
-  if (typeof data !== 'object' || data === null) return []
-  const record = data as { items?: unknown; tags?: unknown }
-  if (Array.isArray(record.items)) return record.items as Tag[]
-  if (Array.isArray(record.tags)) return record.tags as Tag[]
+  if (Array.isArray(data)) return normalizeTags(data)
+  if (!isRecord(data)) return []
+  if (Array.isArray(data.items)) return normalizeTags(data.items)
+  if (Array.isArray(data.tags)) return normalizeTags(data.tags)
   return []
 }
 

@@ -17,9 +17,40 @@ export interface Attachment {
   createdAt?: string
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+function numberField(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function normalizeAttachment(value: unknown): Attachment | null {
+  if (!isRecord(value) || typeof value.id !== 'string') return null
+  return {
+    id: value.id,
+    filename: stringField(value.filename),
+    originalName: stringField(value.originalName),
+    contentType: stringField(value.contentType),
+    size: numberField(value.size),
+    url: stringField(value.url),
+    publicUrl: stringField(value.publicUrl),
+    conversationId: stringField(value.conversationId),
+    uploadStatus: stringField(value.uploadStatus),
+    createdAt: stringField(value.createdAt),
+  }
+}
+
 export async function loadConversationFiles(conversationId: string): Promise<Attachment[]> {
-  const resp = await get<Attachment[]>(`/api/files/conversation/${conversationId}`)
-  return unwrapList<Attachment>(resp as never).items
+  const resp = await get<unknown>(`/api/files/conversation/${conversationId}`)
+  return unwrapList(resp).items.flatMap((item) => {
+    const attachment = normalizeAttachment(item)
+    return attachment ? [attachment] : []
+  })
 }
 
 /// Upload one file into the conversation. Returns the stored attachment, or an
