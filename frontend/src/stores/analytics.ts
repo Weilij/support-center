@@ -19,12 +19,39 @@ export interface TopPerformer {
   conversationsHandled?: number
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function normalizeRecord(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined
+}
+
+function normalizeTopPerformer(value: unknown): TopPerformer | null {
+  if (!isRecord(value)) return null
+  return {
+    userId: typeof value.userId === 'string' ? value.userId : undefined,
+    displayName: typeof value.displayName === 'string' ? value.displayName : undefined,
+    conversationsHandled:
+      typeof value.conversationsHandled === 'number' && Number.isFinite(value.conversationsHandled)
+        ? value.conversationsHandled
+        : undefined,
+  }
+}
+
+function normalizeTopPerformers(value: unknown): TopPerformer[] {
+  return Array.isArray(value)
+    ? value.map(normalizeTopPerformer).filter((item): item is TopPerformer => item !== null)
+    : []
+}
+
 async function summaryOf(path: string, timeRange: string): Promise<{ summary?: Record<string, unknown>; raw?: Record<string, unknown> }> {
-  const resp = await get<{ data?: { summary?: Record<string, unknown>; topPerformers?: TopPerformer[] } }>(
+  const resp = await get<unknown>(
     `${path}${buildQuery({ timeRange })}`,
   )
-  const inner = resp.success ? resp.data?.data : undefined
-  return { summary: inner?.summary, raw: inner as Record<string, unknown> | undefined }
+  const outer = resp.success ? normalizeRecord(resp.data) : undefined
+  const inner = normalizeRecord(outer?.data)
+  return { summary: normalizeRecord(inner?.summary), raw: inner }
 }
 
 export async function loadAnalyticsOverview(timeRange = '7d'): Promise<CoreSummaries> {
@@ -39,6 +66,6 @@ export async function loadAnalyticsOverview(timeRange = '7d'): Promise<CoreSumma
     messages: msg.summary,
     users: usr.summary,
     performance: perf.summary,
-    topPerformers: (usr.raw?.topPerformers as TopPerformer[]) ?? [],
+    topPerformers: normalizeTopPerformers(usr.raw?.topPerformers),
   }
 }

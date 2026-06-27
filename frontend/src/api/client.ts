@@ -38,6 +38,10 @@ function statusMessage(status: number): string {
   return map[status] ?? t('error.server')
 }
 
+function stringField(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
 /// Read the non-HttpOnly CSRF cookie the backend sets alongside the HttpOnly
 /// auth cookies. Returns undefined when not present (e.g. on the login page
 /// before any auth has occurred).
@@ -158,7 +162,7 @@ export async function api<T = unknown>(
   return {
     success: false,
     ...(parsed ?? {}),
-    message: (parsed?.message as string) || (parsed?.error as string) || statusMessage(resp.status),
+    message: stringField(parsed?.message) ?? stringField(parsed?.error) ?? statusMessage(resp.status),
     status: resp.status,
   }
 }
@@ -205,20 +209,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function listItems<T>(value: unknown): T[] {
-  return Array.isArray(value) ? (value as T[]) : []
+function listItems(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : []
 }
 
 function optionalNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
-export function unwrapList<T>(resp: Envelope<T[] | { items?: T[] }>, page = 1): ListResult<T> {
+export function unwrapList(resp: Envelope<unknown>, page = 1): ListResult<unknown> {
   const data: unknown = resp.data
   const items = Array.isArray(data)
-    ? listItems<T>(data)
+    ? listItems(data)
     : isRecord(data)
-      ? listItems<T>(data.items ?? data.rows)
+      ? listItems(data.items ?? data.rows)
       : []
 
   const pagination = isRecord(resp.pagination) ? resp.pagination : undefined
@@ -270,7 +274,7 @@ export async function upload<T = unknown>(
   return {
     success: false,
     ...(parsed ?? {}),
-    message: (parsed?.message as string) || (parsed?.error as string) || statusMessage(resp.status),
+    message: stringField(parsed?.message) ?? stringField(parsed?.error) ?? statusMessage(resp.status),
     status: resp.status,
   }
 }
