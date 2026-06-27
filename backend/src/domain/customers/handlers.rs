@@ -4,7 +4,7 @@
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -15,13 +15,12 @@ use crate::domain::auth::store::log_activity;
 use crate::domain::tags::handlers::{coerce_tag_ids, parse_json, validation};
 use crate::domain::tags::store::{escape_like, total_pages, TagWithCounts, TAG_COUNT_COLUMNS};
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
 
 use super::store::{self, CustomerRow};
 
-type Result<T = Response> = std::result::Result<T, AppError>;
 type JsonBody<T> = std::result::Result<Json<T>, JsonRejection>;
 
 /// `customerId` path segments must be positive integers (CRD 1667, 1673).
@@ -55,11 +54,9 @@ pub async fn list_customers(
     Extension(user): Extension<AuthUser>,
 ) -> Result {
     let rows: Vec<CustomerRow> = if user.is_admin() {
-        sqlx::query_as(
-            "SELECT * FROM customers WHERE deleted_at IS NULL ORDER BY created_at DESC",
-        )
-        .fetch_all(&state.db)
-        .await?
+        sqlx::query_as("SELECT * FROM customers WHERE deleted_at IS NULL ORDER BY created_at DESC")
+            .fetch_all(&state.db)
+            .await?
     } else if let Some(team) = user.primary_team_id {
         sqlx::query_as(
             "SELECT * FROM customers
@@ -111,7 +108,10 @@ pub async fn get_customer(
         return Err(AppError::NotFound("Customer not found".into()));
     }
     let conversations = store::customer_conversations(&state.db, id).await?;
-    Ok(envelope::ok(customer_with_conversations(&customer, &conversations)))
+    Ok(envelope::ok(customer_with_conversations(
+        &customer,
+        &conversations,
+    )))
 }
 
 // ----------------------------------------- Look up by platform identity (CRD 1679-1689)
@@ -128,7 +128,10 @@ pub async fn get_customer_by_platform(
         return Err(AppError::NotFound("Customer not found".into()));
     }
     let conversations = store::customer_conversations(&state.db, customer.id).await?;
-    Ok(envelope::ok(customer_with_conversations(&customer, &conversations)))
+    Ok(envelope::ok(customer_with_conversations(
+        &customer,
+        &conversations,
+    )))
 }
 
 // ------------------------------------------ Selectable tags catalogue (CRD 1701-1713)
@@ -148,7 +151,12 @@ pub async fn available_tags(
     Extension(user): Extension<AuthUser>,
     Query(q): Query<AvailableTagsQuery>,
 ) -> Result {
-    let page = q.page.as_deref().and_then(|p| p.parse::<i64>().ok()).unwrap_or(1).max(1);
+    let page = q
+        .page
+        .as_deref()
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(1)
+        .max(1);
     let size = q
         .page_size
         .as_deref()
@@ -217,7 +225,11 @@ pub async fn available_tags(
     if let Some(p) = &pattern {
         rows_q = rows_q.bind(p.clone()).bind(p.clone());
     }
-    let rows = rows_q.bind(size).bind((page - 1) * size).fetch_all(&state.db).await?;
+    let rows = rows_q
+        .bind(size)
+        .bind((page - 1) * size)
+        .fetch_all(&state.db)
+        .await?;
 
     let items: Vec<Value> = rows
         .iter()
@@ -290,15 +302,17 @@ pub async fn get_customer_tags(
 
     Ok(envelope::ok_msg(
         rows.iter()
-            .map(|r| json!({
-                "id": r.id,
-                "name": r.name,
-                "color": r.color,
-                "description": r.description,
-                "teamId": r.team_id,
-                "assignedAt": r.assigned_at,
-                "assignedBy": r.assigned_by,
-            }))
+            .map(|r| {
+                json!({
+                    "id": r.id,
+                    "name": r.name,
+                    "color": r.color,
+                    "description": r.description,
+                    "teamId": r.team_id,
+                    "assignedAt": r.assigned_at,
+                    "assignedBy": r.assigned_by,
+                })
+            })
             .collect::<Vec<_>>(),
         "Customer tags retrieved successfully",
     ))
@@ -319,7 +333,10 @@ fn dedup(ids: &[i64]) -> Vec<i64> {
 
 /// Every supplied tag must exist and be active (CRD 1725, 1753).
 async fn require_active_tags(state: &AppState, ids: &[i64]) -> Result<()> {
-    let valid: HashSet<i64> = store::active_tag_ids(&state.db, ids).await?.into_iter().collect();
+    let valid: HashSet<i64> = store::active_tag_ids(&state.db, ids)
+        .await?
+        .into_iter()
+        .collect();
     if ids.iter().any(|id| !valid.contains(id)) {
         return Err(validation("tagIds", "Some tag IDs are invalid or inactive"));
     }
@@ -329,7 +346,9 @@ async fn require_active_tags(state: &AppState, ids: &[i64]) -> Result<()> {
 /// The actor identity must be resolvable so the assigner can be recorded (CRD 1726).
 fn require_actor(user: &AuthUser) -> Result<()> {
     if user.id.is_empty() {
-        return Err(AppError::Unauthorized("Unauthorized: User ID not found in token".into()));
+        return Err(AppError::Unauthorized(
+            "Unauthorized: User ID not found in token".into(),
+        ));
     }
     Ok(())
 }
@@ -359,7 +378,11 @@ pub async fn add_customer_tags(
         existing_q = existing_q.bind(tag_id);
     }
     let existing: HashSet<i64> = existing_q.fetch_all(&state.db).await?.into_iter().collect();
-    let to_add: Vec<i64> = ids.iter().copied().filter(|t| !existing.contains(t)).collect();
+    let to_add: Vec<i64> = ids
+        .iter()
+        .copied()
+        .filter(|t| !existing.contains(t))
+        .collect();
 
     if !to_add.is_empty() {
         require_actor(&user)?;
@@ -438,8 +461,7 @@ pub async fn remove_customer_tags(
          WHERE customer_id = $1 AND tag_id IN ({placeholders})"
     );
     let existing_sql = crate::db::pg_params(&existing_sql);
-    let mut existing_q =
-        sqlx::query_as::<_, (i64, Option<String>, String)>(&existing_sql).bind(id);
+    let mut existing_q = sqlx::query_as::<_, (i64, Option<String>, String)>(&existing_sql).bind(id);
     for tag_id in &ids {
         existing_q = existing_q.bind(tag_id);
     }
@@ -447,9 +469,8 @@ pub async fn remove_customer_tags(
 
     let now = crate::db::now_iso();
     let mut tx = state.db.begin().await?;
-    let delete_sql = format!(
-        "DELETE FROM customer_tags WHERE customer_id = $1 AND tag_id IN ({placeholders})"
-    );
+    let delete_sql =
+        format!("DELETE FROM customer_tags WHERE customer_id = $1 AND tag_id IN ({placeholders})");
     let delete_sql = crate::db::pg_params(&delete_sql);
     let mut delete_q = sqlx::query(&delete_sql).bind(id);
     for tag_id in &ids {
@@ -556,8 +577,13 @@ pub async fn replace_customer_tags(
         q.fetch_all(&state.db).await.unwrap_or_default()
     };
     log_activity(
-        &state.db, &user.id, &user.display_name, &user.role,
-        "tag assign", "customer", Some(&id.to_string()),
+        &state.db,
+        &user.id,
+        &user.display_name,
+        &user.role,
+        "tag assign",
+        "customer",
+        Some(&id.to_string()),
         Some(json!({
             "reversible": false,
             "operation": "set",
@@ -565,7 +591,8 @@ pub async fn replace_customer_tags(
             "tagIds": ids,
             "tagNames": tag_names,
         })),
-        None, None,
+        None,
+        None,
     )
     .await;
 
