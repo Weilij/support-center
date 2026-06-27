@@ -27,12 +27,51 @@ const TOPIC_CHANGE_CUES: &[&str] = &[
 
 /// Keyword-driven topic categories used by derivation and suggestions.
 const TOPIC_CATEGORIES: &[(&str, &[&str])] = &[
-    ("Billing & Payments", &["refund", "billing", "payment", "invoice", "charge", "charged"]),
-    ("Technical Support", &["bug", "error", "crash", "broken", "not working", "issue", "problem"]),
-    ("Orders & Shipping", &["order", "delivery", "shipping", "track", "package", "shipment"]),
-    ("Account & Login", &["account", "password", "login", "sign in", "log in", "signin"]),
-    ("Plans & Pricing", &["price", "cost", "plan", "subscription", "upgrade", "downgrade"]),
-    ("General Inquiry", &["hello", "hi", "hey", "question", "help"]),
+    (
+        "Billing & Payments",
+        &[
+            "refund", "billing", "payment", "invoice", "charge", "charged",
+        ],
+    ),
+    (
+        "Technical Support",
+        &[
+            "bug",
+            "error",
+            "crash",
+            "broken",
+            "not working",
+            "issue",
+            "problem",
+        ],
+    ),
+    (
+        "Orders & Shipping",
+        &[
+            "order", "delivery", "shipping", "track", "package", "shipment",
+        ],
+    ),
+    (
+        "Account & Login",
+        &[
+            "account", "password", "login", "sign in", "log in", "signin",
+        ],
+    ),
+    (
+        "Plans & Pricing",
+        &[
+            "price",
+            "cost",
+            "plan",
+            "subscription",
+            "upgrade",
+            "downgrade",
+        ],
+    ),
+    (
+        "General Inquiry",
+        &["hello", "hi", "hey", "question", "help"],
+    ),
 ];
 
 pub struct TopicResult {
@@ -47,7 +86,11 @@ pub fn derive_topic(content: &str) -> TopicResult {
     let lower = content.to_lowercase();
     for (topic, keywords) in TOPIC_CATEGORIES {
         if keywords.iter().any(|k| lower.contains(k)) {
-            return TopicResult { topic: topic.to_string(), confidence: 0.8, source: "keyword" };
+            return TopicResult {
+                topic: topic.to_string(),
+                confidence: 0.8,
+                source: "keyword",
+            };
         }
     }
     let trimmed = content.trim();
@@ -56,7 +99,11 @@ pub fn derive_topic(content: &str) -> TopicResult {
     } else {
         trimmed.chars().take(50).collect()
     };
-    TopicResult { topic, confidence: 0.3, source: "excerpt" }
+    TopicResult {
+        topic,
+        confidence: 0.3,
+        source: "excerpt",
+    }
 }
 
 /// Ranked topic suggestions for a message (CRD 467-468).
@@ -65,7 +112,10 @@ pub fn suggest_topics(content: &str, limit: usize) -> Vec<Value> {
     let mut scored: Vec<(&str, usize)> = TOPIC_CATEGORIES
         .iter()
         .map(|(topic, keywords)| {
-            (*topic, keywords.iter().filter(|k| lower.contains(*k)).count())
+            (
+                *topic,
+                keywords.iter().filter(|k| lower.contains(*k)).count(),
+            )
         })
         .filter(|(_, hits)| *hits > 0)
         .collect();
@@ -108,7 +158,8 @@ impl Detection {
 }
 
 fn parse_ts(raw: Option<&str>) -> Option<DateTime<Utc>> {
-    raw.and_then(|s| DateTime::parse_from_rfc3339(s).ok()).map(|d| d.with_timezone(&Utc))
+    raw.and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&Utc))
 }
 
 /// Decide whether the incoming message extends the current active session or
