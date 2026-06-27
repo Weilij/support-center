@@ -1,7 +1,6 @@
 //! Delayed-message handlers (CRD §2.4).
 
 use axum::extract::{Path, Query, State};
-use axum::response::Response;
 use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -11,11 +10,9 @@ use crate::db::now_iso;
 use crate::domain::auth::store::log_activity;
 use crate::domain::messaging::service::{self, ScheduleParams};
 use crate::envelope;
-use crate::error::AppError;
+use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
-
-type Result<T = Response> = std::result::Result<T, AppError>;
 
 const MIN_DELAY: i64 = 1;
 const MAX_DELAY: i64 = 120;
@@ -64,7 +61,15 @@ struct Countdown<'a> {
 
 /// Countdown broadcast (CRD 1327), best-effort: conversation + acting agent.
 fn broadcast_countdown(state: &AppState, user: &AuthUser, c: Countdown<'_>) {
-    let Countdown { conversation_id, message_id, content, message_type, platform, delay_seconds, scheduled_at } = c;
+    let Countdown {
+        conversation_id,
+        message_id,
+        content,
+        message_type,
+        platform,
+        delay_seconds,
+        scheduled_at,
+    } = c;
     let payload = json!({
         "conversationId": conversation_id,
         "messageId": message_id,
@@ -81,8 +86,14 @@ fn broadcast_countdown(state: &AppState, user: &AuthUser, c: Countdown<'_>) {
         "scheduledBy": user.display_name,
         "priority": "normal",
     });
-    state.realtime.to_conversation(conversation_id, "delayed_message_countdown", payload.clone());
-    state.realtime.to_user(&user.id, "delayed_message_countdown", payload);
+    state.realtime.to_conversation(
+        conversation_id,
+        "delayed_message_countdown",
+        payload.clone(),
+    );
+    state
+        .realtime
+        .to_user(&user.id, "delayed_message_countdown", payload);
 }
 
 // ================================================================ v2 family
@@ -111,7 +122,10 @@ pub async fn v2_send(
     let content = body.content.as_deref().unwrap_or("");
     let platform = body.platform.as_deref().unwrap_or("");
     let recipient = body.user_id.as_deref().unwrap_or("");
-    if conversation_id.is_empty() || content.is_empty() || platform.is_empty() || recipient.is_empty()
+    if conversation_id.is_empty()
+        || content.is_empty()
+        || platform.is_empty()
+        || recipient.is_empty()
     {
         return Err(AppError::BadRequest(
             "conversationId, content, platform and userId are required".into(),
@@ -141,14 +155,23 @@ pub async fn v2_send(
     )
     .await;
     if result["success"] != json!(true) {
-        let reason = result["error"].as_str().unwrap_or("Scheduling failed").to_string();
+        let reason = result["error"]
+            .as_str()
+            .unwrap_or("Scheduling failed")
+            .to_string();
         if reason.contains("not found") {
             return Err(AppError::NotFound(reason));
         }
         return Err(AppError::Internal(reason));
     }
-    let message_id = result["delayedMessageId"].as_str().unwrap_or_default().to_string();
-    let scheduled_iso = result["scheduledSendTime"].as_str().unwrap_or_default().to_string();
+    let message_id = result["delayedMessageId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let scheduled_iso = result["scheduledSendTime"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     let fire_ms = epoch_ms(&scheduled_iso);
 
     // Best-effort audit (CRD 1192) and countdown broadcast (CRD 1194).
@@ -157,17 +180,33 @@ pub async fn v2_send(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
     log_activity(
-        &state.db, &user.id, &user.display_name, &user.role,
-        "delayed_message_scheduled", "delayed_message", Some(&message_id),
-        Some(json!({"conversationId": conversation_id, "delaySeconds": delay, "platform": platform})),
-        ip.as_deref(), None,
+        &state.db,
+        &user.id,
+        &user.display_name,
+        &user.role,
+        "delayed_message_scheduled",
+        "delayed_message",
+        Some(&message_id),
+        Some(
+            json!({"conversationId": conversation_id, "delaySeconds": delay, "platform": platform}),
+        ),
+        ip.as_deref(),
+        None,
     )
     .await;
-    broadcast_countdown(&state, &user, Countdown {
-        conversation_id, message_id: &message_id, content,
-        message_type: body.message_type.as_deref().unwrap_or("text"),
-        platform, delay_seconds: delay, scheduled_at: &scheduled_iso,
-    });
+    broadcast_countdown(
+        &state,
+        &user,
+        Countdown {
+            conversation_id,
+            message_id: &message_id,
+            content,
+            message_type: body.message_type.as_deref().unwrap_or("text"),
+            platform,
+            delay_seconds: delay,
+            scheduled_at: &scheduled_iso,
+        },
+    );
 
     Ok(envelope::ok(json!({
         "messageId": message_id,
@@ -216,10 +255,16 @@ pub async fn v2_cancel(
     }
 
     log_activity(
-        &state.db, &user.id, &user.display_name, &user.role,
-        "delayed_message_cancelled", "delayed_message", Some(&message_id),
+        &state.db,
+        &user.id,
+        &user.display_name,
+        &user.role,
+        "delayed_message_cancelled",
+        "delayed_message",
+        Some(&message_id),
         Some(json!({"conversationId": body.conversation_id, "reason": reason})),
-        None, None,
+        None,
+        None,
     )
     .await;
 
@@ -322,16 +367,21 @@ pub async fn v2_failed(
         .conversation_id
         .filter(|c| !c.is_empty())
         .ok_or_else(|| AppError::BadRequest("conversationId is required".into()))?;
-    type FailedRow = (String, Option<String>, Option<String>, Option<String>, Option<String>);
-    let rows: Vec<FailedRow> =
-        sqlx::query_as(
-            "SELECT id, content, metadata, updated_at, scheduled_at FROM scheduled_messages
+    type FailedRow = (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let rows: Vec<FailedRow> = sqlx::query_as(
+        "SELECT id, content, metadata, updated_at, scheduled_at FROM scheduled_messages
              WHERE conversation_id = $1 AND status = 'failed'
              ORDER BY updated_at DESC, id DESC",
-        )
-        .bind(&conversation_id)
-        .fetch_all(&state.db)
-        .await?;
+    )
+    .bind(&conversation_id)
+    .fetch_all(&state.db)
+    .await?;
     let failed: Vec<Value> = rows
         .iter()
         .map(|(id, content, metadata, updated, scheduled)| {
@@ -351,7 +401,9 @@ pub async fn v2_failed(
             })
         })
         .collect();
-    Ok(envelope::ok(json!({ "count": failed.len(), "failed": failed })))
+    Ok(envelope::ok(
+        json!({ "count": failed.len(), "failed": failed }),
+    ))
 }
 
 /// Scheduler operational metrics for one conversation (CRD 1293-1295).
@@ -370,9 +422,19 @@ pub async fn v2_metrics(
     .bind(&conversation_id)
     .fetch_all(&state.db)
     .await?;
-    let count_of = |s: &str| counts.iter().find(|(k, _)| k == s).map(|(_, c)| *c).unwrap_or(0);
-    let (pending, sent, failed, cancelled) =
-        (count_of("pending"), count_of("sent"), count_of("failed"), count_of("cancelled"));
+    let count_of = |s: &str| {
+        counts
+            .iter()
+            .find(|(k, _)| k == s)
+            .map(|(_, c)| *c)
+            .unwrap_or(0)
+    };
+    let (pending, sent, failed, cancelled) = (
+        count_of("pending"),
+        count_of("sent"),
+        count_of("failed"),
+        count_of("cancelled"),
+    );
     let total = pending + sent + failed + cancelled;
     let processed = sent + failed;
     let next_fire: Option<String> = sqlx::query_scalar(
@@ -382,7 +444,11 @@ pub async fn v2_metrics(
     .bind(&conversation_id)
     .fetch_one(&state.db)
     .await?;
-    let success_rate = if processed > 0 { sent as f64 * 100.0 / processed as f64 } else { 0.0 };
+    let success_rate = if processed > 0 {
+        sent as f64 * 100.0 / processed as f64
+    } else {
+        0.0
+    };
     Ok(envelope::ok(json!({
         "conversationId": conversation_id,
         "totals": {
@@ -489,16 +555,33 @@ pub async fn legacy_send(
     .await;
     if result["success"] != json!(true) {
         return Err(AppError::BadRequest(
-            result["error"].as_str().unwrap_or("Scheduling failed").to_string(),
+            result["error"]
+                .as_str()
+                .unwrap_or("Scheduling failed")
+                .to_string(),
         ));
     }
-    let message_id = result["delayedMessageId"].as_str().unwrap_or_default().to_string();
-    let scheduled = result["scheduledSendTime"].as_str().unwrap_or_default().to_string();
-    broadcast_countdown(&state, &user, Countdown {
-        conversation_id, message_id: &message_id, content,
-        message_type: body.message_type.as_deref().unwrap_or("text"),
-        platform, delay_seconds: delay, scheduled_at: &scheduled,
-    });
+    let message_id = result["delayedMessageId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let scheduled = result["scheduledSendTime"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    broadcast_countdown(
+        &state,
+        &user,
+        Countdown {
+            conversation_id,
+            message_id: &message_id,
+            content,
+            message_type: body.message_type.as_deref().unwrap_or("text"),
+            platform,
+            delay_seconds: delay,
+            scheduled_at: &scheduled,
+        },
+    );
     Ok(envelope::ok(json!({
         "messageId": message_id,
         "scheduledSendTime": scheduled,
@@ -516,8 +599,15 @@ pub async fn legacy_recall(
     }
     // Marker, ownership, deadline checks (CRD 1257-1260).
     if !state.recallable_messages.is_recallable(&message_id) {
-        broadcast_recall_failed(&state, &message_id, &user, "Message not found or already processed");
-        return Err(AppError::BadRequest("Message not found or already processed".into()));
+        broadcast_recall_failed(
+            &state,
+            &message_id,
+            &user,
+            "Message not found or already processed",
+        );
+        return Err(AppError::BadRequest(
+            "Message not found or already processed".into(),
+        ));
     }
     let row: Option<(String, Option<String>, String, Option<String>)> = sqlx::query_as(
         "SELECT agent_id, scheduled_at, conversation_id, content
@@ -527,7 +617,9 @@ pub async fn legacy_recall(
     .fetch_optional(&state.db)
     .await?;
     let Some((sender, scheduled_at, conversation_id, content)) = row else {
-        return Err(AppError::BadRequest("Message not found or already processed".into()));
+        return Err(AppError::BadRequest(
+            "Message not found or already processed".into(),
+        ));
     };
     if sender != user.id {
         broadcast_recall_failed(&state, &message_id, &user, "Permission denied");
@@ -541,9 +633,13 @@ pub async fn legacy_recall(
             return Err(AppError::BadRequest("Recall deadline has passed".into()));
         }
     }
-    let result = service::cancel_delayed(&state, &message_id, &user.id, Some("manual recall"), true).await;
+    let result =
+        service::cancel_delayed(&state, &message_id, &user.id, Some("manual recall"), true).await;
     if result["success"] != json!(true) {
-        let err = result["error"].as_str().unwrap_or("Recall failed").to_string();
+        let err = result["error"]
+            .as_str()
+            .unwrap_or("Recall failed")
+            .to_string();
         broadcast_recall_failed(&state, &message_id, &user, &err);
         return Err(AppError::BadRequest(err));
     }
@@ -604,7 +700,18 @@ pub async fn legacy_pending(
     .bind(&user.id)
     .fetch_one(&state.db)
     .await?;
-    type PendingRow = (String, String, String, Option<String>, String, Option<String>, String, Option<String>, Option<String>, Option<String>);
+    type PendingRow = (
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
     let rows: Vec<PendingRow> = sqlx::query_as(
         "SELECT sm.id, sm.conversation_id, sm.agent_id, sm.content, sm.content_type,
                 sm.scheduled_at, sm.status, sm.metadata, sm.created_at, cu.display_name
@@ -622,21 +729,23 @@ pub async fn legacy_pending(
     let now = now_iso();
     let items: Vec<Value> = rows
         .iter()
-        .map(|(id, conv, sender, content, mtype, at, status, meta, created, customer)| {
-            json!({
-                "messageId": id,
-                "conversationId": conv,
-                "senderId": sender,
-                "content": content,
-                "messageType": mtype,
-                "scheduledSendTime": at,
-                "status": status,
-                "metadata": meta.as_deref().and_then(|m| serde_json::from_str::<Value>(m).ok()),
-                "createdAt": created,
-                "customerName": customer,
-                "canRecall": at.as_deref().map(|a| now.as_str() < a).unwrap_or(false),
-            })
-        })
+        .map(
+            |(id, conv, sender, content, mtype, at, status, meta, created, customer)| {
+                json!({
+                    "messageId": id,
+                    "conversationId": conv,
+                    "senderId": sender,
+                    "content": content,
+                    "messageType": mtype,
+                    "scheduledSendTime": at,
+                    "status": status,
+                    "metadata": meta.as_deref().and_then(|m| serde_json::from_str::<Value>(m).ok()),
+                    "createdAt": created,
+                    "customerName": customer,
+                    "canRecall": at.as_deref().map(|a| now.as_str() < a).unwrap_or(false),
+                })
+            },
+        )
         .collect();
     Ok(envelope::ok(json!({
         "messages": items,
@@ -662,17 +771,25 @@ pub async fn legacy_reschedule(
         .delay_seconds
         .ok_or_else(|| AppError::BadRequest("delaySeconds is required".into()))?;
     if !(MIN_DELAY..=MAX_DELAY).contains(&delay) {
-        return Err(AppError::BadRequest("delaySeconds must be between 1 and 120".into()));
+        return Err(AppError::BadRequest(
+            "delaySeconds must be between 1 and 120".into(),
+        ));
     }
-    type RescheduleRow = (String, String, String, Option<String>, String, Option<String>);
-    let row: Option<RescheduleRow> =
-        sqlx::query_as(
-            "SELECT agent_id, status, conversation_id, content, content_type, metadata
+    type RescheduleRow = (
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+    );
+    let row: Option<RescheduleRow> = sqlx::query_as(
+        "SELECT agent_id, status, conversation_id, content, content_type, metadata
              FROM scheduled_messages WHERE id = $1",
-        )
-        .bind(&message_id)
-        .fetch_optional(&state.db)
-        .await?;
+    )
+    .bind(&message_id)
+    .fetch_optional(&state.db)
+    .await?;
     let Some((sender, status, conversation_id, content, mtype, metadata)) = row else {
         return Err(AppError::BadRequest("Message not found".into()));
     };
@@ -686,7 +803,11 @@ pub async fn legacy_reschedule(
         .as_deref()
         .and_then(|m| serde_json::from_str(m).ok())
         .unwrap_or_default();
-    let platform = meta.get("platform").and_then(Value::as_str).unwrap_or("").to_string();
+    let platform = meta
+        .get("platform")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     if crate::platform::Platform::parse(&platform).is_none() {
         return Err(AppError::BadRequest(
             "Message platform does not support rescheduling".into(),
@@ -706,13 +827,24 @@ pub async fn legacy_reschedule(
     .bind(&message_id)
     .execute(&state.db)
     .await?;
-    state
-        .recallable_messages
-        .mark(&message_id, std::time::Duration::from_secs(delay as u64 + 60));
-    broadcast_countdown(&state, &user, Countdown {
-        conversation_id: &conversation_id, message_id: &message_id,
-        content: content.as_deref().unwrap_or(""), message_type: &mtype,
-        platform: &platform, delay_seconds: delay, scheduled_at: &new_fire,
-    });
-    Ok(envelope::ok(json!({ "messageId": message_id, "newSendTime": new_fire })))
+    state.recallable_messages.mark(
+        &message_id,
+        std::time::Duration::from_secs(delay as u64 + 60),
+    );
+    broadcast_countdown(
+        &state,
+        &user,
+        Countdown {
+            conversation_id: &conversation_id,
+            message_id: &message_id,
+            content: content.as_deref().unwrap_or(""),
+            message_type: &mtype,
+            platform: &platform,
+            delay_seconds: delay,
+            scheduled_at: &new_fire,
+        },
+    );
+    Ok(envelope::ok(
+        json!({ "messageId": message_id, "newSendTime": new_fire }),
+    ))
 }
