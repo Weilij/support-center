@@ -17,6 +17,125 @@ use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::process::Command;
 
+#[derive(Debug)]
+enum InstallerError {
+    OAuthNotConfigured,
+    OAuthClientSecretNotConfigured,
+    OAuthTokenExchange(reqwest::Error),
+    OAuthTokenJson(reqwest::Error),
+    OAuthTokenStatus(reqwest::StatusCode),
+    OAuthUserinfo(reqwest::Error),
+    OAuthUserinfoJson(reqwest::Error),
+    OAuthUserinfoStatus(reqwest::StatusCode),
+    CloudflareRequest(reqwest::Error),
+    CloudflareJson(reqwest::Error),
+    CloudflareApi { path: String, value: Value },
+    InactiveCloudflareToken,
+    UnsupportedProvisioningStep(String),
+    MissingFrontendManifest,
+    InvalidFrontendManifest(serde_json::Error),
+    FrontendArtifact(&'static str),
+    ArtifactRootInaccessible(std::io::Error),
+    ArtifactDirInaccessible(std::io::Error),
+    ArtifactEscapesRoot,
+    ArtifactNotDirectory,
+    WranglerRun(std::io::Error),
+    WranglerFailed { code: Option<i32>, output: String },
+}
+
+impl std::fmt::Display for InstallerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OAuthNotConfigured => f.write_str("OAuth not configured"),
+            Self::OAuthClientSecretNotConfigured => {
+                f.write_str("OAuth client secret not configured")
+            }
+            Self::OAuthTokenExchange(error) => {
+                write!(f, "Cloudflare OAuth token exchange failed: {error}")
+            }
+            Self::OAuthTokenJson(error) => {
+                write!(f, "Cloudflare OAuth returned invalid token JSON: {error}")
+            }
+            Self::OAuthTokenStatus(status) => {
+                write!(
+                    f,
+                    "Cloudflare OAuth token exchange failed with status {status}"
+                )
+            }
+            Self::OAuthUserinfo(error) => write!(f, "Cloudflare OAuth userinfo failed: {error}"),
+            Self::OAuthUserinfoJson(error) => {
+                write!(
+                    f,
+                    "Cloudflare OAuth returned invalid userinfo JSON: {error}"
+                )
+            }
+            Self::OAuthUserinfoStatus(status) => {
+                write!(f, "Cloudflare OAuth userinfo failed with status {status}")
+            }
+            Self::CloudflareRequest(error) => write!(f, "Cloudflare request failed: {error}"),
+            Self::CloudflareJson(error) => {
+                write!(f, "Cloudflare returned invalid JSON: {error}")
+            }
+            Self::CloudflareApi { path, value } => {
+                write!(f, "Cloudflare API error at {path}: {value}")
+            }
+            Self::InactiveCloudflareToken => f.write_str("Cloudflare API token is not active"),
+            Self::UnsupportedProvisioningStep(step) => {
+                write!(f, "Unsupported provisioning step: {step}")
+            }
+            Self::MissingFrontendManifest => {
+                f.write_str("frontendArtifact.manifest is required for API deployment")
+            }
+            Self::InvalidFrontendManifest(error) => {
+                write!(f, "Invalid frontend artifact manifest: {error}")
+            }
+            Self::FrontendArtifact(message) => f.write_str(message),
+            Self::ArtifactRootInaccessible(error) => {
+                write!(f, "FRONTEND_ARTIFACT_ROOT is not accessible: {error}")
+            }
+            Self::ArtifactDirInaccessible(error) => {
+                write!(
+                    f,
+                    "frontendArtifact.localBuildOutputDir is not accessible: {error}"
+                )
+            }
+            Self::ArtifactEscapesRoot => {
+                f.write_str("frontendArtifact.localBuildOutputDir escapes FRONTEND_ARTIFACT_ROOT")
+            }
+            Self::ArtifactNotDirectory => {
+                f.write_str("frontendArtifact.localBuildOutputDir must be a directory")
+            }
+            Self::WranglerRun(error) => write!(f, "Failed to run wrangler pages deploy: {error}"),
+            Self::WranglerFailed { code, output } => {
+                write!(
+                    f,
+                    "wrangler pages deploy failed with status {code:?}: {output}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for InstallerError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::OAuthTokenExchange(error)
+            | Self::OAuthTokenJson(error)
+            | Self::OAuthUserinfo(error)
+            | Self::OAuthUserinfoJson(error)
+            | Self::CloudflareRequest(error)
+            | Self::CloudflareJson(error) => Some(error),
+            Self::InvalidFrontendManifest(error) => Some(error),
+            Self::ArtifactRootInaccessible(error)
+            | Self::ArtifactDirInaccessible(error)
+            | Self::WranglerRun(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+type InstallerResult<T> = std::result::Result<T, InstallerError>;
+
 #[derive(Clone)]
 struct Installer {
     runs: Arc<Mutex<HashMap<String, Value>>>,
@@ -188,18 +307,18 @@ impl CloudflareOAuth {
         }
     }
 
-    fn configured_client_id(&self) -> Result<&str, String> {
+    fn configured_client_id(&self) -> InstallerResult<&str> {
         self.client_id
             .as_deref()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| "OAuth not configured".into())
+            .ok_or(InstallerError::OAuthNotConfigured)
     }
 
-    fn configured_client_secret(&self) -> Result<&str, String> {
+    fn configured_client_secret(&self) -> InstallerResult<&str> {
         self.client_secret
             .as_deref()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| "OAuth client secret not configured".into())
+            .ok_or(InstallerError::OAuthClientSecretNotConfigured)
     }
 
     async fn exchange_code(
@@ -207,7 +326,7 @@ impl CloudflareOAuth {
         code: &str,
         verifier: Option<&str>,
         redirect_uri: Option<&str>,
-    ) -> Result<(OAuthTokenResponse, Value), String> {
+    ) -> InstallerResult<(OAuthTokenResponse, Value)> {
         let client_id = self.configured_client_id()?;
         let client_secret = self.configured_client_secret()?;
         let mut form = vec![
@@ -228,16 +347,14 @@ impl CloudflareOAuth {
             .form(&form)
             .send()
             .await
-            .map_err(|e| format!("Cloudflare OAuth token exchange failed: {e}"))?;
+            .map_err(InstallerError::OAuthTokenExchange)?;
         let status = response.status();
         let token: OAuthTokenResponse = response
             .json()
             .await
-            .map_err(|e| format!("Cloudflare OAuth returned invalid token JSON: {e}"))?;
+            .map_err(InstallerError::OAuthTokenJson)?;
         if !status.is_success() {
-            return Err(format!(
-                "Cloudflare OAuth token exchange failed with status {status}"
-            ));
+            return Err(InstallerError::OAuthTokenStatus(status));
         }
         let userinfo = self
             .client
@@ -245,16 +362,14 @@ impl CloudflareOAuth {
             .bearer_auth(&token.access_token)
             .send()
             .await
-            .map_err(|e| format!("Cloudflare OAuth userinfo failed: {e}"))?;
+            .map_err(InstallerError::OAuthUserinfo)?;
         let userinfo_status = userinfo.status();
         let user: Value = userinfo
             .json()
             .await
-            .map_err(|e| format!("Cloudflare OAuth returned invalid userinfo JSON: {e}"))?;
+            .map_err(InstallerError::OAuthUserinfoJson)?;
         if !userinfo_status.is_success() {
-            return Err(format!(
-                "Cloudflare OAuth userinfo failed with status {userinfo_status}"
-            ));
+            return Err(InstallerError::OAuthUserinfoStatus(userinfo_status));
         }
         Ok((token, user))
     }
@@ -281,7 +396,7 @@ impl CloudflareApi {
         path: &str,
         creds: &CloudCredentials,
         body: Option<Value>,
-    ) -> Result<Value, String> {
+    ) -> InstallerResult<Value> {
         let url = format!("{}{}", self.api_base, path);
         let mut request = self
             .client
@@ -293,14 +408,17 @@ impl CloudflareApi {
         let response = request
             .send()
             .await
-            .map_err(|e| format!("Cloudflare request failed: {e}"))?;
+            .map_err(InstallerError::CloudflareRequest)?;
         let status = response.status();
         let value: Value = response
             .json()
             .await
-            .map_err(|e| format!("Cloudflare returned invalid JSON: {e}"))?;
+            .map_err(InstallerError::CloudflareJson)?;
         if !status.is_success() || value.get("success").and_then(Value::as_bool) == Some(false) {
-            return Err(format!("Cloudflare API error at {path}: {value}"));
+            return Err(InstallerError::CloudflareApi {
+                path: path.to_string(),
+                value,
+            });
         }
         Ok(value)
     }
@@ -312,7 +430,7 @@ impl CloudflareApi {
         creds: &CloudCredentials,
         content_type: &str,
         body: String,
-    ) -> Result<Value, String> {
+    ) -> InstallerResult<Value> {
         let url = format!("{}{}", self.api_base, path);
         let response = self
             .client
@@ -322,14 +440,17 @@ impl CloudflareApi {
             .body(body)
             .send()
             .await
-            .map_err(|e| format!("Cloudflare request failed: {e}"))?;
+            .map_err(InstallerError::CloudflareRequest)?;
         let status = response.status();
         let value: Value = response
             .json()
             .await
-            .map_err(|e| format!("Cloudflare returned invalid JSON: {e}"))?;
+            .map_err(InstallerError::CloudflareJson)?;
         if !status.is_success() || value.get("success").and_then(Value::as_bool) == Some(false) {
-            return Err(format!("Cloudflare API error at {path}: {value}"));
+            return Err(InstallerError::CloudflareApi {
+                path: path.to_string(),
+                value,
+            });
         }
         Ok(value)
     }
@@ -339,7 +460,7 @@ impl CloudflareApi {
         path: &str,
         creds: &CloudCredentials,
         fields: Vec<(&'static str, String)>,
-    ) -> Result<Value, String> {
+    ) -> InstallerResult<Value> {
         let boundary = format!("mcss-installer-{}", uuid::Uuid::new_v4());
         let mut body = String::new();
         for (name, value) in fields {
@@ -361,12 +482,12 @@ impl CloudflareApi {
         .await
     }
 
-    async fn verify(&self, creds: &CloudCredentials) -> Result<Value, String> {
+    async fn verify(&self, creds: &CloudCredentials) -> InstallerResult<Value> {
         let token = self
             .request_json(reqwest::Method::GET, "/user/tokens/verify", creds, None)
             .await?;
         if token["result"]["status"].as_str() != Some("active") {
-            return Err("Cloudflare API token is not active".into());
+            return Err(InstallerError::InactiveCloudflareToken);
         }
         self.request_json(
             reqwest::Method::GET,
@@ -384,7 +505,7 @@ impl CloudflareApi {
         creds: &CloudCredentials,
         context: &mut ProvisionContext,
         config: &ProvisionConfig,
-    ) -> Result<Option<ProvisionedResource>, String> {
+    ) -> InstallerResult<Option<ProvisionedResource>> {
         let account = &creds.account_id;
         let resource = match step {
             "database" => {
@@ -562,7 +683,11 @@ impl CloudflareApi {
                     }),
                 }
             }
-            _ => return Ok(None),
+            _ => {
+                return Err(InstallerError::UnsupportedProvisioningStep(
+                    step.to_string(),
+                ))
+            }
         };
         Ok(Some(resource))
     }
@@ -573,14 +698,14 @@ impl CloudflareApi {
         project_name: &str,
         creds: &CloudCredentials,
         artifact: &FrontendArtifact,
-    ) -> Result<Value, String> {
-        let manifest = artifact.manifest.as_ref().ok_or_else(|| {
-            "frontendArtifact.manifest is required for API deployment".to_string()
-        })?;
+    ) -> InstallerResult<Value> {
+        let manifest = artifact
+            .manifest
+            .as_ref()
+            .ok_or(InstallerError::MissingFrontendManifest)?;
         let mut fields = vec![(
             "manifest",
-            serde_json::to_string(manifest)
-                .map_err(|e| format!("Invalid frontend artifact manifest: {e}"))?,
+            serde_json::to_string(manifest).map_err(InstallerError::InvalidFrontendManifest)?,
         )];
         fields.push((
             "pages_build_output_dir",
@@ -626,12 +751,15 @@ fn cloudflare_result_id(value: &Value) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn worker_bindings(context: &ProvisionContext) -> Result<Vec<Value>, String> {
+fn worker_bindings(context: &ProvisionContext) -> InstallerResult<Vec<Value>> {
     let mut bindings = Vec::new();
-    let d1_database_id = context
-        .d1_database_id
-        .as_deref()
-        .ok_or_else(|| "Cloudflare D1 database id missing from provisioning result".to_string())?;
+    let d1_database_id =
+        context
+            .d1_database_id
+            .as_deref()
+            .ok_or(InstallerError::FrontendArtifact(
+                "Cloudflare D1 database id missing from provisioning result",
+            ))?;
     bindings.push(json!({
         "type": "d1",
         "name": "DB",
@@ -639,7 +767,9 @@ fn worker_bindings(context: &ProvisionContext) -> Result<Vec<Value>, String> {
     }));
 
     let sessions_namespace_id = context.sessions_kv_namespace_id.as_deref().ok_or_else(|| {
-        "Cloudflare sessions KV namespace id missing from provisioning result".to_string()
+        InstallerError::FrontendArtifact(
+            "Cloudflare sessions KV namespace id missing from provisioning result",
+        )
     })?;
     bindings.push(json!({
         "type": "kv_namespace",
@@ -648,7 +778,9 @@ fn worker_bindings(context: &ProvisionContext) -> Result<Vec<Value>, String> {
     }));
 
     let cache_namespace_id = context.cache_kv_namespace_id.as_deref().ok_or_else(|| {
-        "Cloudflare cache KV namespace id missing from provisioning result".to_string()
+        InstallerError::FrontendArtifact(
+            "Cloudflare cache KV namespace id missing from provisioning result",
+        )
     })?;
     bindings.push(json!({
         "type": "kv_namespace",
@@ -659,7 +791,9 @@ fn worker_bindings(context: &ProvisionContext) -> Result<Vec<Value>, String> {
     let bucket_name = context
         .r2_bucket_name
         .as_deref()
-        .ok_or_else(|| "Cloudflare R2 bucket name missing from provisioning context".to_string())?;
+        .ok_or(InstallerError::FrontendArtifact(
+            "Cloudflare R2 bucket name missing from provisioning context",
+        ))?;
     bindings.push(json!({
         "type": "r2_bucket",
         "name": "FILES",
@@ -669,7 +803,9 @@ fn worker_bindings(context: &ProvisionContext) -> Result<Vec<Value>, String> {
     let queue_name = context
         .queue_name
         .as_deref()
-        .ok_or_else(|| "Cloudflare queue name missing from provisioning context".to_string())?;
+        .ok_or(InstallerError::FrontendArtifact(
+            "Cloudflare queue name missing from provisioning context",
+        ))?;
     bindings.push(json!({
         "type": "queue",
         "name": "JOBS",
@@ -817,7 +953,7 @@ async fn oauth_callback(
         .into_response(),
         Err(error) => (
             StatusCode::BAD_GATEWAY,
-            Json(json!({"error": "Failed to exchange code", "details": error})),
+            Json(json!({"error": "Failed to exchange code", "details": error.to_string()})),
         )
             .into_response(),
     }
@@ -856,7 +992,7 @@ async fn auth_token(State(installer): State<Installer>, body: Option<Json<TokenB
         .into_response(),
         Err(error) => (
             StatusCode::UNAUTHORIZED,
-            Json(json!({"error": "Invalid API Token", "details": error})),
+            Json(json!({"error": "Invalid API Token", "details": error.to_string()})),
         )
             .into_response(),
     }
@@ -908,41 +1044,53 @@ fn valid_custom_domain(domain: &str) -> bool {
         })
 }
 
-fn validate_frontend_artifact(artifact: &FrontendArtifact) -> Result<(), String> {
+fn validate_frontend_artifact(artifact: &FrontendArtifact) -> InstallerResult<()> {
     if artifact.manifest.is_none() && !artifact.deploy_with_wrangler {
-        return Err("frontendArtifact requires manifest or deployWithWrangler".into());
+        return Err(InstallerError::FrontendArtifact(
+            "frontendArtifact requires manifest or deployWithWrangler",
+        ));
     }
     if let Some(manifest) = artifact.manifest.as_ref() {
         if manifest.is_empty() {
-            return Err("frontendArtifact.manifest must not be empty".into());
+            return Err(InstallerError::FrontendArtifact(
+                "frontendArtifact.manifest must not be empty",
+            ));
         }
         if manifest.len() > 20_000 {
-            return Err(
-                "frontendArtifact.manifest exceeds Cloudflare Pages 20,000 file limit".into(),
-            );
+            return Err(InstallerError::FrontendArtifact(
+                "frontendArtifact.manifest exceeds Cloudflare Pages 20,000 file limit",
+            ));
         }
         for (path, hash) in manifest {
             if !valid_manifest_path(path) {
-                return Err("frontendArtifact.manifest contains an invalid asset path".into());
+                return Err(InstallerError::FrontendArtifact(
+                    "frontendArtifact.manifest contains an invalid asset path",
+                ));
             }
             if hash.trim().is_empty() {
-                return Err("frontendArtifact.manifest contains an empty content hash".into());
+                return Err(InstallerError::FrontendArtifact(
+                    "frontendArtifact.manifest contains an empty content hash",
+                ));
             }
         }
     }
     if let Some(dir) = artifact.build_output_dir.as_ref() {
         if dir.trim().is_empty() || dir.starts_with('/') || dir.contains("..") {
-            return Err("frontendArtifact.buildOutputDir is invalid".into());
+            return Err(InstallerError::FrontendArtifact(
+                "frontendArtifact.buildOutputDir is invalid",
+            ));
         }
     }
     if artifact.deploy_with_wrangler {
         let Some(dir) = artifact.local_build_output_dir.as_deref() else {
-            return Err(
-                "frontendArtifact.localBuildOutputDir is required for Wrangler deploy".into(),
-            );
+            return Err(InstallerError::FrontendArtifact(
+                "frontendArtifact.localBuildOutputDir is required for Wrangler deploy",
+            ));
         };
         if dir.trim().is_empty() || dir.starts_with('/') || !valid_manifest_path(dir) {
-            return Err("frontendArtifact.localBuildOutputDir is invalid".into());
+            return Err(InstallerError::FrontendArtifact(
+                "frontendArtifact.localBuildOutputDir is invalid",
+            ));
         }
     }
     Ok(())
@@ -957,26 +1105,28 @@ fn valid_manifest_path(path: &str) -> bool {
             .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
-fn resolve_artifact_dir(root: &FsPath, requested: &str) -> Result<PathBuf, String> {
+fn resolve_artifact_dir(root: &FsPath, requested: &str) -> InstallerResult<PathBuf> {
     if requested.trim().is_empty()
         || requested.starts_with('/')
         || requested.contains('\\')
         || !valid_manifest_path(requested)
     {
-        return Err("frontendArtifact.localBuildOutputDir is invalid".into());
+        return Err(InstallerError::FrontendArtifact(
+            "frontendArtifact.localBuildOutputDir is invalid",
+        ));
     }
     let root = root
         .canonicalize()
-        .map_err(|e| format!("FRONTEND_ARTIFACT_ROOT is not accessible: {e}"))?;
+        .map_err(InstallerError::ArtifactRootInaccessible)?;
     let candidate = root
         .join(requested)
         .canonicalize()
-        .map_err(|e| format!("frontendArtifact.localBuildOutputDir is not accessible: {e}"))?;
+        .map_err(InstallerError::ArtifactDirInaccessible)?;
     if !candidate.starts_with(&root) {
-        return Err("frontendArtifact.localBuildOutputDir escapes FRONTEND_ARTIFACT_ROOT".into());
+        return Err(InstallerError::ArtifactEscapesRoot);
     }
     if !candidate.is_dir() {
-        return Err("frontendArtifact.localBuildOutputDir must be a directory".into());
+        return Err(InstallerError::ArtifactNotDirectory);
     }
     Ok(candidate)
 }
@@ -987,7 +1137,7 @@ async fn run_wrangler_pages_deploy(
     project_name: &str,
     branch: &str,
     creds: &CloudCredentials,
-) -> Result<Value, String> {
+) -> InstallerResult<Value> {
     let output = Command::new(wrangler_bin)
         .arg("pages")
         .arg("deploy")
@@ -1000,16 +1150,15 @@ async fn run_wrangler_pages_deploy(
         .env("CLOUDFLARE_ACCOUNT_ID", &creds.account_id)
         .output()
         .await
-        .map_err(|e| format!("Failed to run wrangler pages deploy: {e}"))?;
+        .map_err(InstallerError::WranglerRun)?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if !output.status.success() {
-        return Err(format!(
-            "wrangler pages deploy failed with status {:?}: {}",
-            output.status.code(),
-            if stderr.is_empty() { stdout } else { stderr }
-        ));
+        return Err(InstallerError::WranglerFailed {
+            code: output.status.code(),
+            output: if stderr.is_empty() { stdout } else { stderr },
+        });
     }
     Ok(json!({
         "method": "wrangler",
@@ -1042,7 +1191,6 @@ const STEPS: &[&str] = &[
     "queue",
     "backend-service",
     "frontend-site",
-    "admin-account",
 ];
 
 /// POST /deployment/start (CRD 6766+): validate, run the pipeline
@@ -1097,7 +1245,11 @@ async fn deployment_start(
     }
     if let Some(artifact) = body.frontend_artifact.as_ref() {
         if let Err(error) = validate_frontend_artifact(artifact) {
-            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": error.to_string()})),
+            )
+                .into_response();
         }
     }
     let frontend_artifact_dir = match body.frontend_artifact.as_ref() {
@@ -1115,7 +1267,11 @@ async fn deployment_start(
             match resolve_artifact_dir(root, requested) {
                 Ok(dir) => Some(dir),
                 Err(error) => {
-                    return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response()
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"error": error.to_string()})),
+                    )
+                        .into_response()
                 }
             }
         }
@@ -1162,7 +1318,7 @@ async fn deployment_start(
                 if let Some(run) = runs.get_mut(&id) {
                     run["status"] = json!("failed");
                     run["currentStep"] = Value::Null;
-                    run["error"] = json!(error);
+                    run["error"] = json!(error.to_string());
                     run["completedAt"] = json!(now_ms());
                 }
             }
@@ -1194,7 +1350,7 @@ async fn deployment_start(
                             run["currentStep"] = Value::Null;
                             run["completedSteps"] = json!(completed);
                             run["resources"] = json!(resources);
-                            run["error"] = json!(error);
+                            run["error"] = json!(error.to_string());
                             run["completedAt"] = json!(now_ms());
                         }
                     }
@@ -1222,10 +1378,10 @@ async fn deployment_start(
             if let Some(run) = runs.get_mut(&id) {
                 run["status"] = json!("completed");
                 run["currentStep"] = Value::Null;
-                run["adminCredentials"] = json!({
-                    "email": "admin@localhost",
-                    "password": uuid::Uuid::new_v4().to_string(),
-                    "note": "change this password after first login",
+                run["adminSetup"] = json!({
+                    "required": true,
+                    "method": "post-deploy-initialization",
+                    "note": "Create the first administrator through the deployed backend setup flow; the installer does not fabricate credentials.",
                 });
                 run["completedAt"] = json!(now_ms());
             }
@@ -1703,11 +1859,12 @@ mod tests {
         }
         assert_eq!(last["status"], "completed");
         assert_eq!(last["progressPercent"], 100);
-        assert_eq!(last["completedSteps"].as_array().unwrap().len(), 8);
+        assert_eq!(last["completedSteps"].as_array().unwrap().len(), 7);
         assert!(
-            last["adminCredentials"]["password"].is_string(),
-            "one-time admin credentials"
+            last.get("adminCredentials").is_none(),
+            "installer must not report credentials it did not actually provision"
         );
+        assert_eq!(last["adminSetup"]["required"], true);
         let calls = calls.lock().unwrap().clone();
         let paths: Vec<&str> = calls.iter().filter_map(|c| c["path"].as_str()).collect();
         assert!(
