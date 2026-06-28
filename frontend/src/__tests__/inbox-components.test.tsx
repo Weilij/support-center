@@ -68,7 +68,7 @@ describe('Inbox conversation list', () => {
     expect(screen.getByText('Unread Customer')).toBeTruthy()
     expect(screen.queryByText('Team Customer')).toBeNull()
 
-    fireEvent.click(screen.getByText('團隊'))
+    fireEvent.click(screen.getByText('我的團隊'))
     expect(screen.getByText('Team Customer')).toBeTruthy()
     expect(screen.queryByText('Unread Customer')).toBeNull()
   })
