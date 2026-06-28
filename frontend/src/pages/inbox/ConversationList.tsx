@@ -6,6 +6,7 @@ import { Tag } from '../../components/Chip'
 import { Icon } from '../../components/Icon'
 import { channelOf } from '../../components/channels'
 import { recordPositions, animateMoves } from '../../lib/flip'
+import { session } from '../../auth/session'
 import type { Conversation } from '../../stores/conversations'
 
 type TabKey = 'all' | 'unread' | 'team' | 'follow'
@@ -13,7 +14,7 @@ type TabKey = 'all' | 'unread' | 'team' | 'follow'
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'all', label: '全部' },
   { key: 'unread', label: '未讀' },
-  { key: 'team', label: '團隊' },
+  { key: 'team', label: '我的團隊' },
   { key: 'follow', label: '待跟進' },
 ]
 
@@ -39,9 +40,13 @@ function formatTime(iso?: string): string {
   return d.toLocaleDateString('zh-TW', { month: 'numeric', day: 'numeric' })
 }
 
-function hasTeamAssignment(c: Conversation) {
-  const assignedTeam = c['assignedTeam']
-  return c.teamId != null || (assignedTeam !== null && assignedTeam !== undefined)
+function isMyTeam(c: Conversation): boolean {
+  const myIds = session.teamOptions().map((t) => String(t.id))
+  if (session.isAdmin() || myIds.length === 0) {
+    const assignedTeam = c['assignedTeam']
+    return c.teamId != null || (assignedTeam !== null && assignedTeam !== undefined)
+  }
+  return c.teamId != null && myIds.includes(String(c.teamId))
 }
 
 function ConversationItem({
@@ -117,7 +122,7 @@ export function ConversationList({
 
   const filtered = items.filter((conversation) => {
     if (tab === 'unread' && !((conversation.unreadCount ?? 0) > 0)) return false
-    if (tab === 'team' && !hasTeamAssignment(conversation)) return false
+    if (tab === 'team' && !isMyTeam(conversation)) return false
     if (search) {
       const q = search.toLowerCase()
       const name = (conversation.customerName ?? '').toLowerCase()
