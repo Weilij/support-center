@@ -358,6 +358,96 @@ async fn create_rejects_duplicate_active_platform() {
     );
 }
 
+#[tokio::test]
+async fn create_instagram_exposes_credentials_set_without_secret_values() {
+    let app = spawn_app().await;
+    let team = app.seed_team("Team").await;
+    let token = admin_in_team(&app, "a@x.io", team).await;
+
+    let (status, body, _) = app
+        .request(
+            "POST",
+            "/api/channels",
+            Some(&token),
+            Some(json!({
+                "platform": "instagram",
+                "instagramConfig": {"igId": "IG1", "accessToken": "tok"}
+            })),
+        )
+        .await;
+    assert_eq!(status, 201, "{body}");
+    assert_eq!(body["data"]["platform"], "instagram");
+
+    // Listed channel reflects the platform and the set secret fields, with no
+    // secret value present anywhere in the response (CRD 2622).
+    let (status, body, _) = app
+        .request("GET", "/api/channels", Some(&token), None)
+        .await;
+    assert_eq!(status, 200, "{body}");
+    let chan = &body["data"][0];
+    assert_eq!(chan["platform"], "instagram");
+    let set: Vec<String> = chan["credentialsSet"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert!(set.contains(&"accessToken".to_string()), "{body}");
+    assert!(!body.to_string().contains("tok"), "secret leaked: {body}");
+}
+
+#[tokio::test]
+async fn create_line_with_liff_id_stores_config_and_credentials_set() {
+    let app = spawn_app().await;
+    let team = app.seed_team("Team").await;
+    let token = admin_in_team(&app, "a@x.io", team).await;
+
+    let (status, body, _) = app
+        .request(
+            "POST",
+            "/api/channels",
+            Some(&token),
+            Some(json!({
+                "platform": "line",
+                "lineConfig": {
+                    "channelId": "C1",
+                    "channelAccessToken": "at",
+                    "channelSecret": "sec",
+                    "liffId": "liff-1"
+                }
+            })),
+        )
+        .await;
+    assert_eq!(status, 201, "{body}");
+
+    let (status, body, _) = app
+        .request("GET", "/api/channels", Some(&token), None)
+        .await;
+    assert_eq!(status, 200, "{body}");
+    let chan = &body["data"][0];
+    assert_eq!(chan["config"]["liffId"], "liff-1");
+    let set: Vec<String> = chan["credentialsSet"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert!(set.contains(&"channelAccessToken".to_string()), "{body}");
+    assert!(set.contains(&"channelSecret".to_string()), "{body}");
+}
+
+#[tokio::test]
+async fn create_line_without_liff_id_succeeds() {
+    let app = spawn_app().await;
+    let team = app.seed_team("Team").await;
+    let token = admin_in_team(&app, "a@x.io", team).await;
+
+    // The standard line_body() omits liffId; creation still succeeds.
+    let body = create_line(&app, &token).await;
+    assert_eq!(body["success"], true);
+    assert!(body["data"]["config"].get("liffId").is_none(), "{body}");
+}
+
 // ------------------------------------------------------------ get one (CRD 2644-2650)
 
 #[tokio::test]

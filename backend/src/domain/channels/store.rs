@@ -52,11 +52,20 @@ pub fn stats_view(raw: &Option<String>) -> Value {
 /// Sanitized client-facing record: the encrypted-credential blob is stripped
 /// out before serialization, always (CRD 2622).
 pub fn view(row: &ChannelRow) -> Value {
+    // Which secret fields have a stored value — the field NAMES only, never any
+    // value (decrypted or otherwise) (CRD 2622).
+    let creds_set: Vec<String> = row
+        .credentials
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| v.as_object().map(|o| o.keys().cloned().collect()))
+        .unwrap_or_default();
     json!({
         "id": row.id,
         "teamId": row.team_id,
         "platform": row.platform,
         "config": parse_json(&row.config),
+        "credentialsSet": creds_set,
         "webhookConfig": parse_json(&row.webhook_config),
         "stats": stats_view(&row.stats),
         "isActive": row.is_active != 0,

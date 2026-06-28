@@ -19,14 +19,16 @@ use crate::state::AppState;
 
 use super::store::{self, ChannelRow};
 
-pub const PLATFORMS: [&str; 3] = ["line", "facebook", "whatsapp"];
+pub const PLATFORMS: [&str; 4] = ["line", "facebook", "instagram", "whatsapp"];
 
-/// Per-platform configuration descriptor: JSON body key, non-secret identifier
-/// fields, and secret credential fields — all required at creation (CRD 2634-2636).
+/// Per-platform configuration descriptor: JSON body key, required non-secret
+/// identifier fields, optional non-secret fields, and required secret credential
+/// fields (CRD 2634-2636). Optional plain fields are stored when supplied.
 fn platform_fields(
     platform: &str,
 ) -> (
     &'static str,
+    &'static [&'static str],
     &'static [&'static str],
     &'static [&'static str],
 ) {
@@ -34,15 +36,23 @@ fn platform_fields(
         "line" => (
             "lineConfig",
             &["channelId"],
+            &["liffId"],
             &["channelAccessToken", "channelSecret"],
         ),
-        "facebook" => ("facebookConfig", &["pageId"], &["accessToken", "appSecret"]),
+        "facebook" => (
+            "facebookConfig",
+            &["pageId"],
+            &[],
+            &["accessToken", "appSecret"],
+        ),
+        "instagram" => ("instagramConfig", &["igId"], &[], &["accessToken"]),
         "whatsapp" => (
             "whatsappConfig",
             &["phoneNumber", "businessAccountId"],
+            &[],
             &["accessToken"],
         ),
-        _ => ("config", &[], &[]),
+        _ => ("config", &[], &[], &[]),
     }
 }
 
@@ -135,7 +145,7 @@ pub async fn list_channels(
         Some(p) if PLATFORMS.contains(&p.as_str()) => Some(p.as_str()),
         Some(_) => {
             return Err(AppError::BadRequest(
-                "Invalid platform. Supported platforms: line, facebook, whatsapp".into(),
+                "Invalid platform. Supported platforms: line, facebook, instagram, whatsapp".into(),
             ));
         }
     };
@@ -179,11 +189,11 @@ pub async fn create_channel(
         .to_string();
     if !PLATFORMS.contains(&platform.as_str()) {
         return Err(AppError::BadRequest(
-            "Invalid platform. Supported platforms: line, facebook, whatsapp".into(),
+            "Invalid platform. Supported platforms: line, facebook, instagram, whatsapp".into(),
         ));
     }
 
-    let (config_key, plain_fields, secret_fields) = platform_fields(&platform);
+    let (config_key, plain_fields, optional_plain, secret_fields) = platform_fields(&platform);
     let supplied = body
         .get(config_key)
         .and_then(Value::as_object)
@@ -223,6 +233,14 @@ pub async fn create_channel(
     let mut config = Map::new();
     for field in plain_fields {
         config.insert((*field).to_string(), supplied[*field].clone());
+    }
+    for field in optional_plain {
+        if let Some(v) = supplied
+            .get(*field)
+            .filter(|v| v.as_str().is_some_and(|s| !s.trim().is_empty()))
+        {
+            config.insert((*field).to_string(), v.clone());
+        }
     }
     let key = state.config.encryption_key.as_deref();
     let mut credentials = Map::new();
@@ -331,10 +349,11 @@ pub async fn update_channel(
 
     // Only the config block matching the connection's own platform is applied
     // (CRD 2656).
-    let (config_key, plain_fields, secret_fields) = platform_fields(&row.platform);
+    let (config_key, plain_fields, optional_plain, secret_fields) =
+        platform_fields(&row.platform);
     let mut secrets_changed = false;
     if let Some(patch) = body.get(config_key).and_then(Value::as_object) {
-        for field in plain_fields {
+        for field in plain_fields.iter().chain(optional_plain.iter()) {
             if let Some(v) = patch.get(*field) {
                 config.insert((*field).to_string(), v.clone());
             }
