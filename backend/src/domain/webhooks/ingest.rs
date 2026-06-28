@@ -456,8 +456,7 @@ pub async fn ingest_message(
     // (covers brand-new customers and old "<Platform> User" records). Best-effort:
     // a failed/absent profile leaves the placeholder untouched (CRD 2818).
     if is_placeholder_name(inbound.platform, customer.display_name.as_deref()) {
-        let gateway =
-            crate::domain::conversations::channels::OutboundGateway::from_config(&state.config);
+        let gateway = crate::domain::conversations::channels::OutboundGateway::resolve(state).await;
         let profile = gateway
             .fetch_profile(inbound.platform, inbound.platform_user_id)
             .await;
@@ -926,8 +925,7 @@ pub async fn handle_line_follow(state: &Arc<AppState>, event: &Value) -> IngestR
         .unwrap_or_else(|| default_display_name("line").to_string());
     let mut avatar_url: Option<String> = None;
     if is_placeholder_name("line", stored.as_deref()) {
-        let gateway =
-            crate::domain::conversations::channels::OutboundGateway::from_config(&state.config);
+        let gateway = crate::domain::conversations::channels::OutboundGateway::resolve(state).await;
         let profile = gateway.fetch_profile("line", user_id).await;
         if let Some(name) = profile.display_name {
             display_name = name;

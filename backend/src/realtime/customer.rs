@@ -949,7 +949,7 @@ pub async fn create_message(
                 }
             }
             if !items.is_empty() {
-                let gateway = OutboundGateway::from_config(&state.config);
+                let gateway = OutboundGateway::resolve(&state).await;
                 tokio::spawn(async move {
                     for batch in items.chunks(BATCH_CAP) {
                         if let Err(e) = gateway.send_batch("line", &recipient, batch).await {

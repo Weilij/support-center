@@ -498,6 +498,22 @@ impl OutboundGateway {
         gateway
     }
 
+    /// Build the gateway from live resolved credentials (DB → .env) per platform.
+    /// Used by runtime send paths; `from_config` remains for tests / pure config.
+    pub async fn resolve(state: &crate::state::AppState) -> Self {
+        use crate::domain::channels::resolve::resolve_channel;
+        Self {
+            line: resolve_channel(state, "line").await.access_token,
+            line_push_url: state.config.line_push_url.clone(),
+            facebook: resolve_channel(state, "facebook").await.access_token,
+            instagram: resolve_channel(state, "instagram").await.access_token,
+            meta_graph_url: state.config.meta_graph_url.clone(),
+            shopee: crate::domain::shopee::client::ShopeeClient::from_config(&state.config),
+            shopee_db: Some(state.db.clone()),
+            encryption_key: state.config.encryption_key.clone(),
+        }
+    }
+
     /// Push one batch (≤ BATCH_CAP items); returns the platform-side message id.
     pub async fn send_batch(
         &self,

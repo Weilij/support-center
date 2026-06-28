@@ -165,7 +165,7 @@ async fn process_outbound(state: &Arc<AppState>, body: &Value) -> WorkerResult<(
         Err(QueueWorkerError::Validation("no messages to send"))
     } else {
         // 3. Chunks of 5 with a brief pause; any chunk failure fails the send.
-        let gateway = OutboundGateway::from_config(&state.config);
+        let gateway = OutboundGateway::resolve(state).await;
         let mut result: WorkerResult<()> = Ok(());
         for (i, chunk) in items.chunks(BATCH_CAP).enumerate() {
             if i > 0 {

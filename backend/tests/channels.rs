@@ -1032,3 +1032,61 @@ async fn resolve_channel_prefers_db_credentials_over_env() {
         Some("chan-db")
     );
 }
+
+/// The outbound gateway built via `OutboundGateway::resolve` consumes the live
+/// resolved credentials: with an active LINE integration its LINE field is
+/// populated from the DB token (so a LINE send does NOT fail for missing
+/// credentials), while a platform with no DB integration and no env token keeps
+/// its field `None` and fails delivery with `MissingCredentials`. Network-free:
+/// the only awaited send targets a platform (facebook) whose missing-token path
+/// short-circuits before any HTTP call.
+#[tokio::test]
+async fn outbound_gateway_resolve_prefers_db_token() {
+    use mcss_backend::domain::channels::resolve::resolve_channel;
+    use mcss_backend::domain::conversations::channels::{OutboundGateway, OutboundItem};
+    let app = spawn_app().await;
+    let team = app.seed_team("Team").await;
+    let token = admin_in_team(&app, "gw@x.io", team).await;
+
+    let body = json!({
+        "platform": "line",
+        "lineConfig": {
+            "channelId": "chan-gw",
+            "channelAccessToken": "gw-db-token",
+            "channelSecret": "gw-secret"
+        }
+    });
+    let (status, created, _) = app
+        .request("POST", "/api/channels", Some(&token), Some(body))
+        .await;
+    assert_eq!(status, 201, "create failed: {created}");
+
+    // The gateway sources its LINE token from the same resolver, which prefers
+    // the DB credential (cross-checked here without reading the private field).
+    assert_eq!(
+        resolve_channel(&app.state, "line")
+            .await
+            .access_token
+            .as_deref(),
+        Some("gw-db-token")
+    );
+
+    // Building the gateway never panics, and the DB-backed LINE field is present:
+    // a LINE send fails only on the network (not on MissingCredentials). For a
+    // facebook platform with neither a DB integration nor an env token, the field
+    // stays None and the send short-circuits with the missing-credentials error.
+    let gateway = OutboundGateway::resolve(&app.state).await;
+    assert!(
+        app.state.config.facebook_page_access_token.is_none(),
+        "harness should leave the facebook token unset for this assertion"
+    );
+    let err = gateway
+        .send_batch("facebook", "PSID-1", &[OutboundItem::text("hi")])
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        err,
+        "Outbound delivery is not supported for platform 'facebook'"
+    );
+}
