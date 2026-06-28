@@ -191,7 +191,7 @@ export function MessageComposer({
               className="cs-chip cs-chip--blue"
               style={{ cursor: 'pointer', border: 'none' }}
             >
-              指派至團隊
+              指給我的團隊
             </button>
             <button
               type="submit"

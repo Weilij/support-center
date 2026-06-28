@@ -11,7 +11,7 @@ import {
   uploadConversationFile,
   type Attachment,
 } from '../../stores/files'
-import { conversationsStore } from '../../stores/conversations'
+import { assignConversation, conversationsStore } from '../../stores/conversations'
 import { FilesDrawer } from './FilesDrawer'
 import { MessageList } from './MessageList'
 import { MessageComposer } from './MessageComposer'
@@ -234,6 +234,15 @@ export function Thread({
     }
   }
 
+  const quickAssignToMyTeam = async () => {
+    if (!convId) return
+    const myTeam = session.currentTeam() ?? session.teamOptions().find((t) => t.isPrimary) ?? session.teamOptions()[0]
+    const teamNum = myTeam ? Number(myTeam.id) : NaN
+    if (!Number.isFinite(teamNum)) { setToast('你沒有所屬團隊，無法指派'); return }
+    const ok = await assignConversation(convId, teamNum)
+    setToast(ok ? `已指派給「${myTeam!.name}」` : '指派失敗')
+  }
+
   const currentTeamId =
     meta.teamId ??
     ((conversationsStore.get().items.find((conversation) => conversation.id === convId)?.teamId ?? null) as number | null)
@@ -283,7 +292,7 @@ export function Thread({
         dragOver={dragOver}
         fileInput={fileInput}
         onAddFiles={addFiles}
-        onAssign={() => setAssignOpen(true)}
+        onAssign={() => void quickAssignToMyTeam()}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
