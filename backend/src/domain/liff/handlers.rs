@@ -322,7 +322,10 @@ pub async fn welcome(
     let Some(team_name) = team_name else {
         return Err(AppError::NotFound("找不到團隊".into()));
     };
-    if state.config.line_channel_access_token.is_none() {
+    let line_token = crate::domain::channels::resolve::resolve_channel(&state, "line")
+        .await
+        .access_token;
+    if line_token.is_none() {
         return Err(AppError::Internal("推播憑證尚未設定".into()));
     }
 

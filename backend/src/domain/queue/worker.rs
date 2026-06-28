@@ -287,13 +287,14 @@ async fn process_media(state: &Arc<AppState>, body: &Value) -> WorkerResult<()> 
     // 1. Fetch + store the media (CRD 5176). Prefer an already mirrored object;
     // on miss, fetch from the LINE content API and cache the bytes for future
     // retries/proxy reads.
+    let resolved_token = crate::domain::channels::resolve::resolve_channel(state, "line")
+        .await
+        .access_token;
     let bytes = if let Some(bytes) =
         crate::domain::files::store::get_object(&state.config.upload_dir, &key).await
     {
         bytes
-    } else if let Some(token) = state
-        .config
-        .line_channel_access_token
+    } else if let Some(token) = resolved_token
         .as_deref()
         .filter(|token| !token.is_empty())
     {

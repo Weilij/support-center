@@ -279,9 +279,10 @@ pub async fn line_proxy(
             cors.as_deref(),
         ));
     }
-    let Some(token) = state
-        .config
-        .line_channel_access_token
+    let resolved_token = crate::domain::channels::resolve::resolve_channel(&state, "line")
+        .await
+        .access_token;
+    let Some(token) = resolved_token
         .as_deref()
         .filter(|token| !token.is_empty())
     else {
