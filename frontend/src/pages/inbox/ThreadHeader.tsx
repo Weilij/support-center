@@ -85,7 +85,7 @@ export function ThreadHeader({
           style={{ width: 38, height: 38 }}
           onClick={onAssign}
         >
-          <Icon name="user" w={19} />
+          <Icon name="plus" w={19} />
         </button>
         <button
           className="cs-icon-btn"
@@ -94,7 +94,7 @@ export function ThreadHeader({
           style={{ width: 38, height: 38 }}
           onClick={onTransfer}
         >
-          <Icon name="arrowRight" w={19} />
+          <Icon name="users" w={19} />
         </button>
         {showCustomerPanelToggle && (
           <button
@@ -104,7 +104,7 @@ export function ThreadHeader({
             style={{ width: 38, height: 38 }}
             onClick={onToggleCustomerPanel}
           >
-            <Icon name="pin" w={19} />
+            <Icon name="arrowRight" w={19} />
           </button>
         )}
       </div>
