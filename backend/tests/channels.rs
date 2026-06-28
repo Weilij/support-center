@@ -554,6 +554,48 @@ async fn update_merges_config_and_resets_verification_on_secret_change() {
 }
 
 #[tokio::test]
+async fn update_blank_optional_field_does_not_erase_stored_value() {
+    let app = spawn_channels_app().await;
+    let team = app.seed_team("Team").await;
+    let token = admin_in_team(&app, "a@x.io", team).await;
+
+    // Create a LINE channel that carries an optional liffId.
+    let (status, body, _) = app
+        .request(
+            "POST",
+            "/api/channels",
+            Some(&token),
+            Some(json!({
+                "platform": "line",
+                "lineConfig": {
+                    "channelId": "C1",
+                    "channelAccessToken": "at",
+                    "channelSecret": "sec",
+                    "liffId": "liff-1"
+                }
+            })),
+        )
+        .await;
+    assert_eq!(status, 201, "{body}");
+    let id = body["data"]["id"].as_i64().unwrap();
+
+    // Update another field while sending a blank liffId: the blank optional
+    // value must be ignored, not persisted as an empty string.
+    let (status, body, _) = app
+        .request(
+            "PUT",
+            &format!("/api/channels/{id}"),
+            Some(&token),
+            Some(json!({"lineConfig": {"channelId": "chan-456", "liffId": ""}})),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["data"]["config"]["channelId"], "chan-456");
+    // The stored liffId is untouched (CRD 2656 — blank optional must not erase).
+    assert_eq!(body["data"]["config"]["liffId"], "liff-1", "{body}");
+}
+
+#[tokio::test]
 async fn update_enforces_role_team_and_uniqueness() {
     let app = spawn_app().await;
     let team = app.seed_team("Team").await;

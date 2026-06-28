@@ -355,6 +355,13 @@ pub async fn update_channel(
     if let Some(patch) = body.get(config_key).and_then(Value::as_object) {
         for field in plain_fields.iter().chain(optional_plain.iter()) {
             if let Some(v) = patch.get(*field) {
+                // An optional field provided as blank must not erase the stored
+                // value (required plain fields keep their existing behavior).
+                if optional_plain.contains(field)
+                    && v.as_str().is_some_and(|s| s.trim().is_empty())
+                {
+                    continue;
+                }
                 config.insert((*field).to_string(), v.clone());
             }
         }
