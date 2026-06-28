@@ -38,6 +38,7 @@ const ROUTE_ICON: Record<string, string> = {
   '/system/monitoring':'chart',
   '/system/alerts':    'bell',
   '/system/maintenance':'settings',
+  '/channels':         'channels',
   '/liff':             'channels',
   '/settings':         'settings',
 }
@@ -85,6 +86,7 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { to: '/system/monitoring',  label: '監控', area: 'system' },
       { to: '/system/alerts',      label: '告警', area: 'system' },
       { to: '/system/maintenance', label: '維護', area: 'system' },
+      { to: '/channels',           label: '頻道管理', area: 'system' },
       { to: '/liff',               label: 'LIFF', area: 'system' },
       { to: '/settings',           label: '設定', area: 'system' },
     ],
