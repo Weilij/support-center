@@ -61,7 +61,7 @@ fn customer_lock(key: &str) -> Arc<tokio::sync::Mutex<()>> {
 }
 
 async fn push_default_welcome(state: &AppState, message_id: &str, user_id: &str) {
-    let gateway = crate::domain::conversations::channels::OutboundGateway::from_state(state);
+    let gateway = crate::domain::conversations::channels::OutboundGateway::resolve(state).await;
     let item = crate::domain::conversations::channels::OutboundItem::text(DEFAULT_WELCOME);
     let now = now_iso();
     match gateway.send_batch("line", user_id, &[item]).await {

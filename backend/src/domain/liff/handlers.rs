@@ -332,7 +332,7 @@ pub async fn welcome(
         tracing::warn!(error = %e, "LIFF welcome reconciliation skipped");
     }
 
-    let gateway = OutboundGateway::from_state(&state);
+    let gateway = OutboundGateway::resolve(&state).await;
     let platform_message_id = gateway
         .send_batch("line", &user_id, &[OutboundItem::text(DEFAULT_WELCOME)])
         .await

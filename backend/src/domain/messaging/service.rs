@@ -204,7 +204,7 @@ pub async fn process_delayed(state: &AppState, delayed_id: &str) -> Value {
         // Missing credentials or gateway errors mark the item failed, matching
         // the documented pending -> failed outcome.
         "line" | "facebook" | "instagram" | "shopee" => {
-            let gateway = OutboundGateway::from_state(state);
+            let gateway = OutboundGateway::resolve(state).await;
             match gateway
                 .send_batch(&platform, &recipient, &[OutboundItem::text(content)])
                 .await
@@ -461,7 +461,7 @@ pub async fn recall_sent_message(state: &AppState, message_id: &str, user_id: &s
     }
     write_recall_log(&state.db, message_id, user_id, "successful").await;
 
-    let gateway = OutboundGateway::from_state(state);
+    let gateway = OutboundGateway::resolve(state).await;
     match platform.as_deref() {
         Some("line") => {
             // LINE offers no native unsend through its API: send a

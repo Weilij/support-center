@@ -374,7 +374,7 @@ async fn dispatch(state: &AppState, rule: &CachedRule, ctx: &DispatchContext<'_>
     } else {
         "reply"
     };
-    let gateway = OutboundGateway::from_state(state);
+    let gateway = OutboundGateway::resolve(state).await;
     if let Err(e) = gateway
         .send_batch(ctx.platform, ctx.platform_user_id, &items)
         .await

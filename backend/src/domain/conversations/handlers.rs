@@ -980,6 +980,7 @@ pub async fn send_message(
     }
     let platform = conv.cust_platform.clone().unwrap_or_default();
     let recipient = conv.cust_platform_user_id.clone().unwrap_or_default();
+    let gateway = channels::OutboundGateway::resolve(&state).await;
     tokio::spawn(channels::deliver_pending(channels::PendingDelivery {
         db: state.db.clone(),
         hub: state.realtime.clone(),
@@ -988,7 +989,7 @@ pub async fn send_message(
         platform: platform.clone(),
         recipient,
         items,
-        gateway: channels::OutboundGateway::from_state(&state),
+        gateway,
     }));
 
     let created_ms = epoch_ms(&now);
