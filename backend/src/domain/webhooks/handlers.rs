@@ -297,7 +297,10 @@ pub async fn line_webhook(
     // 2. Signature verified against the raw bytes (CRD 2739): HMAC-SHA256 of
     //    the body keyed by the channel secret, base64-encoded, per LINE's
     //    published scheme.
-    let Some(secret) = state.config.line_channel_secret.as_deref() else {
+    let resolved_secret = crate::domain::channels::resolve::resolve_channel(&state, "line")
+        .await
+        .secret;
+    let Some(secret) = resolved_secret.as_deref() else {
         return fail(
             StatusCode::UNAUTHORIZED,
             "LINE channel secret is not configured",

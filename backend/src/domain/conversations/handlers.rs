@@ -698,10 +698,9 @@ async fn proxy_media_inner(
         .clone()
         .filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::NotFound("Media unavailable".into()))?;
-    let token = state
-        .config
-        .line_channel_access_token
-        .clone()
+    let token = crate::domain::channels::resolve::resolve_channel(state, "line")
+        .await
+        .access_token
         .filter(|t| !t.is_empty())
         .ok_or_else(|| AppError::NotFound("Media unavailable".into()))?;
     let use_preview = preview && (row.content_type == "image" || row.content_type == "video");

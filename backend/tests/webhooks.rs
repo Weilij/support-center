@@ -195,6 +195,66 @@ async fn line_rejects_when_secret_unconfigured() {
         .contains("secret"));
 }
 
+/// HMAC-SHA256 base64 signature over `body` keyed by an arbitrary `secret`,
+/// mirroring `line_sig` but with a caller-supplied key (for the DB-secret path).
+fn line_sig_with(secret: &str, body: &str) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(body.as_bytes());
+    B64.encode(mac.finalize().into_bytes())
+}
+
+/// Seed an active LINE channel integration whose `channelSecret` is `secret`.
+/// With no `encryption_key` configured the harness stores credentials as
+/// legacy plaintext, which `crypto::reveal(None, ..)` passes through unchanged,
+/// so `resolve_channel(.., "line").secret` returns exactly `secret`.
+async fn seed_line_channel_secret(app: &TestApp, secret: &str) {
+    let team = app.seed_team("LINE Channel").await;
+    let creds = json!({ "channelSecret": secret, "channelAccessToken": "db-access-token" });
+    sqlx::query(
+        "INSERT INTO channel_integrations
+            (team_id, platform, config, credentials, webhook_config, stats,
+             is_active, is_verified, configured_by, error_count, created_at)
+         VALUES ($1, 'line', '{}', $2, '{}', '{}', 1, 0, NULL, 0, $3)",
+    )
+    .bind(team)
+    .bind(creds.to_string())
+    .bind("2026-06-17T00:00:00Z")
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+}
+
+/// The DB-stored `channelSecret` takes precedence over the `.env` value: a
+/// webhook signed with the DB secret is accepted, and one signed with the
+/// (now-superseded) env secret is rejected.
+#[tokio::test]
+async fn line_verifies_against_db_channel_secret() {
+    let app = spawn_app().await; // env line_channel_secret = "test-line-secret"
+    seed_line_channel_secret(&app, "db-line-secret").await;
+
+    let body = line_text_event("U-db", "m-db-1", "hi");
+
+    // Signed with the DB secret -> accepted (not 401).
+    let sig = line_sig_with("db-line-secret", &body);
+    let (status, _resp) = post_line(&app, &body, Some(&sig)).await;
+    assert_ne!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "DB-secret signature must be accepted"
+    );
+    assert_eq!(status, StatusCode::OK, "DB-secret webhook should succeed");
+
+    // Signed with the env secret (superseded by the DB value) -> rejected.
+    let env_sig = line_sig(&body); // keyed by "test-line-secret"
+    let (status, resp) = post_line(&app, &body, Some(&env_sig)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "env-secret signature must be rejected once a DB secret exists"
+    );
+    assert_eq!(resp["error"], "Invalid signature");
+}
+
 #[tokio::test]
 async fn line_rejects_malformed_payloads() {
     let app = spawn_app().await;
