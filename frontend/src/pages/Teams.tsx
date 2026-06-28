@@ -37,8 +37,9 @@ interface LatestQr {
 }
 
 const ROLE_OPTIONS = [
-  { value: 'agent', label: '客服' },
-  { value: 'admin', label: '管理員' },
+  { value: 'member', label: '成員' },
+  { value: 'lead', label: '組長' },
+  { value: 'supervisor', label: '主管（團隊管理員）' },
 ]
 
 function qrSrc(image?: string): string | undefined {
@@ -160,7 +161,7 @@ export default function Teams() {
       width: 120,
       render: (m) => (
         <select
-          value={m.role ?? 'agent'}
+          value={m.role ?? 'member'}
           onChange={(e) => void changeRole(m.id, e.target.value)}
           style={{ padding: '3px 6px', borderRadius: 6, border: '1px solid #ccc' }}
         >
