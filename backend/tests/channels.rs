@@ -983,3 +983,52 @@ async fn webhook_token_triple_resolves_only_enabled_matching_connections() {
             .is_none()
     );
 }
+
+// ------------------------------------- credential resolution (DB over .env)
+
+/// No active integration seeded: resolution falls back to `.env`/config. The
+/// harness leaves the LINE access token unset, so it resolves to `None`, while
+/// the LINE secret comes from the harness default.
+#[tokio::test]
+async fn resolve_channel_falls_back_to_env_when_no_integration() {
+    use mcss_backend::domain::channels::resolve::resolve_channel;
+    let app = spawn_app().await;
+
+    let resolved = resolve_channel(&app.state, "line").await;
+    assert_eq!(resolved.access_token, app.state.config.line_channel_access_token);
+    assert_eq!(resolved.access_token, None);
+    // Secret falls through to the harness LINE secret default.
+    assert_eq!(resolved.secret, app.state.config.line_channel_secret);
+    assert_eq!(resolved.secret.as_deref(), Some("test-line-secret"));
+}
+
+/// An active LINE integration is present: its decrypted DB credentials win over
+/// the `.env` fallback, and the plain config fields are returned.
+#[tokio::test]
+async fn resolve_channel_prefers_db_credentials_over_env() {
+    use mcss_backend::domain::channels::resolve::resolve_channel;
+    let app = spawn_app().await;
+    let team = app.seed_team("Team").await;
+    let token = admin_in_team(&app, "a@x.io", team).await;
+
+    let body = json!({
+        "platform": "line",
+        "lineConfig": {
+            "channelId": "chan-db",
+            "channelAccessToken": "db-token-xyz",
+            "channelSecret": "db-secret"
+        }
+    });
+    let (status, created, _) = app
+        .request("POST", "/api/channels", Some(&token), Some(body))
+        .await;
+    assert_eq!(status, 201, "create failed: {created}");
+
+    let resolved = resolve_channel(&app.state, "line").await;
+    assert_eq!(resolved.access_token.as_deref(), Some("db-token-xyz"));
+    assert_eq!(resolved.secret.as_deref(), Some("db-secret"));
+    assert_eq!(
+        resolved.config.get("channelId").and_then(Value::as_str),
+        Some("chan-db")
+    );
+}

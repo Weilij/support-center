@@ -88,6 +88,21 @@ pub async fn find_by_id(db: &PgPool, id: i64) -> Result<Option<ChannelRow>, AppE
         .await?)
 }
 
+/// The single active integration for a platform (the shared system credential),
+/// newest first. Used by the credential resolver (DB-over-`.env` precedence).
+pub async fn find_active_by_platform(
+    db: &PgPool,
+    platform: &str,
+) -> Result<Option<ChannelRow>, AppError> {
+    let sql = format!(
+        "{SELECT} WHERE platform = $1 AND is_active = 1 ORDER BY updated_at DESC NULLS LAST LIMIT 1"
+    );
+    Ok(sqlx::query_as(&crate::db::pg_params(&sql))
+        .bind(platform)
+        .fetch_optional(db)
+        .await?)
+}
+
 /// Connections matching the team (and optional platform) filter, newest first
 /// (CRD 2627, 2705). `team_id = None` lists across all teams (admin only).
 pub async fn list(

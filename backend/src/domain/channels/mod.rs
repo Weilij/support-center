@@ -7,6 +7,7 @@
 //! statistics and a derived health indicator.
 
 pub mod handlers;
+pub mod resolve;
 pub mod store;
 
 use axum::middleware::from_fn_with_state;
