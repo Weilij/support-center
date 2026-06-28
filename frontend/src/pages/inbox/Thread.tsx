@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEven
 
 import { get, post } from '../../api/client'
 import { session } from '../../auth/session'
-import { AssignDialog, type AssignMode } from '../../components/ConversationAssign'
+import { AssignDialog } from '../../components/ConversationAssign'
 import { Toast } from '../../components/ui'
 import { onEvent, readMessageEvent, subscribeConversation, unsubscribeConversation } from '../../realtime/client'
 import { loadPendingDelayed, scheduleDelayed, type PendingDelayed } from '../../stores/delayedMessages'
@@ -37,7 +37,7 @@ export function Thread({
   const [messages, setMessages] = useState<InboxMessage[]>([])
   const [draft, setDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [assignMode, setAssignMode] = useState<AssignMode | null>(null)
+  const [assignOpen, setAssignOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const bottom = useRef<HTMLDivElement>(null)
 
@@ -261,8 +261,7 @@ export function Thread({
         onBack={onBack}
         onToggleFiles={() => setShowFiles((value) => !value)}
         onToggleSchedule={() => setShowSchedule((value) => !value)}
-        onAssign={() => setAssignMode('assign')}
-        onTransfer={() => setAssignMode('transfer')}
+        onAssign={() => setAssignOpen(true)}
         onToggleCustomerPanel={onToggleCustPanel}
         showCustomerPanelToggle={showCustToggle}
       />
@@ -284,20 +283,19 @@ export function Thread({
         dragOver={dragOver}
         fileInput={fileInput}
         onAddFiles={addFiles}
-        onAssign={() => setAssignMode('assign')}
+        onAssign={() => setAssignOpen(true)}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         onSubmit={send}
       />
 
-      {convId && assignMode && (
+      {convId && assignOpen && (
         <AssignDialog
           open
-          mode={assignMode}
           conversationId={convId}
           currentTeamId={currentTeamId}
-          onClose={() => setAssignMode(null)}
+          onClose={() => setAssignOpen(false)}
         />
       )}
 

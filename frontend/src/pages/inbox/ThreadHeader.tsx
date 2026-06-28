@@ -13,7 +13,6 @@ export function ThreadHeader({
   onToggleFiles,
   onToggleSchedule,
   onAssign,
-  onTransfer,
   onToggleCustomerPanel,
   showCustomerPanelToggle,
 }: {
@@ -25,7 +24,6 @@ export function ThreadHeader({
   onToggleFiles: () => void
   onToggleSchedule: () => void
   onAssign: () => void
-  onTransfer: () => void
   onToggleCustomerPanel?: () => void
   showCustomerPanelToggle?: boolean
 }) {
@@ -80,19 +78,10 @@ export function ThreadHeader({
         />
         <button
           className="cs-icon-btn"
-          aria-label="指派"
-          title="指派"
+          aria-label="指派團隊"
+          title="指派團隊"
           style={{ width: 38, height: 38 }}
           onClick={onAssign}
-        >
-          <Icon name="plus" w={19} />
-        </button>
-        <button
-          className="cs-icon-btn"
-          aria-label="轉接"
-          title="轉接"
-          style={{ width: 38, height: 38 }}
-          onClick={onTransfer}
         >
           <Icon name="users" w={19} />
         </button>

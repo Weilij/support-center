@@ -79,7 +79,6 @@ describe('Inbox thread header', () => {
     const onFiles = vi.fn()
     const onSchedule = vi.fn()
     const onAssign = vi.fn()
-    const onTransfer = vi.fn()
     const onCustomer = vi.fn()
 
     render(
@@ -91,7 +90,6 @@ describe('Inbox thread header', () => {
         onToggleFiles={onFiles}
         onToggleSchedule={onSchedule}
         onAssign={onAssign}
-        onTransfer={onTransfer}
         onToggleCustomerPanel={onCustomer}
         showCustomerPanelToggle
       />,
@@ -104,14 +102,12 @@ describe('Inbox thread header', () => {
 
     fireEvent.click(screen.getByLabelText('檔案'))
     fireEvent.click(screen.getByLabelText('排程'))
-    fireEvent.click(screen.getByLabelText('指派'))
-    fireEvent.click(screen.getByLabelText('轉接'))
+    fireEvent.click(screen.getByLabelText('指派團隊'))
     fireEvent.click(screen.getByLabelText('客戶資訊'))
 
     expect(onFiles).toHaveBeenCalledTimes(1)
     expect(onSchedule).toHaveBeenCalledTimes(1)
     expect(onAssign).toHaveBeenCalledTimes(1)
-    expect(onTransfer).toHaveBeenCalledTimes(1)
     expect(onCustomer).toHaveBeenCalledTimes(1)
   })
 })

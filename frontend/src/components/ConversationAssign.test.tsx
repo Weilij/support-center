@@ -77,3 +77,51 @@ describe('AssignDialog', () => {
     expect(transferMock.mock.calls[0]).not.toContain('agent-1')
   })
 })
+
+describe('AssignDialog (unified, no mode)', () => {
+  afterEach(() => {
+    cleanup()
+  })
+
+  beforeEach(() => {
+    assignMock.mockClear()
+    transferMock.mockClear()
+    unassignMock.mockClear()
+    teamsStore.set({
+      items: [
+        { id: 5, name: 'A' },
+        { id: 7, name: 'B' },
+      ],
+      busy: false,
+      error: null,
+    })
+    teamsStore.markFresh()
+  })
+
+  it('assigns when there is no current team', async () => {
+    const { getByRole, getByLabelText } = render(
+      <AssignDialog open conversationId="c1" currentTeamId={null} onClose={() => {}} />,
+    )
+    fireEvent.change(getByLabelText(/團隊/), { target: { value: '7' } })
+    fireEvent.click(getByRole('button', { name: /確認|確定/ }))
+    await waitFor(() => expect(assignMock).toHaveBeenCalledWith('c1', 7, undefined))
+    expect(transferMock).not.toHaveBeenCalled()
+  })
+
+  it('transfers when a current team exists', async () => {
+    const { getByRole, getByLabelText } = render(
+      <AssignDialog open conversationId="c1" currentTeamId={5} onClose={() => {}} />,
+    )
+    fireEvent.change(getByLabelText(/團隊/), { target: { value: '7' } })
+    fireEvent.click(getByRole('button', { name: /確認|確定/ }))
+    await waitFor(() => expect(transferMock).toHaveBeenCalledWith('c1', 7, 5, undefined))
+  })
+
+  it('unassigns via the 取消指派 action', async () => {
+    const { getByRole } = render(
+      <AssignDialog open conversationId="c1" currentTeamId={5} onClose={() => {}} />,
+    )
+    fireEvent.click(getByRole('button', { name: /取消指派/ }))
+    await waitFor(() => expect(unassignMock).toHaveBeenCalledWith('c1', undefined))
+  })
+})
