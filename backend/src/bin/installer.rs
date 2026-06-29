@@ -1495,17 +1495,27 @@ fn router(installer: Installer) -> Router {
         .with_state(installer)
 }
 
+fn installer_host_from_env(value: Option<String>) -> String {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+        .unwrap_or("127.0.0.1")
+        .to_string()
+}
+
 #[tokio::main]
 async fn main() {
     let app = router(Installer::default());
+    let host = installer_host_from_env(std::env::var("INSTALLER_HOST").ok());
     let port: u16 = std::env::var("INSTALLER_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8976);
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+    let listener = tokio::net::TcpListener::bind((host.as_str(), port))
         .await
         .expect("bind");
-    println!("MCSS installer listening on port {port}");
+    println!("MCSS installer listening on {host}:{port}");
     axum::serve(listener, app).await.expect("serve");
 }
 
@@ -1656,6 +1666,17 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "ok");
         assert!(body["timestamp"].is_i64());
+    }
+
+    #[test]
+    fn installer_host_defaults_to_loopback() {
+        assert_eq!(installer_host_from_env(None), "127.0.0.1");
+        assert_eq!(installer_host_from_env(Some("   ".into())), "127.0.0.1");
+    }
+
+    #[test]
+    fn installer_host_allows_explicit_remote_bind() {
+        assert_eq!(installer_host_from_env(Some("0.0.0.0".into())), "0.0.0.0");
     }
 
     #[tokio::test]

@@ -143,10 +143,38 @@ pub async fn export_count(
 }
 
 fn csv_escape(field: &str) -> String {
+    let leading = field.trim_start_matches([' ', '\t', '\r', '\n']);
+    let needs_formula_escape = leading.starts_with(['=', '+', '-', '@']);
+    let safe_field;
+    let field = if needs_formula_escape {
+        safe_field = format!("'{field}");
+        safe_field.as_str()
+    } else {
+        field
+    };
     if field.contains(['"', ',', '\n', '\r']) {
         format!("\"{}\"", field.replace('"', "\"\""))
     } else {
         field.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::csv_escape;
+
+    #[test]
+    fn csv_escape_neutralizes_spreadsheet_formulas() {
+        assert_eq!(
+            csv_escape("=IMPORTXML(\"https://evil.test\")"),
+            "\"'=IMPORTXML(\"\"https://evil.test\"\")\""
+        );
+        assert_eq!(csv_escape("+cmd"), "'+cmd");
+        assert_eq!(csv_escape("-2+3"), "'-2+3");
+        assert_eq!(csv_escape("@SUM(1,2)"), "\"'@SUM(1,2)\"");
+        assert_eq!(csv_escape("  =SUM(1,2)"), "\"'  =SUM(1,2)\"");
+        assert_eq!(csv_escape("\r=SUM(1,2)"), "\"'\r=SUM(1,2)\"");
+        assert_eq!(csv_escape("normal text"), "normal text");
     }
 }
 
