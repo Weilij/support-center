@@ -17,18 +17,28 @@ use crate::domain::messaging::store::{self, FullMessage};
 const EXPORT_FILTER_CAP: i64 = 100;
 const EXPORT_MAX: i64 = 1000;
 const EXPORT_DEFAULT: i64 = 100;
+const CONVERSATION_JOIN: &str =
+    "LEFT JOIN conversations c ON c.id = m.conversation_id AND c.deleted_at IS NULL";
 
 pub async fn export_customers(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
 ) -> Result {
-    let rows: Vec<(i64, Option<String>, String, String)> = sqlx::query_as(
-        "SELECT id, display_name, platform, platform_user_id FROM customers
-         WHERE deleted_at IS NULL ORDER BY display_name LIMIT $1",
-    )
-    .bind(EXPORT_FILTER_CAP)
-    .fetch_all(&state.db)
-    .await?;
+    let mut clause = String::from("m.deleted_at IS NULL AND cu.deleted_at IS NULL");
+    let team_binds = store::append_visibility_clause(&mut clause, &user);
+    let sql = crate::db::pg_params(&format!(
+        "SELECT DISTINCT cu.id, cu.display_name, cu.platform, cu.platform_user_id
+         FROM messages m
+         {CONVERSATION_JOIN}
+         JOIN customers cu ON cu.id = c.customer_id
+         WHERE {clause}
+         ORDER BY cu.display_name LIMIT ?"
+    ));
+    let mut q = sqlx::query_as::<_, (i64, Option<String>, String, String)>(&sql);
+    for team_id in &team_binds {
+        q = q.bind(team_id);
+    }
+    let rows = q.bind(EXPORT_FILTER_CAP).fetch_all(&state.db).await?;
     let data: Vec<Value> = rows
         .iter()
         .map(|(id, name, platform, puid)| {
@@ -40,15 +50,24 @@ pub async fn export_customers(
 
 pub async fn export_agents(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
 ) -> Result {
-    let rows: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT id, display_name, role FROM agents
-         WHERE deleted_at IS NULL AND is_active = 1 ORDER BY display_name LIMIT $1",
-    )
-    .bind(EXPORT_FILTER_CAP)
-    .fetch_all(&state.db)
-    .await?;
+    let mut clause =
+        String::from("m.deleted_at IS NULL AND a.deleted_at IS NULL AND a.is_active = 1");
+    let team_binds = store::append_visibility_clause(&mut clause, &user);
+    let sql = crate::db::pg_params(&format!(
+        "SELECT DISTINCT a.id, a.display_name, a.role
+         FROM messages m
+         {CONVERSATION_JOIN}
+         JOIN agents a ON a.id = m.agent_id
+         WHERE {clause}
+         ORDER BY a.display_name LIMIT ?"
+    ));
+    let mut q = sqlx::query_as::<_, (String, String, String)>(&sql);
+    for team_id in &team_binds {
+        q = q.bind(team_id);
+    }
+    let rows = q.bind(EXPORT_FILTER_CAP).fetch_all(&state.db).await?;
     let data: Vec<Value> = rows
         .iter()
         .map(|(id, name, role)| json!({ "id": id, "displayName": name, "role": role }))
@@ -101,15 +120,19 @@ fn export_clause(q: &ExportQuery) -> (String, Vec<String>) {
 
 pub async fn export_count(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Query(q): Query<ExportQuery>,
 ) -> Result {
-    let (clause, binds) = export_clause(&q);
-    let sql = format!("SELECT COUNT(*) FROM messages m WHERE {clause}");
+    let (mut clause, binds) = export_clause(&q);
+    let team_binds = store::append_visibility_clause(&mut clause, &user);
+    let sql = format!("SELECT COUNT(*) FROM messages m {CONVERSATION_JOIN} WHERE {clause}");
     let sql = crate::db::pg_params(&sql);
     let mut cq = sqlx::query_scalar::<_, i64>(&sql);
     for b in &binds {
         cq = cq.bind(b);
+    }
+    for team_id in &team_binds {
+        cq = cq.bind(team_id);
     }
     let count = cq.fetch_one(&state.db).await?;
     Ok(envelope::ok(json!({
@@ -152,7 +175,8 @@ pub async fn export_messages(
         .unwrap_or(EXPORT_DEFAULT)
         .clamp(1, EXPORT_MAX);
 
-    let (clause, binds) = export_clause(&q);
+    let (mut clause, binds) = export_clause(&q);
+    let team_binds = store::append_visibility_clause(&mut clause, &user);
     let sql = format!(
         "{} WHERE {clause} ORDER BY m.created_at DESC, m.id DESC LIMIT $1",
         store::MESSAGE_SELECT
@@ -161,6 +185,9 @@ pub async fn export_messages(
     let mut mq = sqlx::query_as::<_, FullMessage>(&sql);
     for b in &binds {
         mq = mq.bind(b);
+    }
+    for team_id in &team_binds {
+        mq = mq.bind(team_id);
     }
     let rows = mq.bind(limit).fetch_all(&state.db).await?;
     let now = crate::db::now_iso();

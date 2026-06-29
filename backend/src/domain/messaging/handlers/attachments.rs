@@ -37,12 +37,15 @@ const ALLOWED_MIME: &[&str] = &[
 
 pub async fn list_attachments(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result {
     let m = store::find_message(&state.db, &id)
         .await?
         .ok_or_else(message_not_found)?;
+    if !store::team_scope_ok(&user, m.conv_team_id) {
+        return Err(message_not_found());
+    }
     let attachments: Vec<Value> = store::attachments_for(&state.db, &id)
         .await?
         .iter()
@@ -65,6 +68,9 @@ pub async fn upload_attachment(
     let m = store::find_message(&state.db, &id)
         .await?
         .ok_or_else(message_not_found)?;
+    if !store::team_scope_ok(&user, m.conv_team_id) {
+        return Err(message_not_found());
+    }
     if m.sender_type == "agent" && !author_or_admin(&user, &m) {
         return Err(AppError::Forbidden(
             "Only the author or an administrator can add attachments".into(),

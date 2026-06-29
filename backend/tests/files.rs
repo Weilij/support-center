@@ -229,6 +229,111 @@ async fn list_is_scoped_to_uploader_for_non_admins() {
 }
 
 #[tokio::test]
+async fn generic_upload_rejects_unauthorized_conversation_association() {
+    let app = spawn_app().await;
+    let team_a = app.seed_team("A").await;
+    let team_b = app.seed_team("B").await;
+    let token = agent(&app).await;
+    let agent_id: String = sqlx::query_scalar("SELECT id FROM agents WHERE email = $1")
+        .bind("files@test.dev")
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+    app.add_membership(&agent_id, team_a, "member", true).await;
+    let cust = app.seed_customer("line", "U1", "Alice", None).await;
+    let own_conv = app.seed_conversation(cust, Some(team_a), "assigned").await;
+    let other_conv = app.seed_conversation(cust, Some(team_b), "assigned").await;
+    let other_msg = app
+        .seed_message(&other_conv, "customer", "secret", None)
+        .await;
+
+    let (status, body) = upload(
+        &app,
+        &token,
+        "/api/files",
+        "blocked.png",
+        "image/png",
+        PNG,
+        &[("conversationId", &other_conv)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    let (status, body) = upload(
+        &app,
+        &token,
+        "/api/files",
+        "blocked-message.png",
+        "image/png",
+        PNG,
+        &[("messageId", &other_msg)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    let (status, body) = upload(
+        &app,
+        &token,
+        "/api/files",
+        "allowed.png",
+        "image/png",
+        PNG,
+        &[("conversationId", &own_conv)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["data"]["id"].as_str().unwrap();
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT conversation_id FROM attachments WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&app.state.db)
+            .await
+            .unwrap()
+            .flatten();
+    assert_eq!(stored.as_deref(), Some(own_conv.as_str()));
+}
+
+#[tokio::test]
+async fn presigned_upload_rejects_unauthorized_conversation_association() {
+    let app = spawn_app().await;
+    let team_a = app.seed_team("A").await;
+    let team_b = app.seed_team("B").await;
+    let token = agent(&app).await;
+    let agent_id: String = sqlx::query_scalar("SELECT id FROM agents WHERE email = $1")
+        .bind("files@test.dev")
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+    app.add_membership(&agent_id, team_a, "member", true).await;
+    let cust = app.seed_customer("line", "U2", "Bob", None).await;
+    let own_conv = app.seed_conversation(cust, Some(team_a), "assigned").await;
+    let other_conv = app.seed_conversation(cust, Some(team_b), "assigned").await;
+
+    let body = json!({
+        "filename": "blocked.txt",
+        "contentType": "text/plain",
+        "size": 8,
+        "conversationId": other_conv,
+    });
+    let (status, body, _) = app
+        .request("POST", "/api/files/presigned-url", Some(&token), Some(body))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    let body = json!({
+        "filename": "allowed.txt",
+        "contentType": "text/plain",
+        "size": 8,
+        "conversationId": own_conv,
+    });
+    let (status, body, _) = app
+        .request("POST", "/api/files/presigned-url", Some(&token), Some(body))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"]["uploadUrl"].as_str().unwrap().contains("sig="));
+}
+
+#[tokio::test]
 async fn per_file_modes_delete_and_id_validation() {
     let app = spawn_app().await;
     let token = agent(&app).await;

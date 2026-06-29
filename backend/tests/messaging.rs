@@ -514,6 +514,97 @@ async fn get_message_hides_scope_violations_as_not_found() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+#[tokio::test]
+async fn message_collection_endpoints_enforce_team_scope() {
+    let app = spawn_app().await;
+    let (admin_token, admin_id) = admin(&app).await;
+    let team_a = app.seed_team("A").await;
+    let team_b = app.seed_team("B").await;
+    let (agent_token, _) = agent(&app, "agent@test.dev", Some(team_a)).await;
+    let cust = app.seed_customer("line", "U1", "Alice", None).await;
+    let visible_conv = app.seed_conversation(cust, Some(team_a), "assigned").await;
+    let hidden_conv = app.seed_conversation(cust, Some(team_b), "assigned").await;
+    let pool_conv = app.seed_conversation(cust, None, "active").await;
+    let visible_msg =
+        seed_agent_message(&app, &visible_conv, &admin_id, "visible team", false, None).await;
+    let hidden_msg =
+        seed_agent_message(&app, &hidden_conv, &admin_id, "hidden team", false, None).await;
+    let pool_msg = seed_agent_message(&app, &pool_conv, &admin_id, "pool", false, None).await;
+
+    let (status, body, _) = app
+        .request(
+            "GET",
+            "/api/messages/search?q=team&limit=50",
+            Some(&agent_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let ids: Vec<&str> = body["data"]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["id"].as_str())
+        .collect();
+    assert!(ids.contains(&visible_msg.as_str()), "{body}");
+    assert!(!ids.contains(&hidden_msg.as_str()), "{body}");
+
+    let (status, body, _) = app
+        .request(
+            "GET",
+            "/api/messages/export?format=json&limit=50",
+            Some(&agent_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let exported: Vec<&str> = body["data"]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["id"].as_str())
+        .collect();
+    assert!(exported.contains(&visible_msg.as_str()), "{body}");
+    assert!(exported.contains(&pool_msg.as_str()), "{body}");
+    assert!(!exported.contains(&hidden_msg.as_str()), "{body}");
+
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/messages/conversation/{hidden_conv}"),
+            Some(&agent_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+    let (status, body, _) = app
+        .request(
+            "GET",
+            "/api/messages/export/count",
+            Some(&agent_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["count"], json!(2), "{body}");
+
+    let (status, body, _) = app
+        .request(
+            "GET",
+            "/api/messages/export?format=json&limit=50",
+            Some(&admin_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"]["exportInfo"]["totalRecords"],
+        json!(3),
+        "{body}"
+    );
+}
+
 // ---------------------------------------------------------------- update message
 
 #[tokio::test]
