@@ -97,6 +97,26 @@ pub fn team_scope_ok(user: &AuthUser, team_id: Option<i64>) -> bool {
         }
 }
 
+/// Append the shared message visibility boundary to a WHERE clause that uses
+/// the `c` alias for conversations.
+pub fn append_visibility_clause(clause: &mut String, user: &AuthUser) -> Vec<i64> {
+    clause.push_str(" AND c.id IS NOT NULL");
+    if user.is_admin() {
+        return Vec::new();
+    }
+
+    let team_ids: Vec<i64> = user.teams.iter().map(|team| team.team_id).collect();
+    if team_ids.is_empty() {
+        clause.push_str(" AND c.team_id IS NULL");
+    } else {
+        let placeholders = vec!["?"; team_ids.len()].join(", ");
+        clause.push_str(&format!(
+            " AND (c.team_id IS NULL OR c.team_id IN ({placeholders}))"
+        ));
+    }
+    team_ids
+}
+
 /// Bare conversation lookup: (team_id, customer_id). None when missing or
 /// soft-deleted (CRD 852).
 pub async fn conversation_bare(

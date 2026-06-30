@@ -488,16 +488,20 @@ pub struct ConversationQuery {
 
 pub async fn conversation_messages(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(conversation_id): Path<String>,
     Query(q): Query<ConversationQuery>,
 ) -> Result {
-    let exists: Option<String> =
-        sqlx::query_scalar("SELECT id FROM conversations WHERE id = $1 AND deleted_at IS NULL")
-            .bind(&conversation_id)
-            .fetch_optional(&state.db)
-            .await?;
-    if exists.is_none() {
+    let team_id: Option<Option<i64>> = sqlx::query_scalar(
+        "SELECT team_id FROM conversations WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(&conversation_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some(team_id) = team_id else {
+        return Err(AppError::NotFound("Conversation not found".into()));
+    };
+    if !store::team_scope_ok(&user, team_id) {
         return Err(AppError::NotFound("Conversation not found".into()));
     }
 
@@ -529,7 +533,11 @@ pub async fn conversation_messages(
         clause.push_str(" AND m.is_recalled = 0");
     }
 
-    let count_sql = format!("SELECT COUNT(*) FROM messages m WHERE {clause}");
+    let count_sql = format!(
+        "SELECT COUNT(*) FROM messages m
+         LEFT JOIN conversations c ON c.id = m.conversation_id AND c.deleted_at IS NULL
+         WHERE {clause}"
+    );
     let count_sql = crate::db::pg_params(&count_sql);
     let mut cq = sqlx::query_scalar::<_, i64>(&count_sql);
     for b in &binds {
@@ -597,7 +605,7 @@ pub struct SearchQuery {
 
 pub async fn search_messages(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Query(q): Query<SearchQuery>,
 ) -> Result {
     let limit = q
@@ -644,12 +652,20 @@ pub async fn search_messages(
         Some("false") => clause.push_str(" AND m.is_recalled = 0"),
         _ => {}
     }
+    let team_binds = store::append_visibility_clause(&mut clause, &user);
 
-    let count_sql = format!("SELECT COUNT(*) FROM messages m WHERE {clause}");
+    let count_sql = format!(
+        "SELECT COUNT(*) FROM messages m
+         LEFT JOIN conversations c ON c.id = m.conversation_id AND c.deleted_at IS NULL
+         WHERE {clause}"
+    );
     let count_sql = crate::db::pg_params(&count_sql);
     let mut cq = sqlx::query_scalar::<_, i64>(&count_sql);
     for b in &binds {
         cq = cq.bind(b);
+    }
+    for team_id in &team_binds {
+        cq = cq.bind(team_id);
     }
     let total = cq.fetch_one(&state.db).await?;
 
@@ -661,6 +677,9 @@ pub async fn search_messages(
     let mut mq = sqlx::query_as::<_, FullMessage>(&sql);
     for b in &binds {
         mq = mq.bind(b);
+    }
+    for team_id in &team_binds {
+        mq = mq.bind(team_id);
     }
     let rows = mq.bind(limit).bind(offset).fetch_all(&state.db).await?;
 
@@ -732,11 +751,20 @@ pub async fn search_messages(
 
 pub async fn stats(
     State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
 ) -> Result {
-    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE deleted_at IS NULL")
-        .fetch_one(&state.db)
-        .await?;
+    let mut clause = String::from("m.deleted_at IS NULL");
+    let team_binds = store::append_visibility_clause(&mut clause, &user);
+    let sql = crate::db::pg_params(&format!(
+        "SELECT COUNT(*) FROM messages m
+         LEFT JOIN conversations c ON c.id = m.conversation_id AND c.deleted_at IS NULL
+         WHERE {clause}"
+    ));
+    let mut q = sqlx::query_scalar::<_, i64>(&sql);
+    for team_id in &team_binds {
+        q = q.bind(team_id);
+    }
+    let total = q.fetch_one(&state.db).await?;
     // Breakdown fields are reported as zero within the current behavioral
     // boundary; the per-day figure is derived from the total (CRD 900).
     let average_per_day = (total as f64 / 30.0 * 100.0).round() / 100.0;

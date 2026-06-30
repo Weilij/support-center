@@ -57,6 +57,70 @@ fn user_can_access_file(user: &AuthUser, row: &FileRow) -> bool {
     user.is_admin() || row.uploaded_by.as_deref() == Some(user.id.as_str())
 }
 
+#[derive(Default)]
+struct AttachmentScope {
+    conversation_id: Option<String>,
+    message_id: Option<String>,
+}
+
+fn nonempty_owned(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+async fn authorize_attachment_scope(
+    state: &AppState,
+    user: &AuthUser,
+    conversation_id: Option<&str>,
+    message_id: Option<&str>,
+) -> Result<AttachmentScope> {
+    let requested_conversation = nonempty_owned(conversation_id);
+    let requested_message = nonempty_owned(message_id);
+    let mut effective_conversation = requested_conversation.clone();
+
+    if let Some(message_id) = requested_message.as_deref() {
+        let message_conversation: Option<String> = sqlx::query_scalar(
+            "SELECT conversation_id FROM messages WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(message_id)
+        .fetch_optional(&state.db)
+        .await?;
+        let message_conversation =
+            message_conversation.ok_or_else(|| AppError::BadRequest("Message not found".into()))?;
+        if let Some(conversation_id) = requested_conversation.as_deref() {
+            if conversation_id != message_conversation {
+                return Err(AppError::BadRequest(
+                    "messageId does not belong to conversationId".into(),
+                ));
+            }
+        }
+        effective_conversation = Some(message_conversation);
+    }
+
+    if let Some(conversation_id) = effective_conversation.as_deref() {
+        let team_id: Option<Option<i64>> = sqlx::query_scalar(
+            "SELECT team_id FROM conversations WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(conversation_id)
+        .fetch_optional(&state.db)
+        .await?;
+        let team_id =
+            team_id.ok_or_else(|| AppError::BadRequest("Conversation not found".into()))?;
+        if !user.is_admin() && team_id.is_some_and(|team_id| !user.can_access_team(team_id)) {
+            return Err(AppError::Forbidden(
+                "You do not have access to this conversation".into(),
+            ));
+        }
+    }
+
+    Ok(AttachmentScope {
+        conversation_id: effective_conversation,
+        message_id: requested_message,
+    })
+}
+
 fn signed_download_url(state: &AppState, file_id: &str, key: &str, ttl: i64) -> (String, i64) {
     let (sig, expires) = sign::sign(state.config.file_signing_key(), key, ttl);
     let base = state.config.backend_url.clone().unwrap_or_default();
@@ -568,6 +632,13 @@ async fn upload_with_platform(
     if form.files.is_empty() {
         return Err(AppError::BadRequest("File is required".into()));
     }
+    let scope = authorize_attachment_scope(
+        &state,
+        &user,
+        form.conversation_id.as_deref(),
+        form.message_id.as_deref(),
+    )
+    .await?;
     let part = &form.files[0];
     let policy = if form.platform == "admin" {
         ADMIN_UPLOADS
@@ -587,8 +658,8 @@ async fn upload_with_platform(
         &user,
         part,
         &form.platform,
-        form.conversation_id.as_deref(),
-        form.message_id.as_deref(),
+        scope.conversation_id.as_deref(),
+        scope.message_id.as_deref(),
     )
     .await?;
     Ok(envelope::created(view))
@@ -629,6 +700,13 @@ pub async fn upload_multiple(
     if form.files.len() > 10 {
         return Err(AppError::BadRequest("At most 10 files per request".into()));
     }
+    let scope = authorize_attachment_scope(
+        &state,
+        &user,
+        form.conversation_id.as_deref(),
+        form.message_id.as_deref(),
+    )
+    .await?;
     let mut successful = Vec::new();
     let mut failed = Vec::new();
     for part in &form.files {
@@ -645,8 +723,8 @@ pub async fn upload_multiple(
                     &user,
                     part,
                     &form.platform,
-                    form.conversation_id.as_deref(),
-                    form.message_id.as_deref(),
+                    scope.conversation_id.as_deref(),
+                    scope.message_id.as_deref(),
                 )
                 .await
                 .map_err(|e| e.to_string()),
@@ -1103,6 +1181,13 @@ pub async fn presigned_url(
             "size must be a positive number up to 10MB".into(),
         ));
     }
+    let scope = authorize_attachment_scope(
+        &state,
+        &user,
+        body.conversation_id.as_deref(),
+        body.message_id.as_deref(),
+    )
+    .await?;
 
     let file_id = uuid::Uuid::new_v4().to_string();
     let sanitized = validate::sanitize_filename(filename);
@@ -1130,8 +1215,8 @@ pub async fn presigned_url(
             public_url: Some(&public_url),
             platform: "system",
             file_type,
-            conversation_id: body.conversation_id.as_deref(),
-            message_id: body.message_id.as_deref(),
+            conversation_id: scope.conversation_id.as_deref(),
+            message_id: scope.message_id.as_deref(),
             uploaded_by: &user.id,
             status: "pending",
         },
