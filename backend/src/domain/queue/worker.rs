@@ -294,10 +294,7 @@ async fn process_media(state: &Arc<AppState>, body: &Value) -> WorkerResult<()> 
         crate::domain::files::store::get_object(&state.config.upload_dir, &key).await
     {
         bytes
-    } else if let Some(token) = resolved_token
-        .as_deref()
-        .filter(|token| !token.is_empty())
-    {
+    } else if let Some(token) = resolved_token.as_deref().filter(|token| !token.is_empty()) {
         let Some((bytes, _content_type)) =
             crate::domain::conversations::channels::fetch_line_media_from_base(
                 &state.config.line_content_api_base_url,

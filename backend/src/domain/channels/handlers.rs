@@ -349,16 +349,14 @@ pub async fn update_channel(
 
     // Only the config block matching the connection's own platform is applied
     // (CRD 2656).
-    let (config_key, plain_fields, optional_plain, secret_fields) =
-        platform_fields(&row.platform);
+    let (config_key, plain_fields, optional_plain, secret_fields) = platform_fields(&row.platform);
     let mut secrets_changed = false;
     if let Some(patch) = body.get(config_key).and_then(Value::as_object) {
         for field in plain_fields.iter().chain(optional_plain.iter()) {
             if let Some(v) = patch.get(*field) {
                 // An optional field provided as blank must not erase the stored
                 // value (required plain fields keep their existing behavior).
-                if optional_plain.contains(field)
-                    && v.as_str().is_some_and(|s| s.trim().is_empty())
+                if optional_plain.contains(field) && v.as_str().is_some_and(|s| s.trim().is_empty())
                 {
                     continue;
                 }

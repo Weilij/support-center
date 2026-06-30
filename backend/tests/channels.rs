@@ -995,7 +995,10 @@ async fn resolve_channel_falls_back_to_env_when_no_integration() {
     let app = spawn_app().await;
 
     let resolved = resolve_channel(&app.state, "line").await;
-    assert_eq!(resolved.access_token, app.state.config.line_channel_access_token);
+    assert_eq!(
+        resolved.access_token,
+        app.state.config.line_channel_access_token
+    );
     assert_eq!(resolved.access_token, None);
     // Secret falls through to the harness LINE secret default.
     assert_eq!(resolved.secret, app.state.config.line_channel_secret);

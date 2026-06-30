@@ -346,10 +346,7 @@ pub async fn line_proxy(
     let resolved_token = crate::domain::channels::resolve::resolve_channel(&state, "line")
         .await
         .access_token;
-    let Some(token) = resolved_token
-        .as_deref()
-        .filter(|token| !token.is_empty())
-    else {
+    let Some(token) = resolved_token.as_deref().filter(|token| !token.is_empty()) else {
         return Err(AppError::Internal(
             "LINE channel token is not configured".into(),
         ));
