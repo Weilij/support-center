@@ -27,8 +27,8 @@ interface Member {
   id: string
   displayName?: string
   email?: string
-  role?: string
-  teamRole?: string
+  role?: string // global role (admin/agent) — NOT the in-team role
+  roleInTeam?: string // team_members.role: member/lead/supervisor (backend key `roleInTeam`)
   isActive?: boolean
 }
 
@@ -58,6 +58,7 @@ export default function Teams() {
   const [toast, setToast] = useState<string | null>(null)
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [confirmDeleteTeam, setConfirmDeleteTeam] = useState(false)
   const [qr, setQr] = useState<LatestQr | null>(null)
   const [qrOpen, setQrOpen] = useState(false)
   const [allAgents, setAllAgents] = useState<Agent[]>([])
@@ -110,10 +111,15 @@ export default function Teams() {
     }
   }
 
-  const changeRole = async (memberId: string, role: string) => {
-    const resp = await put(`/api/teams/members/${memberId}/role`, { role })
+  // Change the member's IN-TEAM role (member/lead/supervisor) via the team-scoped
+  // endpoint. NOT /members/{id}/role, which sets the GLOBAL role (admin/agent) and
+  // rejects team roles with "role must be one of: admin, agent".
+  const changeRole = async (memberId: string, roleInTeam: string) => {
+    if (selected == null) return
+    const resp = await put(`/api/teams/agent-teams/${memberId}/role/${selected}`, { roleInTeam })
     setToast(resp.success ? '角色已更新' : resp.message ?? '更新失敗')
-    if (resp.success) setMembers((ms) => ms.map((m) => (m.id === memberId ? { ...m, role } : m)))
+    if (resp.success)
+      setMembers((ms) => ms.map((m) => (m.id === memberId ? { ...m, roleInTeam } : m)))
   }
 
   const addMember = async () => {
@@ -153,6 +159,21 @@ export default function Teams() {
       failed ? `有 ${failed} 位移出失敗` : `已將 ${agentIds.length} 位移出團隊`,
     )
     void openTeam(selected)
+  }
+
+  // Delete the whole team (soft delete / reversible on the backend).
+  const deleteTeam = async () => {
+    if (selected == null) return
+    const resp = await del(`/api/teams/${selected}`)
+    setConfirmDeleteTeam(false)
+    if (resp.success) {
+      setToast('團隊已刪除')
+      setSelected(null)
+      setMembers([])
+      void load()
+    } else {
+      setError(resp.message ?? `刪除團隊失敗（${resp.status ?? '未知錯誤'}）`)
+    }
   }
 
   const showQr = async (teamId: number) => {
@@ -204,7 +225,7 @@ export default function Teams() {
       width: 120,
       render: (m) => (
         <select
-          value={m.role ?? 'member'}
+          value={m.roleInTeam ?? 'member'}
           onChange={(e) => void changeRole(m.id, e.target.value)}
           style={{ padding: '3px 6px', borderRadius: 6, border: '1px solid #ccc' }}
         >
@@ -279,6 +300,12 @@ export default function Teams() {
                     移出團隊（{picked.size}）
                   </button>
                 )}
+                <button
+                  onClick={() => setConfirmDeleteTeam(true)}
+                  style={{ color: 'crimson', marginLeft: picked.size > 0 ? 0 : 'auto' }}
+                >
+                  刪除團隊…
+                </button>
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '8px 0' }}>
                 {candidateAgents.length === 0 ? (
@@ -335,6 +362,15 @@ export default function Teams() {
         danger
         onConfirm={() => void removeFromTeam()}
         onCancel={() => setConfirmDelete(false)}
+      />
+
+      <ConfirmDialog
+        open={confirmDeleteTeam}
+        message="確定要刪除整個團隊嗎？成員的帳號會保留，稍後仍可由管理員還原。"
+        confirmLabel="刪除團隊"
+        danger
+        onConfirm={() => void deleteTeam()}
+        onCancel={() => setConfirmDeleteTeam(false)}
       />
 
       <Toast message={toast} onDismiss={() => setToast(null)} />

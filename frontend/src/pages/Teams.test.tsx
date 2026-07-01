@@ -46,7 +46,7 @@ describe('Teams member role select', () => {
         // Real backend returns a BARE ARRAY (team_member_list), not { members }.
         return Promise.resolve({
           success: true,
-          data: [{ id: 'm1', displayName: '小明', role: 'member', isActive: true }],
+          data: [{ id: 'm1', displayName: '小明', role: 'agent', roleInTeam: 'member', isActive: true }],
         })
       }
       return Promise.resolve({ success: true, data: {} })
@@ -74,8 +74,16 @@ describe('Teams member role select', () => {
     // Selecting 主管 (supervisor) calls put with the supervisor role.
     fireEvent.change(select, { target: { value: 'supervisor' } })
 
+    // Must hit the TEAM-scoped role endpoint (member/lead/supervisor), NOT the
+    // global-role endpoint (which rejects with "role must be one of: admin, agent").
     await waitFor(() =>
-      expect(apiMock.put).toHaveBeenCalledWith('/api/teams/members/m1/role', { role: 'supervisor' }),
+      expect(apiMock.put).toHaveBeenCalledWith('/api/teams/agent-teams/m1/role/1', {
+        roleInTeam: 'supervisor',
+      }),
+    )
+    expect(apiMock.put).not.toHaveBeenCalledWith(
+      '/api/teams/members/m1/role',
+      expect.anything(),
     )
   })
 
@@ -111,5 +119,16 @@ describe('Teams member role select', () => {
       '/api/teams/members/bulk-delete',
       expect.anything(),
     )
+  })
+
+  it('deletes the whole team via DELETE /api/teams/{id}', async () => {
+    render(<Teams />)
+    fireEvent.click(await screen.findByText('客服一隊'))
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith('/api/teams/1/members'))
+
+    fireEvent.click(screen.getByRole('button', { name: '刪除團隊…' })) // opens confirm
+    fireEvent.click(await screen.findByRole('button', { name: '刪除團隊' })) // confirm
+
+    await waitFor(() => expect(apiMock.del).toHaveBeenCalledWith('/api/teams/1'))
   })
 })
