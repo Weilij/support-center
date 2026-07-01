@@ -48,6 +48,7 @@ interface NavItem {
   label: string
   area: Area
   badge?: 'unread'
+  show?: () => boolean
 }
 
 const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
@@ -62,13 +63,13 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { to: '/auto-reply',      label: '自動回覆', area: 'daily' },
       { to: '/tags',            label: '標籤',     area: 'daily' },
       { to: '/notifications',   label: '通知',     area: 'daily', badge: 'unread' },
+      { to: '/teams', label: '團隊', area: 'daily', show: () => can(session.position(), 'ops') || session.isTeamManager() },
     ],
   },
   {
     title: '營運管理',
     items: [
       { to: '/agents',  label: '客服人員',   area: 'ops' },
-      { to: '/teams',   label: '團隊',       area: 'ops' },
       { to: '/sessions', label: '工作階段', area: 'ops' },
     ],
   },
@@ -119,7 +120,7 @@ function SidebarAvatar({ name, size = 'sm' }: { name: string; size?: 'sm' | 'md'
 }
 
 // ── NavGroups: shared nav groups used in sidebar and mobile drawer ──────────
-function NavGroups({
+export function NavGroups({
   pathname,
   pos,
   unread,
@@ -133,7 +134,7 @@ function NavGroups({
   return (
     <>
       {NAV_GROUPS.map((group) => {
-        const visible = group.items.filter((i) => can(pos, i.area))
+        const visible = group.items.filter((i) => can(pos, i.area) && (i.show ? i.show() : true))
         if (visible.length === 0) return null
         return (
           <div key={group.title}>
