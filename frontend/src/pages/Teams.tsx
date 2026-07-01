@@ -93,13 +93,20 @@ export default function Teams() {
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!name.trim()) return
-    const resp = await post('/api/teams', { name: name.trim() })
+    const trimmed = name.trim()
+    if (!trimmed) {
+      setError('請輸入團隊名稱')
+      return
+    }
+    setError(null)
+    const resp = await post<{ id?: number }>('/api/teams', { name: trimmed })
     if (resp.success) {
       setName('')
+      setToast('團隊已建立')
       void load()
     } else {
-      setError(resp.message ?? null)
+      // Never fail silently — surface the backend message, or at least the status.
+      setError(resp.message ?? `建立失敗（${resp.status ?? '未知錯誤'}）`)
     }
   }
 
