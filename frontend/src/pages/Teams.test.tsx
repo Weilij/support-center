@@ -17,6 +17,17 @@ vi.mock('../auth/session', () => ({
   session: { position: () => 'system_admin' },
 }))
 
+vi.mock('../stores/agents', () => ({
+  loadAgents: vi.fn().mockResolvedValue({
+    items: [
+      { id: 'm1', displayName: 'Alice' },
+      { id: 'a2', displayName: 'Bob', email: 'bob@x.com' },
+    ],
+    total: 2,
+    page: 1,
+  }),
+}))
+
 import Teams from './Teams'
 
 describe('Teams member role select', () => {
@@ -61,6 +72,19 @@ describe('Teams member role select', () => {
 
     await waitFor(() =>
       expect(apiMock.put).toHaveBeenCalledWith('/api/teams/members/m1/role', { role: 'supervisor' }),
+    )
+  })
+
+  it('adds an existing agent to the team', async () => {
+    const { findByText, findByLabelText, getByRole } = render(<Teams />)
+    fireEvent.click(await findByText('客服一隊'))
+    const picker = (await findByLabelText('新增成員')) as HTMLSelectElement
+    expect(within(picker).queryByText('Alice')).toBeNull() // m1 already a member
+    expect(within(picker).getByText(/Bob/)).toBeTruthy() // a2 is a candidate
+    fireEvent.change(picker, { target: { value: 'a2' } })
+    fireEvent.click(getByRole('button', { name: '加入團隊' }))
+    await waitFor(() =>
+      expect(apiMock.post).toHaveBeenCalledWith('/api/teams/1/members', { agentId: 'a2' }),
     )
   })
 })

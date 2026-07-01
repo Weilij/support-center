@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react'
 
 import { get, post, put } from '../api/client'
+import { loadAgents, type Agent } from '../stores/agents'
 import { can } from '../auth/permissions'
 import { session } from '../auth/session'
 import { DataTable } from '../components/DataTable'
@@ -59,6 +60,9 @@ export default function Teams() {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [qr, setQr] = useState<LatestQr | null>(null)
   const [qrOpen, setQrOpen] = useState(false)
+  const [allAgents, setAllAgents] = useState<Agent[]>([])
+  const [addAgentId, setAddAgentId] = useState('')
+  const [addBusy, setAddBusy] = useState(false)
 
   const load = async () => {
     const resp = await get<{ items?: Team[]; teams?: Team[] } | Team[]>('/api/teams')
@@ -71,6 +75,10 @@ export default function Teams() {
   }
   useEffect(() => {
     void load()
+  }, [])
+
+  useEffect(() => {
+    void loadAgents(1, 200).then((page) => setAllAgents(page.items ?? []))
   }, [])
 
   const openTeam = async (id: number) => {
@@ -96,6 +104,20 @@ export default function Teams() {
     const resp = await put(`/api/teams/members/${memberId}/role`, { role })
     setToast(resp.success ? '角色已更新' : resp.message ?? '更新失敗')
     if (resp.success) setMembers((ms) => ms.map((m) => (m.id === memberId ? { ...m, role } : m)))
+  }
+
+  const addMember = async () => {
+    if (selected == null || !addAgentId) return
+    setAddBusy(true)
+    const resp = await post(`/api/teams/${selected}/members`, { agentId: addAgentId })
+    setAddBusy(false)
+    if (resp.success) {
+      setAddAgentId('')
+      setToast('已加入團隊')
+      await openTeam(selected)
+    } else {
+      setError(resp.message ?? '加入失敗')
+    }
   }
 
   const toggleActive = async (m: Member) => {
@@ -146,6 +168,9 @@ export default function Teams() {
       </main>
     )
   }
+
+  const memberIds = new Set(members.map((m) => m.id))
+  const candidateAgents = allAgents.filter((a) => !memberIds.has(a.id))
 
   const memberColumns: Column<Member>[] = [
     {
@@ -235,6 +260,30 @@ export default function Teams() {
                   <button onClick={() => setConfirmDelete(true)} style={{ color: 'crimson', marginLeft: 'auto' }}>
                     移除所選（{picked.size}）
                   </button>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '8px 0' }}>
+                {candidateAgents.length === 0 ? (
+                  <span style={{ color: 'var(--muted)', fontSize: 13 }}>所有客服都已在此團隊</span>
+                ) : (
+                  <>
+                    <select
+                      aria-label="新增成員"
+                      value={addAgentId}
+                      onChange={(e) => setAddAgentId(e.target.value)}
+                      style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc' }}
+                    >
+                      <option value="">選擇要加入的客服…</option>
+                      {candidateAgents.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.displayName || a.email || a.id}
+                        </option>
+                      ))}
+                    </select>
+                    <button type="button" onClick={() => void addMember()} disabled={!addAgentId || addBusy}>
+                      {addBusy ? '加入中…' : '加入團隊'}
+                    </button>
+                  </>
                 )}
               </div>
               <DataTable columns={memberColumns} rows={members} rowKey={(m) => m.id} empty="此團隊沒有成員" />
