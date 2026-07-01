@@ -570,6 +570,21 @@ pub async fn profile(
     })))
 }
 
+/// Serialize the caller's team memberships (in-team role included) for the `/me`
+/// response. Kept pure (no DB) so it is unit-testable; `me` reads `AuthUser.teams`.
+fn membership_teams_json(teams: &[crate::state::TeamMembership]) -> Vec<Value> {
+    teams
+        .iter()
+        .map(|t| {
+            json!({
+                "teamId": t.team_id,
+                "roleInTeam": t.role,
+                "isPrimary": t.is_primary,
+            })
+        })
+        .collect()
+}
+
 pub async fn me(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<AuthUser>,
@@ -577,7 +592,11 @@ pub async fn me(
     let agent = store::find_agent_by_id(&state.db, &user.id)
         .await?
         .ok_or_else(|| AppError::Unauthorized("Account not found".into()))?;
-    Ok(envelope::ok(agent_view(&agent)))
+    let mut view = agent_view(&agent);
+    if let Value::Object(ref mut map) = view {
+        map.insert("teams".into(), json!(membership_teams_json(&user.teams)));
+    }
+    Ok(envelope::ok(view))
 }
 
 #[derive(Deserialize)]
@@ -1120,5 +1139,32 @@ mod tests {
         assert!(body.get("payload").is_none());
         assert!(body.get("remainingSeconds").is_none());
         assert!(body.get("expiresAt").is_none());
+    }
+}
+
+#[cfg(test)]
+mod me_teams_tests {
+    use super::membership_teams_json;
+    use crate::state::TeamMembership;
+    use serde_json::json;
+
+    #[test]
+    fn serializes_memberships_with_in_team_role() {
+        let teams = vec![
+            TeamMembership { team_id: 7, role: "supervisor".into(), is_primary: true },
+            TeamMembership { team_id: 9, role: "member".into(), is_primary: false },
+        ];
+        assert_eq!(
+            membership_teams_json(&teams),
+            vec![
+                json!({ "teamId": 7, "roleInTeam": "supervisor", "isPrimary": true }),
+                json!({ "teamId": 9, "roleInTeam": "member", "isPrimary": false }),
+            ],
+        );
+    }
+
+    #[test]
+    fn empty_memberships_serialize_to_empty_vec() {
+        assert!(membership_teams_json(&[]).is_empty());
     }
 }
