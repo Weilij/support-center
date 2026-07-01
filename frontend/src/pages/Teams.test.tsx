@@ -14,9 +14,12 @@ vi.mock('../auth/permissions', () => ({
   can: () => true,
 }))
 
-vi.mock('../auth/session', () => ({
-  session: { position: () => 'system_admin' },
+const sessionMock = vi.hoisted(() => ({
+  position: vi.fn(() => 'system_admin'),
+  isAdmin: vi.fn(() => true),
+  isTeamManager: vi.fn(() => true),
 }))
+vi.mock('../auth/session', () => ({ session: sessionMock }))
 
 vi.mock('../stores/agents', () => ({
   loadAgents: vi.fn().mockResolvedValue({
@@ -35,6 +38,9 @@ describe('Teams member role select', () => {
   beforeEach(() => {
     cleanup()
     vi.clearAllMocks()
+    sessionMock.position.mockReturnValue('system_admin')
+    sessionMock.isAdmin.mockReturnValue(true)
+    sessionMock.isTeamManager.mockReturnValue(true)
     apiMock.get.mockImplementation((url: string) => {
       if (url === '/api/teams') {
         return Promise.resolve({
@@ -130,5 +136,25 @@ describe('Teams member role select', () => {
     fireEvent.click(await screen.findByRole('button', { name: '刪除團隊' })) // confirm
 
     await waitFor(() => expect(apiMock.del).toHaveBeenCalledWith('/api/teams/1'))
+  })
+
+  it('hides admin-only controls for a non-admin team manager', async () => {
+    sessionMock.position.mockReturnValue('agent')
+    sessionMock.isAdmin.mockReturnValue(false)
+    sessionMock.isTeamManager.mockReturnValue(true)
+
+    render(<Teams />)
+    fireEvent.click(await screen.findByText('客服一隊'))
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith('/api/teams/1/members'))
+
+    // Manager controls remain.
+    expect(await screen.findByLabelText('新增成員')).toBeTruthy()
+    expect(screen.getByDisplayValue('成員')).toBeTruthy() // role dropdown
+
+    // Admin-only controls are gone.
+    expect(screen.queryByRole('button', { name: '建立' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '刪除團隊…' })).toBeNull()
+    // Status is a read-only pill, not a toggle button.
+    expect(screen.queryByRole('button', { name: /啟用|停用/ })).toBeNull()
   })
 })

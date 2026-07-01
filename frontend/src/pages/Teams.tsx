@@ -200,13 +200,15 @@ export default function Teams() {
       return next
     })
 
-  if (!can(session.position(), 'ops')) {
+  if (!(can(session.position(), 'ops') || session.isTeamManager())) {
     return (
       <main style={{ margin: '10vh auto', maxWidth: 480 }}>
         <p>權限不足</p>
       </main>
     )
   }
+
+  const isAdmin = session.isAdmin()
 
   const memberIds = new Set(members.map((m) => m.id))
   const candidateAgents = allAgents.filter((a) => !memberIds.has(a.id))
@@ -241,11 +243,14 @@ export default function Teams() {
       key: 'isActive',
       header: '狀態',
       width: 110,
-      render: (m) => (
-        <button onClick={() => void toggleActive(m)}>
+      render: (m) =>
+        isAdmin ? (
+          <button onClick={() => void toggleActive(m)}>
+            <StatusPill status={m.isActive ? 'active' : 'inactive'} label={m.isActive ? '啟用' : '停用'} />
+          </button>
+        ) : (
           <StatusPill status={m.isActive ? 'active' : 'inactive'} label={m.isActive ? '啟用' : '停用'} />
-        </button>
-      ),
+        ),
     },
   ]
 
@@ -255,12 +260,14 @@ export default function Teams() {
 
       {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
 
-      <Card style={{ marginBottom: 'var(--sp-4)' }}>
-        <form onSubmit={create} style={{ display: 'flex', gap: 8 }}>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="新團隊名稱" />
-          <button type="submit">建立</button>
-        </form>
-      </Card>
+      {isAdmin && (
+        <Card style={{ marginBottom: 'var(--sp-4)' }}>
+          <form onSubmit={create} style={{ display: 'flex', gap: 8 }}>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="新團隊名稱" />
+            <button type="submit">建立</button>
+          </form>
+        </Card>
+      )}
 
       <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start' }}>
         <Card style={{ flex: '0 0 240px' }}>
@@ -300,12 +307,14 @@ export default function Teams() {
                     移出團隊（{picked.size}）
                   </button>
                 )}
-                <button
-                  onClick={() => setConfirmDeleteTeam(true)}
-                  style={{ color: 'crimson', marginLeft: picked.size > 0 ? 0 : 'auto' }}
-                >
-                  刪除團隊…
-                </button>
+                {isAdmin && (
+                  <button
+                    onClick={() => setConfirmDeleteTeam(true)}
+                    style={{ color: 'crimson', marginLeft: picked.size > 0 ? 0 : 'auto' }}
+                  >
+                    刪除團隊…
+                  </button>
+                )}
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '8px 0' }}>
                 {candidateAgents.length === 0 ? (
