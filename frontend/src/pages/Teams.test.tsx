@@ -1,10 +1,11 @@
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const apiMock = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
   put: vi.fn(),
+  del: vi.fn(),
 }))
 
 vi.mock('../api/client', () => apiMock)
@@ -32,6 +33,7 @@ import Teams from './Teams'
 
 describe('Teams member role select', () => {
   beforeEach(() => {
+    cleanup()
     vi.clearAllMocks()
     apiMock.get.mockImplementation((url: string) => {
       if (url === '/api/teams') {
@@ -41,15 +43,17 @@ describe('Teams member role select', () => {
         })
       }
       if (url === '/api/teams/1/members') {
+        // Real backend returns a BARE ARRAY (team_member_list), not { members }.
         return Promise.resolve({
           success: true,
-          data: { members: [{ id: 'm1', displayName: '小明', role: 'member', isActive: true }] },
+          data: [{ id: 'm1', displayName: '小明', role: 'member', isActive: true }],
         })
       }
       return Promise.resolve({ success: true, data: {} })
     })
     apiMock.post.mockResolvedValue({ success: true })
     apiMock.put.mockResolvedValue({ success: true })
+    apiMock.del.mockResolvedValue({ success: true })
   })
 
   it('uses real team roles and updates a member to supervisor', async () => {
@@ -85,6 +89,27 @@ describe('Teams member role select', () => {
     fireEvent.click(getByRole('button', { name: '加入團隊' }))
     await waitFor(() =>
       expect(apiMock.post).toHaveBeenCalledWith('/api/teams/1/members', { agentId: 'a2' }),
+    )
+  })
+
+  it('removes a member FROM THE TEAM (leave), never purging the account', async () => {
+    render(<Teams />)
+    fireEvent.click(await screen.findByText('客服一隊'))
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith('/api/teams/1/members'))
+
+    // Pick the member, click 移出團隊, confirm.
+    fireEvent.click(await screen.findByRole('checkbox'))
+    fireEvent.click(screen.getByRole('button', { name: /移出團隊/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '移出團隊' }))
+
+    // Calls the team-scoped leave endpoint (removes team_members row, keeps account)...
+    await waitFor(() =>
+      expect(apiMock.del).toHaveBeenCalledWith('/api/teams/agent-teams/m1/leave/1'),
+    )
+    // ...and NEVER the account-purging bulk-delete endpoint.
+    expect(apiMock.post).not.toHaveBeenCalledWith(
+      '/api/teams/members/bulk-delete',
+      expect.anything(),
     )
   })
 })

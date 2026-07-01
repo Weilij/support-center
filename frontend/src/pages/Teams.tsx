@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from 'react'
 
-import { get, post, put } from '../api/client'
+import { get, post, put, del } from '../api/client'
 import { loadAgents, type Agent } from '../stores/agents'
 import { can } from '../auth/permissions'
 import { session } from '../auth/session'
@@ -78,14 +78,17 @@ export default function Teams() {
   }, [])
 
   useEffect(() => {
-    void loadAgents(1, 200).then((page) => setAllAgents(page.items ?? []))
+    void loadAgents(1, 100).then((page) => setAllAgents(page.items ?? []))
   }, [])
 
   const openTeam = async (id: number) => {
     setSelected(id)
     setPicked(new Set())
-    const resp = await get<{ members?: Member[]; items?: Member[] }>(`/api/teams/${id}/members`)
-    if (resp.success && resp.data) setMembers(resp.data.members ?? resp.data.items ?? [])
+    const resp = await get<Member[] | { members?: Member[]; items?: Member[] }>(`/api/teams/${id}/members`)
+    if (resp.success && resp.data) {
+      const d = resp.data
+      setMembers(Array.isArray(d) ? d : (d.members ?? d.items ?? []))
+    }
   }
 
   const create = async (e: React.FormEvent) => {
@@ -126,15 +129,23 @@ export default function Teams() {
     if (resp.success) setMembers((ms) => ms.map((x) => (x.id === m.id ? { ...x, isActive: !m.isActive } : x)))
   }
 
-  const bulkDelete = async () => {
-    const memberIds = [...picked]
-    const resp = await post('/api/teams/members/bulk-delete', { memberIds })
-    setConfirmDelete(false)
-    setToast(resp.success ? `已移除 ${memberIds.length} 位成員` : resp.message ?? '刪除失敗')
-    if (resp.success && selected != null) {
-      setPicked(new Set())
-      void openTeam(selected)
+  // Remove the picked members FROM THIS TEAM (delete their team_members row) — the
+  // agent accounts are kept. Deliberately NOT /members/bulk-delete, which PERMANENTLY
+  // purges the accounts.
+  const removeFromTeam = async () => {
+    if (selected == null) return
+    const agentIds = [...picked]
+    let failed = 0
+    for (const agentId of agentIds) {
+      const resp = await del(`/api/teams/agent-teams/${agentId}/leave/${selected}`)
+      if (!resp.success) failed += 1
     }
+    setConfirmDelete(false)
+    setPicked(new Set())
+    setToast(
+      failed ? `有 ${failed} 位移出失敗` : `已將 ${agentIds.length} 位移出團隊`,
+    )
+    void openTeam(selected)
   }
 
   const showQr = async (teamId: number) => {
@@ -258,7 +269,7 @@ export default function Teams() {
                 <h3 style={{ margin: 0 }}>成員</h3>
                 {picked.size > 0 && (
                   <button onClick={() => setConfirmDelete(true)} style={{ color: 'crimson', marginLeft: 'auto' }}>
-                    移除所選（{picked.size}）
+                    移出團隊（{picked.size}）
                   </button>
                 )}
               </div>
@@ -312,10 +323,10 @@ export default function Teams() {
 
       <ConfirmDialog
         open={confirmDelete}
-        message={`確定要移除所選的 ${picked.size} 位成員嗎？`}
-        confirmLabel="移除"
+        message={`確定要將所選的 ${picked.size} 位成員移出此團隊嗎？（帳號會保留）`}
+        confirmLabel="移出團隊"
         danger
-        onConfirm={() => void bulkDelete()}
+        onConfirm={() => void removeFromTeam()}
         onCancel={() => setConfirmDelete(false)}
       />
 
