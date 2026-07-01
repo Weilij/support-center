@@ -29,6 +29,7 @@ export interface TeamOption {
   id: string
   name: string
   isPrimary: boolean
+  role?: string // in-team role: member/lead/supervisor (absent on the primary-only fallback)
 }
 
 class AuthChangedSignal {
@@ -74,6 +75,7 @@ function readTeams(who: Identity): TeamOption[] {
       id,
       name: String(item.name ?? item.teamName ?? `Team ${id}`),
       isPrimary: item.isPrimary === true || item.primary === true,
+      role: typeof item.roleInTeam === 'string' ? item.roleInTeam : undefined,
     })
   }
   const primaryId = teamId(who.teamId)
@@ -143,6 +145,9 @@ export const session = {
   lifecycle: () => lifecycle,
   identity: () => identity,
   isAdmin: () => identity?.role === 'admin',
+  isTeamManager: () =>
+    identity?.role === 'admin' ||
+    teamOptions.some((t) => t.role === 'lead' || t.role === 'supervisor'),
   position: (): Position => positionOf(identity),
 
   /// Short-lived auth snapshot for instant guard decisions (CRD 6480).
