@@ -53,4 +53,52 @@ describe('router auth guard', () => {
     await waitFor(() => expect(screen.getByText('login page')).toBeTruthy())
     expect(screen.queryByText('protected page')).toBeNull()
   })
+
+  it('lets any authenticated position read a daily-area route (e.g. /teams)', async () => {
+    sessionMock.snapshot.mockReturnValue(true)
+    sessionMock.position.mockReturnValue('agent')
+
+    render(
+      <MemoryRouter initialEntries={['/teams']}>
+        <Routes>
+          <Route
+            path="/teams"
+            element={
+              <Guard meta={{ requiresAuth: true, area: 'daily', title: 'Teams' }}>
+                <div>teams page</div>
+              </Guard>
+            }
+          />
+          <Route path="/dashboard" element={<div>dashboard page</div>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => expect(screen.getByText('teams page')).toBeTruthy())
+    expect(screen.queryByText('dashboard page')).toBeNull()
+  })
+
+  it('still redirects a plain agent away from an ops-area route to the dashboard', async () => {
+    sessionMock.snapshot.mockReturnValue(true)
+    sessionMock.position.mockReturnValue('agent')
+
+    render(
+      <MemoryRouter initialEntries={['/ops-only']}>
+        <Routes>
+          <Route
+            path="/ops-only"
+            element={
+              <Guard meta={{ requiresAuth: true, area: 'ops', title: 'Ops' }}>
+                <div>ops page</div>
+              </Guard>
+            }
+          />
+          <Route path="/dashboard" element={<div>dashboard page</div>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => expect(screen.getByText('dashboard page')).toBeTruthy())
+    expect(screen.queryByText('ops page')).toBeNull()
+  })
 })

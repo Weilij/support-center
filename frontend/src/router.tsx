@@ -172,8 +172,10 @@ export const router = createBrowserRouter([
     element: page({ title: '工作階段', area: 'ops' }, <Sessions />),
   },
   {
+    // Everyone can READ the Teams page (daily area, all authenticated positions);
+    // modify controls are gated inside the page (canModify / isAdmin).
     path: '/teams',
-    element: page({ title: '團隊管理', area: 'ops' }, <Teams />),
+    element: page({ title: '團隊管理', area: 'daily' }, <Teams />),
   },
   // analytics-area destinations (supervisor and above).
   {
