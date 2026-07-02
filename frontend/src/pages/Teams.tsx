@@ -6,7 +6,6 @@ import { useEffect, useState } from 'react'
 
 import { get, post, put, del } from '../api/client'
 import { loadAgents, type Agent } from '../stores/agents'
-import { can } from '../auth/permissions'
 import { session } from '../auth/session'
 import { DataTable } from '../components/DataTable'
 import { Modal, ConfirmDialog } from '../components/Modal'
@@ -200,15 +199,12 @@ export default function Teams() {
       return next
     })
 
-  if (!(can(session.position(), 'ops') || session.isTeamManager())) {
-    return (
-      <main style={{ margin: '10vh auto', maxWidth: 480 }}>
-        <p>權限不足</p>
-      </main>
-    )
-  }
-
+  // Everyone can READ the Teams page. Modifying is restricted:
+  //  - canModify (in-team lead/supervisor or admin) → role/add/remove/QR-regenerate
+  //  - isAdmin only → create team / delete team / toggle active status
+  // Plain members (and unaffiliated agents) see a read-only view.
   const isAdmin = session.isAdmin()
+  const canModify = session.isTeamManager()
 
   const memberIds = new Set(members.map((m) => m.id))
   const candidateAgents = allAgents.filter((a) => !memberIds.has(a.id))
@@ -218,26 +214,32 @@ export default function Teams() {
       key: 'sel',
       header: '',
       width: 28,
-      render: (m) => <input type="checkbox" checked={picked.has(m.id)} onChange={() => togglePick(m.id)} />,
+      render: (m) =>
+        canModify ? (
+          <input type="checkbox" checked={picked.has(m.id)} onChange={() => togglePick(m.id)} />
+        ) : null,
     },
     { key: 'displayName', header: '名稱', render: (m) => m.displayName || m.email || m.id },
     {
       key: 'role',
       header: '角色',
       width: 120,
-      render: (m) => (
-        <select
-          value={m.roleInTeam ?? 'member'}
-          onChange={(e) => void changeRole(m.id, e.target.value)}
-          style={{ padding: '3px 6px', borderRadius: 6, border: '1px solid #ccc' }}
-        >
-          {ROLE_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-      ),
+      render: (m) =>
+        canModify ? (
+          <select
+            value={m.roleInTeam ?? 'member'}
+            onChange={(e) => void changeRole(m.id, e.target.value)}
+            style={{ padding: '3px 6px', borderRadius: 6, border: '1px solid #ccc' }}
+          >
+            {ROLE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span>{ROLE_OPTIONS.find((o) => o.value === (m.roleInTeam ?? 'member'))?.label ?? '成員'}</span>
+        ),
     },
     {
       key: 'isActive',
@@ -317,7 +319,7 @@ export default function Teams() {
                 )}
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '8px 0' }}>
-                {candidateAgents.length === 0 ? (
+                {!canModify ? null : candidateAgents.length === 0 ? (
                   <span style={{ color: 'var(--muted)', fontSize: 13 }}>所有客服都已在此團隊</span>
                 ) : (
                   <>
@@ -359,9 +361,11 @@ export default function Teams() {
             </a>
           </p>
         )}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
-          <button onClick={() => selected != null && void regenerateQr(selected)}>重新產生</button>
-        </div>
+        {canModify && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
+            <button onClick={() => selected != null && void regenerateQr(selected)}>重新產生</button>
+          </div>
+        )}
       </Modal>
 
       <ConfirmDialog

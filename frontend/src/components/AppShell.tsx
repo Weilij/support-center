@@ -63,7 +63,7 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { to: '/auto-reply',      label: '自動回覆', area: 'daily' },
       { to: '/tags',            label: '標籤',     area: 'daily' },
       { to: '/notifications',   label: '通知',     area: 'daily', badge: 'unread' },
-      { to: '/teams', label: '團隊', area: 'daily', show: () => can(session.position(), 'ops') || session.isTeamManager() },
+      { to: '/teams',           label: '團隊',     area: 'daily' },
     ],
   },
   {

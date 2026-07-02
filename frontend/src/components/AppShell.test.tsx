@@ -37,15 +37,17 @@ describe('團隊 nav visibility', () => {
   // between tests ourselves to avoid leaking DOM from a prior render.
   afterEach(() => cleanup())
 
-  it('shows 團隊 for a global agent who is an in-team manager', () => {
+  // Everyone can READ the Teams page, so the nav entry is visible to all —
+  // including a plain agent who manages no team. (Editing is gated inside the page.)
+  it('shows 團隊 to an in-team manager', () => {
     sessionMock.isTeamManager.mockReturnValue(true)
     renderNav()
     expect(screen.getByText('團隊')).toBeTruthy()
   })
 
-  it('hides 團隊 for a plain member (agent, not a manager)', () => {
+  it('shows 團隊 to a plain agent (read access for everyone)', () => {
     sessionMock.isTeamManager.mockReturnValue(false)
     renderNav()
-    expect(screen.queryByText('團隊')).toBeNull()
+    expect(screen.getByText('團隊')).toBeTruthy()
   })
 })

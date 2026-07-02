@@ -157,4 +157,24 @@ describe('Teams member role select', () => {
     // Status is a read-only pill, not a toggle button.
     expect(screen.queryByRole('button', { name: /啟用|停用/ })).toBeNull()
   })
+
+  it('is read-only for a plain member (no modify controls)', async () => {
+    sessionMock.position.mockReturnValue('agent')
+    sessionMock.isAdmin.mockReturnValue(false)
+    sessionMock.isTeamManager.mockReturnValue(false)
+
+    render(<Teams />)
+    fireEvent.click(await screen.findByText('客服一隊'))
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith('/api/teams/1/members'))
+    expect(await screen.findByText('小明')).toBeTruthy() // the member row still renders (read access)
+
+    // Read-only: no editable role dropdown / add-member select (no combobox at all),
+    // no selection checkbox, and none of the modify buttons.
+    expect(screen.queryByRole('combobox')).toBeNull()
+    expect(screen.queryByLabelText('新增成員')).toBeNull()
+    expect(screen.queryByRole('checkbox')).toBeNull()
+    expect(screen.queryByRole('button', { name: '建立' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '刪除團隊…' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /啟用|停用/ })).toBeNull()
+  })
 })
