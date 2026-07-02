@@ -136,6 +136,7 @@ export function Thread({
       platform?: string
       platformUserId?: string
       teamId?: number | null
+      assignedTeam?: { id?: number; name?: string } | null
       customerId?: number | null
       customerName?: string
       customerAvatarUrl?: string
@@ -145,6 +146,7 @@ export function Thread({
           platform: resp.data.platform,
           platformUserId: resp.data.platformUserId,
           teamId: resp.data.teamId ?? null,
+          teamName: resp.data.assignedTeam?.name ?? null,
           customerId: resp.data.customerId ?? null,
           customerName: resp.data.customerName,
           avatarUrl: resp.data.customerAvatarUrl ?? null,

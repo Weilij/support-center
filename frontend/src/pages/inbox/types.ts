@@ -2,6 +2,7 @@ export interface ConvMeta {
   platform?: string
   platformUserId?: string
   teamId?: number | null
+  teamName?: string | null
   customerId?: number | null
   customerName?: string
   avatarUrl?: string | null

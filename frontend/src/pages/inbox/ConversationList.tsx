@@ -9,13 +9,12 @@ import { recordPositions, animateMoves } from '../../lib/flip'
 import { session } from '../../auth/session'
 import type { Conversation } from '../../stores/conversations'
 
-type TabKey = 'all' | 'unread' | 'team' | 'follow'
+type TabKey = 'all' | 'unread' | 'team'
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'all', label: '全部' },
   { key: 'unread', label: '未讀' },
   { key: 'team', label: '我的團隊' },
-  { key: 'follow', label: '待跟進' },
 ]
 
 function formatTime(iso?: string): string {

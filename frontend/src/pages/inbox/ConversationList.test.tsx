@@ -50,4 +50,19 @@ describe('ConversationList 我的團隊 tab', () => {
     expect(screen.queryByText('Conv Y')).toBeNull()
     expect(screen.queryByText('Conv Z')).toBeNull()
   })
+
+  it('offers 全部/未讀/我的團隊 tabs and no 待跟進', () => {
+    render(
+      <ConversationList
+        items={[conversation({ id: 'a', teamId: 5, customerName: 'Conv X' })]}
+        busy={false}
+        selectedId={undefined}
+        onSelect={vi.fn()}
+      />,
+    )
+    expect(screen.getByText('全部')).toBeTruthy()
+    expect(screen.getByText('未讀')).toBeTruthy()
+    expect(screen.getByText('我的團隊')).toBeTruthy()
+    expect(screen.queryByText('待跟進')).toBeNull()
+  })
 })

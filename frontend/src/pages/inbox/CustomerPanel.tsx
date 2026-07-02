@@ -150,6 +150,15 @@ export function CustomerPanel({
 
       <hr style={{ border: 'none', borderTop: '1px solid var(--line)', margin: 0 }} />
 
+      <CollapsibleSection id="inbox.cust.team" title="指派團隊">
+        <div className="cs-kv">
+          <span className="cs-kv-k">團隊</span>
+          <span className="cs-kv-v">{meta.teamName ?? '無'}</span>
+        </div>
+      </CollapsibleSection>
+
+      <hr style={{ border: 'none', borderTop: '1px solid var(--line)', margin: 0 }} />
+
       <CollapsibleSection id="inbox.cust.contact" title="聯絡資訊">
         {email && (
           <div className="cs-kv">
