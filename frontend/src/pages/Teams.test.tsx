@@ -18,7 +18,7 @@ const sessionMock = vi.hoisted(() => ({
   position: vi.fn(() => 'system_admin'),
   isAdmin: vi.fn(() => true),
   isTeamManager: vi.fn(() => true),
-  teamOptions: vi.fn(() => [] as Array<{ id: string; name: string; isPrimary: boolean; role?: string }>),
+  identity: vi.fn(() => ({ id: 'admin1' }) as { id: string } | null),
 }))
 vi.mock('../auth/session', () => ({ session: sessionMock }))
 
@@ -42,7 +42,7 @@ describe('Teams member role select', () => {
     sessionMock.position.mockReturnValue('system_admin')
     sessionMock.isAdmin.mockReturnValue(true)
     sessionMock.isTeamManager.mockReturnValue(true)
-    sessionMock.teamOptions.mockReturnValue([])
+    sessionMock.identity.mockReturnValue({ id: 'admin1' })
     apiMock.get.mockImplementation((url: string) => {
       if (url === '/api/teams') {
         return Promise.resolve({
@@ -143,16 +143,28 @@ describe('Teams member role select', () => {
   it('hides admin-only controls for a non-admin team manager', async () => {
     sessionMock.position.mockReturnValue('agent')
     sessionMock.isAdmin.mockReturnValue(false)
-    // supervisor OF THE OPEN TEAM (id 1) → canModify true
-    sessionMock.teamOptions.mockReturnValue([{ id: '1', name: '客服一隊', isPrimary: true, role: 'supervisor' }])
+    sessionMock.identity.mockReturnValue({ id: 'sup1' })
+    // The current user is a supervisor OF THE OPEN TEAM (from the members list) → canModify true.
+    apiMock.get.mockImplementation((url: string) => {
+      if (url === '/api/teams') {
+        return Promise.resolve({ success: true, data: [{ id: 1, name: '客服一隊', memberCount: 1 }] })
+      }
+      if (url === '/api/teams/1/members') {
+        return Promise.resolve({
+          success: true,
+          data: [{ id: 'sup1', displayName: '主管本人', roleInTeam: 'supervisor', isActive: true }],
+        })
+      }
+      return Promise.resolve({ success: true, data: {} })
+    })
 
     render(<Teams />)
     fireEvent.click(await screen.findByText('客服一隊'))
     await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith('/api/teams/1/members'))
 
-    // Manager controls remain.
+    // Manager controls remain: add-member picker + editable role dropdown.
     expect(await screen.findByLabelText('新增成員')).toBeTruthy()
-    expect(screen.getByDisplayValue('成員')).toBeTruthy() // role dropdown
+    expect(screen.getByDisplayValue('主管（團隊管理員）')).toBeTruthy() // role select is editable
 
     // Admin-only controls are gone.
     expect(screen.queryByRole('button', { name: '建立' })).toBeNull()
@@ -164,8 +176,8 @@ describe('Teams member role select', () => {
   it('is read-only for a plain member (no modify controls)', async () => {
     sessionMock.position.mockReturnValue('agent')
     sessionMock.isAdmin.mockReturnValue(false)
-    // plain member OF THE OPEN TEAM (id 1) → canModify false
-    sessionMock.teamOptions.mockReturnValue([{ id: '1', name: '客服一隊', isPrimary: true, role: 'member' }])
+    // current user is the plain member m1 of the open team → canModify false
+    sessionMock.identity.mockReturnValue({ id: 'm1' })
 
     render(<Teams />)
     fireEvent.click(await screen.findByText('客服一隊'))

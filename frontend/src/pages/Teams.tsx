@@ -205,7 +205,12 @@ export default function Teams() {
   // Modify rights are PER-TEAM: a member of the open team is read-only even if they
   // lead a different team (matches the backend require_team_rank on each team).
   const isAdmin = session.isAdmin()
-  const myRoleInSelected = session.teamOptions().find((o) => Number(o.id) === selected)?.role
+  // Derive modify rights from the LOADED members (authoritative — same source as the
+  // roles shown in the table), not the session token/teamOptions which can be stale
+  // (e.g. a supervisor added to a team after their last login). Is the current user a
+  // lead/supervisor of the OPEN team?
+  const myId = session.identity()?.id
+  const myRoleInSelected = members.find((m) => m.id === myId)?.roleInTeam
   const canModify = isAdmin || myRoleInSelected === 'lead' || myRoleInSelected === 'supervisor'
 
   const memberIds = new Set(members.map((m) => m.id))
