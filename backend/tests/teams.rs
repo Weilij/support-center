@@ -103,6 +103,28 @@ async fn list_teams_agent_with_primary_team_gets_only_that_team() {
     assert!(body.get("pagination").is_none());
 }
 
+#[tokio::test]
+async fn list_teams_agent_sees_all_their_teams_not_just_primary() {
+    let app = spawn_app().await;
+    let primary = app.seed_team("Primary").await;
+    let other = app.seed_team("Other").await;
+    app.seed_team("Unrelated").await;
+    let agent = app.seed_agent("multi@test.com", "password1", "agent").await;
+    app.add_membership(&agent, primary, "member", true).await;
+    app.add_membership(&agent, other, "supervisor", false).await;
+    let token = app.login("multi@test.com", "password1").await.0;
+
+    let (status, body, _) = app.request("GET", "/api/teams", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["data"].as_array().unwrap();
+    let ids: Vec<i64> = items.iter().map(|t| t["id"].as_i64().unwrap()).collect();
+    // Both teams the agent belongs to (primary + the supervised one), never the
+    // team they are not a member of.
+    assert_eq!(items.len(), 2);
+    assert!(ids.contains(&primary));
+    assert!(ids.contains(&other));
+}
+
 // ------------------------------------------------------------------------- get team
 
 #[tokio::test]

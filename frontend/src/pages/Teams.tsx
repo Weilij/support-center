@@ -200,11 +200,13 @@ export default function Teams() {
     })
 
   // Everyone can READ the Teams page. Modifying is restricted:
-  //  - canModify (in-team lead/supervisor or admin) → role/add/remove/QR-regenerate
+  //  - canModify (admin, or lead/supervisor OF THE OPEN TEAM) → role/add/remove/QR
   //  - isAdmin only → create team / delete team / toggle active status
-  // Plain members (and unaffiliated agents) see a read-only view.
+  // Modify rights are PER-TEAM: a member of the open team is read-only even if they
+  // lead a different team (matches the backend require_team_rank on each team).
   const isAdmin = session.isAdmin()
-  const canModify = session.isTeamManager()
+  const myRoleInSelected = session.teamOptions().find((o) => Number(o.id) === selected)?.role
+  const canModify = isAdmin || myRoleInSelected === 'lead' || myRoleInSelected === 'supervisor'
 
   const memberIds = new Set(members.map((m) => m.id))
   const candidateAgents = allAgents.filter((a) => !memberIds.has(a.id))

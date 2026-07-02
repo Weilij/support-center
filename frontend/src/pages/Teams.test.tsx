@@ -18,6 +18,7 @@ const sessionMock = vi.hoisted(() => ({
   position: vi.fn(() => 'system_admin'),
   isAdmin: vi.fn(() => true),
   isTeamManager: vi.fn(() => true),
+  teamOptions: vi.fn(() => [] as Array<{ id: string; name: string; isPrimary: boolean; role?: string }>),
 }))
 vi.mock('../auth/session', () => ({ session: sessionMock }))
 
@@ -41,6 +42,7 @@ describe('Teams member role select', () => {
     sessionMock.position.mockReturnValue('system_admin')
     sessionMock.isAdmin.mockReturnValue(true)
     sessionMock.isTeamManager.mockReturnValue(true)
+    sessionMock.teamOptions.mockReturnValue([])
     apiMock.get.mockImplementation((url: string) => {
       if (url === '/api/teams') {
         return Promise.resolve({
@@ -141,7 +143,8 @@ describe('Teams member role select', () => {
   it('hides admin-only controls for a non-admin team manager', async () => {
     sessionMock.position.mockReturnValue('agent')
     sessionMock.isAdmin.mockReturnValue(false)
-    sessionMock.isTeamManager.mockReturnValue(true)
+    // supervisor OF THE OPEN TEAM (id 1) → canModify true
+    sessionMock.teamOptions.mockReturnValue([{ id: '1', name: '客服一隊', isPrimary: true, role: 'supervisor' }])
 
     render(<Teams />)
     fireEvent.click(await screen.findByText('客服一隊'))
@@ -161,7 +164,8 @@ describe('Teams member role select', () => {
   it('is read-only for a plain member (no modify controls)', async () => {
     sessionMock.position.mockReturnValue('agent')
     sessionMock.isAdmin.mockReturnValue(false)
-    sessionMock.isTeamManager.mockReturnValue(false)
+    // plain member OF THE OPEN TEAM (id 1) → canModify false
+    sessionMock.teamOptions.mockReturnValue([{ id: '1', name: '客服一隊', isPrimary: true, role: 'member' }])
 
     render(<Teams />)
     fireEvent.click(await screen.findByText('客服一隊'))

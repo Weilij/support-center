@@ -210,14 +210,18 @@ pub async fn list_teams(
     Extension(user): Extension<AuthUser>,
     Query(q): Query<ListTeamsQuery>,
 ) -> Result {
-    // Scoping: an agent with a primary team receives only that team; listing
-    // parameters are ignored for that user (CRD 1826).
+    // Scoping: a non-admin sees EVERY team they belong to (not just their primary),
+    // so e.g. an agent who is supervisor of a non-primary team can still open and
+    // manage it. Soft-deleted teams are skipped (team_with_counts filters them).
+    // Listing/pagination params are ignored for this path (CRD 1826, revised).
     if !user.is_admin() {
-        if let Some(primary) = user.primary_team_id {
-            let team = store::team_with_counts(&state.db, primary).await?;
-            let items: Vec<Value> = team.iter().map(store::team_view).collect();
-            return Ok(envelope::ok(items));
+        let mut items: Vec<Value> = Vec::new();
+        for membership in &user.teams {
+            if let Some(team) = store::team_with_counts(&state.db, membership.team_id).await? {
+                items.push(store::team_view(&team));
+            }
         }
+        return Ok(envelope::ok(items));
     }
 
     let page = lenient_i64(&q.page).unwrap_or(1).max(1);
