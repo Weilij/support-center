@@ -183,7 +183,9 @@ pub async fn find_bare(db: &PgPool, id: &str) -> Result<Option<(Option<i64>, Str
 
 /// Per-conversation capability condition (CRD 578-584, 682): a missing or
 /// unassigned conversation is in the shared pool (granted); an assigned one is
-/// granted only to admins and to agents whose primary team matches.
+/// granted to admins and to any agent who is a MEMBER of the conversation's team
+/// (not just their primary team — a supervisor/member of a non-primary team can
+/// still act on that team's conversations).
 pub async fn can_act_on(db: &PgPool, user: &AuthUser, id: &str) -> Result<bool, AppError> {
     if user.is_admin() {
         return Ok(true);
@@ -191,7 +193,7 @@ pub async fn can_act_on(db: &PgPool, user: &AuthUser, id: &str) -> Result<bool, 
     match find_bare(db, id).await? {
         None => Ok(true),
         Some((None, _)) => Ok(true),
-        Some((Some(team_id), _)) => Ok(user.primary_team_id == Some(team_id)),
+        Some((Some(team_id), _)) => Ok(user.can_access_team(team_id)),
     }
 }
 

@@ -786,6 +786,31 @@ async fn list_messages_paginates_newest_first_with_attachments() {
 }
 
 #[tokio::test]
+async fn list_messages_allows_member_of_non_primary_team() {
+    // A supervisor/member of the conversation's team can open it even when that team
+    // is NOT their primary team (regression: previously primary-team-only).
+    let app = spawn_app().await;
+    let team_a = app.seed_team("A").await;
+    let team_b = app.seed_team("B").await;
+    let (_stale, agent_id) = agent_token(&app, "multi@test.dev", team_a).await;
+    app.add_membership(&agent_id, team_b, "supervisor", false).await;
+    let token = app.login("multi@test.dev", "Secret123!").await.0; // re-login → token carries team_b
+
+    let cust = app.seed_customer("line", "U9", "Bob", None).await;
+    let conv = app.seed_conversation(cust, Some(team_b), "assigned").await;
+
+    let (status, _, _) = app
+        .request(
+            "GET",
+            &format!("/api/conversations/{conv}/messages"),
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn list_messages_permission_and_not_found_errors() {
     let app = spawn_app().await;
     let team_a = app.seed_team("A").await;
