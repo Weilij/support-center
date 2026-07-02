@@ -27,9 +27,13 @@ fn parse_json<T>(body: JsonBody<T>) -> Result<T> {
 
 // ----------------------------------------------------------------------------- helpers
 
-/// Team-leader capability is granted to the distinct "team" role value (CRD 2303, 2313).
+/// Team-leader capability: the user holds a lead/supervisor in-team role in ANY team.
+/// (The legacy global "team" role no longer exists — the in-team role model does,
+/// so a team supervisor who is globally an `agent` still counts, CRD 2303/2313.)
 fn is_team_leader(user: &AuthUser) -> bool {
-    user.role == "team"
+    user.teams
+        .iter()
+        .any(|t| t.role == "lead" || t.role == "supervisor")
 }
 
 fn require_privileged(user: &AuthUser) -> Result<()> {

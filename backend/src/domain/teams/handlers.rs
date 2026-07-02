@@ -305,12 +305,14 @@ pub async fn create_team(
     if name.is_empty() {
         return Err(AppError::BadRequest("Team name is required".into()));
     }
-    // QR-code value uniqueness IS enforced when provided (CRD 1844).
+    // QR-code value uniqueness IS enforced when provided (CRD 1844), excluding
+    // soft-deleted teams so a deleted team's QR code can be reused.
     if let Some(qr) = body.qr_code.as_deref().filter(|s| !s.is_empty()) {
-        let used: Option<i64> = sqlx::query_scalar("SELECT id FROM teams WHERE qr_code = $1")
-            .bind(qr)
-            .fetch_optional(&state.db)
-            .await?;
+        let used: Option<i64> =
+            sqlx::query_scalar("SELECT id FROM teams WHERE qr_code = $1 AND deleted_at IS NULL")
+                .bind(qr)
+                .fetch_optional(&state.db)
+                .await?;
         if used.is_some() {
             return Err(AppError::Conflict(
                 "A team with this QR code already exists".into(),
@@ -498,11 +500,17 @@ pub async fn delete_team(
         .await?
         .ok_or_else(|| AppError::NotFound("Team not found".into()))?;
 
-    // Soft delete plus reversible delete audit entry (CRD 1857).
+    // Soft delete plus reversible delete audit entry (CRD 1857). The team row is
+    // kept (for audit/history + reversibility), but its memberships are hard-removed
+    // so no user is left carrying a stale membership to a deleted team.
     let now = now_iso();
     sqlx::query("UPDATE teams SET deleted_at = $1, updated_at = $2 WHERE id = $3")
         .bind(&now)
         .bind(&now)
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    sqlx::query("DELETE FROM team_members WHERE team_id = $1")
         .bind(id)
         .execute(&state.db)
         .await?;

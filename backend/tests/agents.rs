@@ -11,9 +11,13 @@ async fn admin_token(app: &TestApp) -> String {
     app.login("admin@test.com", "password1").await.0
 }
 
-/// Team-leader capability is granted to the distinct "team" role value (CRD 2303).
+/// A real team leader: globally an `agent`, but supervisor of a team — the in-team
+/// role is what grants team-leader capability now (CRD 2303). (The legacy global
+/// "team" role no longer exists.)
 async fn leader_token(app: &TestApp) -> String {
-    app.seed_agent("leader@test.com", "password1", "team").await;
+    let agent = app.seed_agent("leader@test.com", "password1", "agent").await;
+    let team = app.seed_team("Leaders").await;
+    app.add_membership(&agent, team, "supervisor", true).await;
     app.login("leader@test.com", "password1").await.0
 }
 

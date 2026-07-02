@@ -374,6 +374,60 @@ async fn delete_team_requires_admin() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
+#[tokio::test]
+async fn delete_team_removes_memberships() {
+    let app = spawn_app().await;
+    let token = admin_token(&app).await;
+    let team = app.seed_team("Purge").await;
+    let agent = app.seed_agent("purged@test.com", "password1", "agent").await;
+    app.add_membership(&agent, team, "member", true).await;
+
+    let (status, _, _) = app
+        .request("DELETE", &format!("/api/teams/{team}"), Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The team row is kept (soft delete) but its memberships are hard-removed.
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM team_members WHERE team_id = $1")
+        .bind(team)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0);
+}
+
+#[tokio::test]
+async fn deleted_team_qr_code_can_be_reused() {
+    let app = spawn_app().await;
+    let token = admin_token(&app).await;
+    let (status, body, _) = app
+        .request(
+            "POST",
+            "/api/teams",
+            Some(&token),
+            Some(json!({ "name": "First", "qrCode": "SHARED-QR" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let team = body["data"]["id"].as_i64().unwrap();
+
+    let (status, _, _) = app
+        .request("DELETE", &format!("/api/teams/{team}"), Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The soft-deleted team no longer blocks reuse of its QR-code value.
+    let (status, body2, _) = app
+        .request(
+            "POST",
+            "/api/teams",
+            Some(&token),
+            Some(json!({ "name": "Second", "qrCode": "SHARED-QR" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "reuse body={body2}");
+}
+
 // ----------------------------------------------------------------------- search teams
 
 #[tokio::test]
