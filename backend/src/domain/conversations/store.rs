@@ -67,12 +67,13 @@ fn base_select(where_clause: &str) -> String {
          FROM conversations c
          LEFT JOIN teams t ON t.id = c.team_id
          LEFT JOIN customers cu ON cu.id = c.customer_id AND cu.deleted_at IS NULL
-         LEFT JOIN (
-             SELECT conversation_id, id, content, created_at, sender_type, content_type,
-                    ROW_NUMBER() OVER (PARTITION BY conversation_id
-                                       ORDER BY created_at DESC, id DESC) AS rn
-             FROM messages WHERE deleted_at IS NULL
-         ) lm ON lm.conversation_id = c.id AND lm.rn = 1
+         LEFT JOIN LATERAL (
+             SELECT id, content, created_at, sender_type, content_type
+             FROM messages
+             WHERE conversation_id = c.id AND deleted_at IS NULL
+             ORDER BY created_at DESC, id DESC
+             LIMIT 1
+         ) lm ON true
          WHERE c.deleted_at IS NULL {where_clause}
          ORDER BY c.updated_at DESC, c.id"
     )
