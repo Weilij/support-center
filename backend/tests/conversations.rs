@@ -71,7 +71,9 @@ async fn list_orders_by_updated_desc_with_preview_and_unread() {
 }
 
 #[tokio::test]
-async fn list_scopes_agents_to_their_teams_plus_unassigned_pool() {
+async fn list_shows_all_conversations_to_any_agent() {
+    // Full-access policy: the list is unscoped — an agent sees every conversation,
+    // including other teams' and the unassigned pool.
     let app = spawn_app().await;
     let team_a = app.seed_team("A").await;
     let team_b = app.seed_team("B").await;
@@ -79,7 +81,7 @@ async fn list_scopes_agents_to_their_teams_plus_unassigned_pool() {
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let unassigned = app.seed_conversation(cust, None, "active").await;
     let mine = app.seed_conversation(cust, Some(team_a), "assigned").await;
-    let _other = app.seed_conversation(cust, Some(team_b), "assigned").await;
+    let other = app.seed_conversation(cust, Some(team_b), "assigned").await;
 
     let (status, body, _) = app
         .request("GET", "/api/conversations", Some(&token), None)
@@ -91,9 +93,10 @@ async fn list_scopes_agents_to_their_teams_plus_unassigned_pool() {
         .iter()
         .map(|v| v["id"].as_str().unwrap())
         .collect();
-    assert_eq!(ids.len(), 2);
+    assert_eq!(ids.len(), 3);
     assert!(ids.contains(&unassigned.as_str()));
     assert!(ids.contains(&mine.as_str()));
+    assert!(ids.contains(&other.as_str()));
 }
 
 #[tokio::test]
@@ -226,7 +229,8 @@ async fn detail_returns_extended_shape() {
 }
 
 #[tokio::test]
-async fn detail_denies_agent_outside_assigned_team() {
+async fn detail_allows_any_agent_full_access() {
+    // Full-access policy: an agent can open a conversation of a team they are NOT in.
     let app = spawn_app().await;
     let team_a = app.seed_team("A").await;
     let team_b = app.seed_team("B").await;
@@ -242,8 +246,8 @@ async fn detail_denies_agent_outside_assigned_team() {
             None,
         )
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(body["error"], json!("Permission denied"));
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["id"], json!(conv));
 }
 
 #[tokio::test]
@@ -303,7 +307,8 @@ async fn mark_read_succeeds_even_for_missing_conversation() {
 }
 
 #[tokio::test]
-async fn mark_read_denied_outside_team_scope() {
+async fn mark_read_allowed_any_team_full_access() {
+    // Full-access policy: any agent can mark any conversation read.
     let app = spawn_app().await;
     let team_a = app.seed_team("A").await;
     let team_b = app.seed_team("B").await;
@@ -318,7 +323,7 @@ async fn mark_read_denied_outside_team_scope() {
             None,
         )
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::OK);
 }
 
 // ---------------------------------------------------------------------- assign
@@ -433,14 +438,15 @@ async fn assign_missing_conversation_is_404() {
 }
 
 #[tokio::test]
-async fn assign_denied_for_agent_outside_team() {
+async fn assign_allowed_for_any_agent_full_access() {
+    // Full-access policy: any agent can (re)assign any conversation to a team.
     let app = spawn_app().await;
     let team_a = app.seed_team("A").await;
     let team_b = app.seed_team("B").await;
     let (token, _) = agent_token(&app, "agent@test.dev", team_a).await;
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, Some(team_b), "assigned").await;
-    let (status, body, _) = app
+    let (status, _, _) = app
         .request(
             "POST",
             &format!("/api/conversations/{conv}/assign"),
@@ -448,8 +454,7 @@ async fn assign_denied_for_agent_outside_team() {
             Some(json!({"teamId": team_a})),
         )
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(body["error"], json!("Permission denied"));
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -811,7 +816,7 @@ async fn list_messages_allows_member_of_non_primary_team() {
 }
 
 #[tokio::test]
-async fn list_messages_permission_and_not_found_errors() {
+async fn list_messages_allows_any_team_and_404_on_missing() {
     let app = spawn_app().await;
     let team_a = app.seed_team("A").await;
     let team_b = app.seed_team("B").await;
@@ -820,7 +825,8 @@ async fn list_messages_permission_and_not_found_errors() {
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
     let conv = app.seed_conversation(cust, Some(team_b), "assigned").await;
 
-    let (status, body, _) = app
+    // Full-access policy: an agent can list messages of another team's conversation.
+    let (status, _, _) = app
         .request(
             "GET",
             &format!("/api/conversations/{conv}/messages"),
@@ -828,8 +834,7 @@ async fn list_messages_permission_and_not_found_errors() {
             None,
         )
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(body["error"], json!("Permission denied"));
+    assert_eq!(status, StatusCode::OK);
 
     let (status, body, _) = app
         .request(
@@ -1078,7 +1083,8 @@ async fn send_message_validation_errors() {
 }
 
 #[tokio::test]
-async fn send_message_denied_with_role_specific_message() {
+async fn send_message_allowed_across_teams_full_access() {
+    // Full-access policy: an agent can reply in another team's conversation.
     let app = spawn_app().await;
     let team_a = app.seed_team("A").await;
     let team_b = app.seed_team("B").await;
@@ -1093,8 +1099,7 @@ async fn send_message_denied_with_role_specific_message() {
             Some(json!({"content": "hi", "senderId": agent_id})),
         )
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert!(body["error"].as_str().unwrap().contains("Agents"));
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 // ------------------------------------------------------------ attachment upload
@@ -1520,17 +1525,19 @@ async fn media_proxy_unknown_message_is_404() {
 }
 
 #[tokio::test]
-async fn media_proxy_denies_agent_without_access() {
+async fn media_proxy_allows_any_team_404_when_unavailable() {
+    // Full-access policy: an agent may proxy media of another team's conversation;
+    // the request is no longer forbidden. (Here the LINE media itself is unfetchable
+    // in tests, so the proxy reports 404 "Media unavailable" — not 403.)
     let app = spawn_app().await;
     let team_a = app.seed_team("A").await;
     let team_b = app.seed_team("B").await;
     let (token, _) = agent_token(&app, "agent@test.dev", team_a).await;
     let cust = app.seed_customer("line", "U1", "Alice", None).await;
-    // Conversation assigned to a team the agent does not belong to.
     let conv = app.seed_conversation(cust, Some(team_b), "assigned").await;
     let msg = seed_media_message(&app, &conv, "image", "lineMsg999").await;
 
-    let (status, body, _) = app
+    let (status, _, _) = app
         .request(
             "GET",
             &format!("/api/conversations/{conv}/messages/{msg}/media"),
@@ -1538,6 +1545,6 @@ async fn media_proxy_denies_agent_without_access() {
             None,
         )
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(body["error"], json!("Permission denied"));
+    assert_ne!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

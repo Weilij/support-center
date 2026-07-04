@@ -80,19 +80,12 @@ fn base_select(where_clause: &str) -> String {
 
 /// Visible-conversation clause (CRD 589-594, 672): admins see all; agents see the
 /// unassigned shared pool plus conversations of every team they belong to.
-fn visibility_clause(user: &AuthUser) -> String {
-    if user.is_admin() {
-        return String::new();
-    }
-    let team_ids: Vec<String> = user.teams.iter().map(|t| t.team_id.to_string()).collect();
-    if team_ids.is_empty() {
-        " AND c.team_id IS NULL".to_string()
-    } else {
-        format!(
-            " AND (c.team_id IS NULL OR c.team_id IN ({}))",
-            team_ids.join(", ")
-        )
-    }
+///
+/// POLICY: teams are an organizational FILTER (the 我的團隊 inbox tab), not an access
+/// boundary — every authenticated agent sees ALL conversations, so this clause is
+/// empty for everyone. (Reverts the per-team visibility scoping by request.)
+fn visibility_clause(_user: &AuthUser) -> String {
+    String::new()
 }
 
 #[derive(Default)]
@@ -181,20 +174,14 @@ pub async fn find_bare(db: &PgPool, id: &str) -> Result<Option<(Option<i64>, Str
     .await?)
 }
 
-/// Per-conversation capability condition (CRD 578-584, 682): a missing or
-/// unassigned conversation is in the shared pool (granted); an assigned one is
-/// granted to admins and to any agent who is a MEMBER of the conversation's team
-/// (not just their primary team — a supervisor/member of a non-primary team can
-/// still act on that team's conversations).
-pub async fn can_act_on(db: &PgPool, user: &AuthUser, id: &str) -> Result<bool, AppError> {
-    if user.is_admin() {
-        return Ok(true);
-    }
-    match find_bare(db, id).await? {
-        None => Ok(true),
-        Some((None, _)) => Ok(true),
-        Some((Some(team_id), _)) => Ok(user.can_access_team(team_id)),
-    }
+/// Per-conversation capability condition (CRD 578-584, 682).
+///
+/// POLICY: teams are an organizational filter, not an access boundary — any
+/// authenticated agent can act on any conversation (view/messages/assign/transfer/
+/// send/recall/media). A missing conversation is reported as not-found by the caller
+/// after this grant. (Reverts the per-team action scoping by request.)
+pub async fn can_act_on(_db: &PgPool, _user: &AuthUser, _id: &str) -> Result<bool, AppError> {
+    Ok(true)
 }
 
 /// Customer name fallback chain: display name -> platform user id -> "Unknown
