@@ -352,8 +352,8 @@ async fn find_or_create_open_conversation(
 
     let id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
-        "INSERT INTO conversations (id, customer_id, team_id, status, priority, created_at)
-         VALUES ($1, $2, $3, 'active', 'normal', $4)",
+        "INSERT INTO conversations (id, customer_id, team_id, status, priority, created_at, updated_at)
+         VALUES ($1, $2, $3, 'active', 'normal', $4, $4)",
     )
     .bind(&id)
     .bind(customer_id)

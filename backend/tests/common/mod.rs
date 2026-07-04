@@ -326,7 +326,7 @@ impl TestApp {
     ) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
-            "INSERT INTO conversations (id, customer_id, team_id, status, created_at) VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO conversations (id, customer_id, team_id, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $5)",
         )
         .bind(&id)
         .bind(customer_id)

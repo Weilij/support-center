@@ -415,8 +415,8 @@ async fn reconcile(
         None => {
             let conversation_id = uuid::Uuid::new_v4().to_string();
             sqlx::query(
-                "INSERT INTO conversations (id, customer_id, team_id, status, priority, created_at)
-                 VALUES ($1, $2, $3, 'active', 'normal', $4)",
+                "INSERT INTO conversations (id, customer_id, team_id, status, priority, created_at, updated_at)
+                 VALUES ($1, $2, $3, 'active', 'normal', $4, $4)",
             )
             .bind(&conversation_id)
             .bind(customer_id)

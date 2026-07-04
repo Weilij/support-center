@@ -74,7 +74,7 @@ fn base_select(where_clause: &str) -> String {
              FROM messages WHERE deleted_at IS NULL
          ) lm ON lm.conversation_id = c.id AND lm.rn = 1
          WHERE c.deleted_at IS NULL {where_clause}
-         ORDER BY COALESCE(c.updated_at, c.created_at) DESC, c.id"
+         ORDER BY c.updated_at DESC, c.id"
     )
 }
 
@@ -134,7 +134,7 @@ pub async fn list_visible(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        clause.push_str(" AND COALESCE(c.updated_at, c.created_at) >= ?");
+        clause.push_str(" AND c.updated_at >= ?");
         binds.push(after.to_string());
     }
     if let Some(before) = f
@@ -143,7 +143,7 @@ pub async fn list_visible(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        clause.push_str(" AND COALESCE(c.updated_at, c.created_at) <= ?");
+        clause.push_str(" AND c.updated_at <= ?");
         binds.push(before.to_string());
     }
 
