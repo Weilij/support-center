@@ -1,9 +1,8 @@
 //! Agents/Operators handlers (CRD §3.3, lines 2154-2321).
 
-use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::{Extension, Json};
+use axum::Extension;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -18,12 +17,7 @@ use crate::state::AppState;
 
 use super::store::{self, OperatorRow, PRESENCE_STATES, SKILL_CATEGORIES, SKILL_LEVELS};
 
-type JsonBody<T> = std::result::Result<Json<T>, JsonRejection>;
-
-fn parse_json<T>(body: JsonBody<T>) -> Result<T> {
-    body.map(|Json(b)| b)
-        .map_err(|_| AppError::BadRequest("Invalid JSON".into()))
-}
+use crate::domain::common::{parse_json, require_admin, JsonBody};
 
 // ----------------------------------------------------------------------------- helpers
 
@@ -43,14 +37,6 @@ fn require_privileged(user: &AuthUser) -> Result<()> {
         Err(AppError::Forbidden(
             "Administrator or team leader role required".into(),
         ))
-    }
-}
-
-fn require_admin(user: &AuthUser) -> Result<()> {
-    if user.is_admin() {
-        Ok(())
-    } else {
-        Err(AppError::Forbidden("Administrator role required".into()))
     }
 }
 

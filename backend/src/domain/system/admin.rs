@@ -14,13 +14,7 @@ use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
 
-fn require_admin(user: &AuthUser) -> Result<()> {
-    if user.is_admin() {
-        Ok(())
-    } else {
-        Err(AppError::Forbidden("Administrator role required".into()))
-    }
-}
+use crate::domain::common::require_admin;
 
 async fn put_setting(state: &AppState, key: &str, value: &Value) {
     if let Err(error) = sqlx::query(

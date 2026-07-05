@@ -1,6 +1,5 @@
 //! Messaging HTTP handlers (CRD §2.2, lines 830-1042), mounted at `/api/messages`.
 
-use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -28,12 +27,7 @@ pub use exports::*;
 pub use forward::*;
 pub use tags::*;
 
-pub(super) type JsonBody<T> = std::result::Result<Json<T>, JsonRejection>;
-
-pub(super) fn parse_json<T>(body: JsonBody<T>) -> Result<T> {
-    body.map(|Json(b)| b)
-        .map_err(|_| AppError::BadRequest("Invalid JSON".into()))
-}
+pub(super) use crate::domain::common::{parse_json, JsonBody};
 
 pub(super) fn message_not_found() -> AppError {
     AppError::NotFound("Message not found".into())

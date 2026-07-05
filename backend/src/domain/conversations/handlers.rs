@@ -1,6 +1,5 @@
 //! Conversations (Agent Side) handlers (CRD §2.1, lines 651-830).
 
-use axum::extract::rejection::JsonRejection;
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
@@ -19,12 +18,7 @@ use crate::state::AppState;
 use super::channels::{self, OutboundItem};
 use super::store::{self, ListFilters};
 
-type JsonBody<T> = std::result::Result<Json<T>, JsonRejection>;
-
-fn parse_json<T>(body: JsonBody<T>) -> Result<T> {
-    body.map(|Json(b)| b)
-        .map_err(|_| AppError::BadRequest("Invalid JSON".into()))
-}
+use crate::domain::common::{parse_json, JsonBody};
 
 fn permission_denied() -> AppError {
     AppError::Forbidden("Permission denied".into())

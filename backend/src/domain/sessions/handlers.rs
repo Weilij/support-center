@@ -1,6 +1,5 @@
 //! Conversation-Session Management handlers (CRD §1.2B, lines 329-483).
 
-use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -26,7 +25,7 @@ pub use boundary::*;
 pub use stats::*;
 pub use topic_handlers::*;
 
-pub(super) type JsonBody<T> = std::result::Result<Json<T>, JsonRejection>;
+pub(super) use crate::domain::common::{parse_json, JsonBody};
 
 const SESSION_TYPES: &[&str] = &["continuous", "scheduled", "support", "marketing"];
 pub(super) const SENDER_TYPES: &[&str] = &["customer", "agent", "system"];
@@ -35,10 +34,6 @@ const SENTIMENTS: &[&str] = &["positive", "negative", "neutral"];
 
 pub(super) fn bad(msg: impl Into<String>) -> AppError {
     AppError::BadRequest(msg.into())
-}
-
-pub(super) fn parse_json<T>(body: JsonBody<T>) -> Result<T> {
-    body.map(|Json(b)| b).map_err(|_| bad("Invalid JSON"))
 }
 
 /// Session/conversation identifiers must be UUID v1-v5 (CRD 331).

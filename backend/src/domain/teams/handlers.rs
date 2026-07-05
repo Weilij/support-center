@@ -3,11 +3,10 @@
 //! `POST /api/teams/members/{memberId}/reset` lives in `crate::domain::auth`; the
 //! self-service password change is mounted at `/api/auth/change-password`.
 
-use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Response;
-use axum::{Extension, Json};
+use axum::Extension;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -30,18 +29,13 @@ pub use member_accounts::*;
 pub use qr::*;
 pub use team_scoped_members::*;
 
-pub(super) type JsonBody<T> = std::result::Result<Json<T>, JsonRejection>;
+pub(super) use crate::domain::common::{parse_json, require_admin, JsonBody};
 
 pub(super) const BATCH_LIMIT: usize = 50;
 pub(super) const TEAM_ROLES: [&str; 3] = ["member", "lead", "supervisor"];
 pub(super) const GLOBAL_ROLES: [&str; 2] = ["admin", "agent"];
 
 // ----------------------------------------------------------------------------- helpers
-
-pub(super) fn parse_json<T>(body: JsonBody<T>) -> Result<T> {
-    body.map(|Json(b)| b)
-        .map_err(|_| AppError::BadRequest("Invalid JSON".into()))
-}
 
 /// Refreshed member count for realtime member-change events (CRD 2149).
 pub(super) async fn live_member_count(state: &AppState, team_id: i64) -> i64 {
@@ -80,14 +74,6 @@ pub(super) fn parse_team_id(raw: &str) -> Result<i64> {
         .ok()
         .filter(|v| *v > 0)
         .ok_or_else(|| AppError::BadRequest("Invalid team id".into()))
-}
-
-pub(super) fn require_admin(user: &AuthUser) -> Result<()> {
-    if user.is_admin() {
-        Ok(())
-    } else {
-        Err(AppError::Forbidden("Administrator role required".into()))
-    }
 }
 
 /// Team-access check (CRD 1809): admins always pass; agents only for their own teams.

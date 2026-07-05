@@ -1,10 +1,9 @@
 //! Label-management and conversation-label handlers (CRD §2.6, lines 1453-1644).
 
-use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Response;
-use axum::{Extension, Json};
+use axum::Extension;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -17,7 +16,7 @@ use crate::state::AppState;
 
 use super::store::{self, total_pages, TagWithCounts};
 
-type JsonBody<T> = std::result::Result<Json<T>, JsonRejection>;
+pub(crate) use crate::domain::common::{parse_json, JsonBody};
 
 pub(crate) fn validation(field: &str, message: &str) -> AppError {
     AppError::Validation(
@@ -28,12 +27,6 @@ pub(crate) fn validation(field: &str, message: &str) -> AppError {
             value: None,
         }],
     )
-}
-
-/// Malformed JSON bodies are reported as 400 "Invalid JSON" (CRD 1490, 1525).
-pub(crate) fn parse_json<T>(body: JsonBody<T>) -> Result<T> {
-    body.map(|Json(b)| b)
-        .map_err(|_| AppError::BadRequest("Invalid JSON".into()))
 }
 
 /// Path id must be a positive integer (CRD 1507, 1516: 400 "Invalid tag id").

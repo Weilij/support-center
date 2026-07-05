@@ -4,6 +4,7 @@ pub mod analytics;
 pub mod auth;
 pub mod auto_reply;
 pub mod channels;
+pub mod common;
 pub mod conversations;
 pub mod customer_conversations;
 pub mod customers;

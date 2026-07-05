@@ -66,14 +66,21 @@ use std::fmt;
 use std::sync::OnceLock;
 
 /// Shared HTTP client (connection pooling) for all outbound platform calls.
-fn http_client() -> &'static reqwest::Client {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .expect("reqwest client")
-    })
+/// `None` if the client failed to initialize (logged once) — callers degrade
+/// gracefully instead of panicking.
+fn http_client() -> Option<&'static reqwest::Client> {
+    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .map_err(|error| {
+                    tracing::error!(%error, "failed to build shared HTTP client");
+                })
+                .ok()
+        })
+        .as_ref()
 }
 
 /// One LINE message object for an outbound item (pure — unit-tested).
@@ -146,6 +153,8 @@ pub enum OutboundError {
     MissingCredentials(&'static str),
     MissingTokenStore,
     UnsupportedPlatform(String),
+    /// The shared HTTP client could not be initialized (see `http_client`).
+    ClientUnavailable(&'static str),
 }
 
 impl fmt::Display for OutboundError {
@@ -177,6 +186,9 @@ impl fmt::Display for OutboundError {
                 f,
                 "Outbound delivery is not supported for platform '{platform}'"
             ),
+            Self::ClientUnavailable(platform) => {
+                write!(f, "{platform} delivery failed: HTTP client unavailable")
+            }
         }
     }
 }
@@ -243,7 +255,10 @@ async fn line_push(
     items: &[OutboundItem],
 ) -> OutboundResult<String> {
     let body = build_push_body(recipient, items);
-    let resp = http_client()
+    let Some(client) = http_client() else {
+        return Err(OutboundError::ClientUnavailable("LINE"));
+    };
+    let resp = client
         .post(url)
         .bearer_auth(token)
         .json(&body)
@@ -278,7 +293,10 @@ async fn fb_send(token: &str, recipient: &str, items: &[OutboundItem]) -> Outbou
             Some(m) => format!("📎 {}\n{}", m.file_name.clone().unwrap_or_default(), m.url),
             None => it.content.clone(),
         };
-        let resp = http_client()
+        let Some(client) = http_client() else {
+            return Err(OutboundError::ClientUnavailable("facebook"));
+        };
+        let resp = client
             .post(&url)
             .json(&fb_send_body(recipient, &content))
             .send()
@@ -312,7 +330,10 @@ async fn meta_delete_message(
     message_id: &str,
 ) -> OutboundResult<()> {
     let url = format!("{}/{}", graph_url.trim_end_matches('/'), message_id);
-    let resp = http_client()
+    let Some(client) = http_client() else {
+        return Err(OutboundError::ClientUnavailable("meta"));
+    };
+    let resp = client
         .delete(&url)
         .bearer_auth(token)
         .send()
@@ -351,7 +372,10 @@ async fn shopee_send(
     let url = client.url(path, &query);
     let mut last_id = String::new();
     for it in items {
-        let resp = http_client()
+        let Some(client) = http_client() else {
+            return Err(OutboundError::ClientUnavailable("shopee"));
+        };
+        let resp = client
             .post(&url)
             .json(&shopee_send_body(&buyer_id, it))
             .send()
@@ -413,7 +437,10 @@ pub fn parse_meta_profile(v: &serde_json::Value) -> Profile {
 
 async fn line_profile(token: &str, user_id: &str) -> Profile {
     let url = format!("https://api.line.me/v2/bot/profile/{user_id}");
-    match http_client()
+    let Some(client) = http_client() else {
+        return Profile::default();
+    };
+    match client
         .get(&url)
         .bearer_auth(token)
         .timeout(std::time::Duration::from_secs(5))
@@ -434,7 +461,10 @@ async fn meta_profile(token: &str, user_id: &str) -> Profile {
     let url = format!(
         "https://graph.facebook.com/v21.0/{user_id}?fields=name,username,profile_pic&access_token={token}"
     );
-    match http_client()
+    let Some(client) = http_client() else {
+        return Profile::default();
+    };
+    match client
         .get(&url)
         .timeout(std::time::Duration::from_secs(5))
         .send()
@@ -709,7 +739,7 @@ pub(crate) async fn fetch_line_media_from_base(
         "{}/v2/bot/message/{message_id}/content{suffix}",
         base_url.trim_end_matches('/')
     );
-    let resp = http_client()
+    let resp = http_client()?
         .get(&url)
         .bearer_auth(token)
         .timeout(std::time::Duration::from_secs(15))

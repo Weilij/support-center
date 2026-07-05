@@ -14,19 +14,13 @@ use crate::error::{AppError, HandlerResult as Result};
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
 
+use crate::domain::common::require_admin;
+
 pub async fn health() -> Result {
     Ok(envelope::ok(json!({
         "status": {"status": "healthy", "module": "security-dashboard", "version": "1.0.0"},
         "timestamp": now_iso(),
     })))
-}
-
-fn require_admin(user: &AuthUser) -> Result<()> {
-    if user.is_admin() {
-        Ok(())
-    } else {
-        Err(AppError::Forbidden("Administrator role required".into()))
-    }
 }
 
 #[derive(Deserialize)]
