@@ -33,7 +33,7 @@ describe('Store.optimistic', () => {
   it('reverts when the server call throws', async () => {
     const store = new Store<S>({ items: ['a'] })
     const ok = await store.optimistic(
-      (s) => ({ items: [] }),
+      (_s) => ({ items: [] }),
       async () => {
         throw new Error('network')
       },

@@ -61,7 +61,7 @@ export function Guard({ meta, children }: { meta: RouteMeta; children: React.Rea
 
     let cancelled = false
     const run = async () => {
-      let requiresAuth = meta.requiresAuth ?? true
+      const requiresAuth = meta.requiresAuth ?? true
       try {
         // 3. Snapshot fast paths (CRD 6480).
         const snap = session.snapshot()

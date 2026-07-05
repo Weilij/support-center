@@ -1,0 +1,9 @@
+# cargo-audit configuration (read by `cargo audit` in this directory).
+
+[advisories]
+# RUSTSEC-2023-0071 — RSA "Marvin Attack" timing side-channel (rsa 0.9.x).
+# No fixed upgrade is available upstream. `rsa` is pulled in ONLY transitively by
+# `sqlx-mysql`; this project uses PostgreSQL exclusively, so the MySQL auth path that
+# performs the vulnerable RSA operation is compiled but never executed. Not
+# exploitable here — revisit if a fix ships or if MySQL is ever adopted.
+ignore = ["RUSTSEC-2023-0071"]
