@@ -2,7 +2,7 @@
 // title updates, same-path short-circuit, snapshot fast path, pending-session
 // wait, guest-only and auth-required redirects, fail-closed auth guard errors.
 
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import {
   createBrowserRouter,
   Navigate,
@@ -13,33 +13,34 @@ import {
 import { can, type Area } from './auth/permissions'
 import { session } from './auth/session'
 import { t } from './i18n'
-import Login from './pages/Login'
-import Dashboard from './pages/Dashboard'
-import NotFound from './pages/NotFound'
-import Inbox from './pages/Inbox'
-import Conversations from './pages/Conversations'
-import ConversationDetail from './pages/ConversationDetail'
-import Customers from './pages/Customers'
-import MessageSearch from './pages/MessageSearch'
-import Agents from './pages/Agents'
-import Sessions from './pages/Sessions'
-import LiffSettings from './pages/LiffSettings'
-import Analytics from './pages/Analytics'
-import Reminders from './pages/Reminders'
-import SystemMonitoring from './pages/SystemMonitoring'
-import AlertConfig from './pages/AlertConfig'
-import SystemMaintenance from './pages/SystemMaintenance'
-import Notifications from './pages/Notifications'
-import Tags from './pages/Tags'
 import AppShell from './components/AppShell'
-import Teams from './pages/Teams'
-import Settings from './pages/Settings'
-import ProfilePage from './pages/Profile'
-import Reports from './pages/Reports'
-import ActivityLog from './pages/Activity'
-import AutoReply from './pages/AutoReply'
-import Channels from './pages/Channels'
-import Install from './pages/Install'
+
+// Route-based code splitting: each page is its own chunk, fetched on demand behind
+// the Suspense fallback below — keeps the initial bundle small.
+const Login = lazy(() => import('./pages/Login'))
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const NotFound = lazy(() => import('./pages/NotFound'))
+const Inbox = lazy(() => import('./pages/Inbox'))
+const Customers = lazy(() => import('./pages/Customers'))
+const MessageSearch = lazy(() => import('./pages/MessageSearch'))
+const Agents = lazy(() => import('./pages/Agents'))
+const Sessions = lazy(() => import('./pages/Sessions'))
+const LiffSettings = lazy(() => import('./pages/LiffSettings'))
+const Analytics = lazy(() => import('./pages/Analytics'))
+const Reminders = lazy(() => import('./pages/Reminders'))
+const SystemMonitoring = lazy(() => import('./pages/SystemMonitoring'))
+const AlertConfig = lazy(() => import('./pages/AlertConfig'))
+const SystemMaintenance = lazy(() => import('./pages/SystemMaintenance'))
+const Notifications = lazy(() => import('./pages/Notifications'))
+const Tags = lazy(() => import('./pages/Tags'))
+const Teams = lazy(() => import('./pages/Teams'))
+const Settings = lazy(() => import('./pages/Settings'))
+const ProfilePage = lazy(() => import('./pages/Profile'))
+const Reports = lazy(() => import('./pages/Reports'))
+const ActivityLog = lazy(() => import('./pages/Activity'))
+const AutoReply = lazy(() => import('./pages/AutoReply'))
+const Channels = lazy(() => import('./pages/Channels'))
+const Install = lazy(() => import('./pages/Install'))
 
 interface RouteMeta {
   requiresAuth?: boolean // default true (CRD 6476)
@@ -106,11 +107,25 @@ export function Guard({ meta, children }: { meta: RouteMeta; children: React.Rea
   return <>{children}</>
 }
 
+// Fallback shown while a route's lazy chunk loads (matches the app's muted
+// "載入中…" loading style, e.g. DataTable).
+function PageLoading() {
+  return (
+    <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>
+      載入中…
+    </div>
+  )
+}
+
 const page = (meta: RouteMeta, element: React.ReactNode) => (
   <Guard meta={meta}>
-    {(meta.requiresAuth ?? true) && !meta.guestOnly
-      ? <AppShell title={meta.title}>{element}</AppShell>
-      : element}
+    {(meta.requiresAuth ?? true) && !meta.guestOnly ? (
+      <AppShell title={meta.title}>
+        <Suspense fallback={<PageLoading />}>{element}</Suspense>
+      </AppShell>
+    ) : (
+      <Suspense fallback={<PageLoading />}>{element}</Suspense>
+    )}
   </Guard>
 )
 
