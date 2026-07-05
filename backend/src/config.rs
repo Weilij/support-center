@@ -1,8 +1,13 @@
+/// The dev-only fallback database DSN. Production validation rejects it, so a real
+/// DATABASE_URL must be set outside dev/test.
+pub const DEV_DATABASE_URL: &str = "postgres://localhost/mcss";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProductionConfigError {
     InsecureDefaultJwtSecret,
     JwtSecretTooShort,
     MissingEncryptionKey,
+    MissingDatabaseUrl,
 }
 
 impl std::fmt::Display for ProductionConfigError {
@@ -16,6 +21,9 @@ impl std::fmt::Display for ProductionConfigError {
             }
             Self::MissingEncryptionKey => f.write_str(
                 "ENCRYPTION_KEY must be set in production to protect integration credentials",
+            ),
+            Self::MissingDatabaseUrl => f.write_str(
+                "DATABASE_URL must be set in production (refusing the dev-only default)",
             ),
         }
     }
@@ -84,8 +92,7 @@ impl Config {
     pub fn from_env() -> Self {
         let _ = dotenvy::dotenv();
         Self {
-            database_url: std::env::var("DATABASE_URL")
-                .unwrap_or_else(|_| "postgres://localhost/mcss".into()),
+            database_url: std::env::var("DATABASE_URL").unwrap_or_else(|_| DEV_DATABASE_URL.into()),
             jwt_secret: std::env::var("JWT_SECRET")
                 .unwrap_or_else(|_| "dev-only-insecure-secret".into()),
             encryption_key: std::env::var("ENCRYPTION_KEY")
@@ -207,6 +214,9 @@ impl Config {
     pub fn validate_for_production(&self) -> Result<(), ProductionConfigError> {
         if !self.is_production() {
             return Ok(());
+        }
+        if self.database_url == DEV_DATABASE_URL {
+            return Err(ProductionConfigError::MissingDatabaseUrl);
         }
         if self.jwt_secret == "dev-only-insecure-secret" {
             return Err(ProductionConfigError::InsecureDefaultJwtSecret);
@@ -375,5 +385,20 @@ mod validate_production_tests {
             ..test_config()
         };
         assert!(cfg.validate_for_production().is_ok());
+    }
+
+    /// Production config still on the dev-only default DATABASE_URL must be rejected.
+    #[test]
+    fn production_default_database_url_rejected() {
+        let cfg = Config {
+            environment: "production".into(),
+            database_url: DEV_DATABASE_URL.into(),
+            jwt_secret: "a-sufficiently-long-production-secret-key".into(),
+            encryption_key: Some("my-encryption-key".into()),
+            ..test_config()
+        };
+        let err = cfg.validate_for_production().unwrap_err();
+        assert_eq!(err, ProductionConfigError::MissingDatabaseUrl);
+        assert!(err.to_string().contains("DATABASE_URL"));
     }
 }

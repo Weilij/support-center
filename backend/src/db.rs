@@ -2,8 +2,14 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
 pub async fn init_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
+    // Pool size is tunable via DATABASE_MAX_CONNECTIONS (default 16).
+    let max_connections = std::env::var("DATABASE_MAX_CONNECTIONS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(16);
     let pool = PgPoolOptions::new()
-        .max_connections(16)
+        .max_connections(max_connections)
         .connect(database_url)
         .await?;
     sqlx::migrate!("./migrations").run(&pool).await?;

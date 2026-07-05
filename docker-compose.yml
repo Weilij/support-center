@@ -1,6 +1,8 @@
 services:
   db:
     image: postgres:18
+    restart: unless-stopped
+    mem_limit: 1g
     environment:
       POSTGRES_DB: mcss
       POSTGRES_USER: mcss
@@ -17,6 +19,8 @@ services:
 
   backend:
     build: ./backend
+    restart: unless-stopped
+    mem_limit: 512m
     environment:
       DATABASE_URL: postgres://mcss:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db/mcss
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
@@ -37,11 +41,19 @@ services:
 
   frontend:
     build: ./frontend
+    restart: unless-stopped
+    mem_limit: 128m
     ports:
       - "8080:80"
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   mcss-data:

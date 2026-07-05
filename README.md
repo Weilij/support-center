@@ -46,7 +46,9 @@ cd frontend && npm install && npm run dev
 cd backend && cargo run --bin installer
 ```
 
-Key environment variables (see `backend/src/config.rs`): `DATABASE_URL`,
+Key environment variables (see `backend/src/config.rs`): `DATABASE_URL`
+(required in production — the dev default is rejected),
+`DATABASE_MAX_CONNECTIONS` (Postgres pool size, default 16),
 `JWT_SECRET`, `ENCRYPTION_KEY` (32-byte hex, enables credential encryption at
 rest), `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `LINE_BOT_ID`,
 `FACEBOOK_APP_SECRET` or `FB_APP_SECRET`, `FACEBOOK_VERIFY_TOKEN`,
