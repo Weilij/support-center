@@ -798,7 +798,8 @@ async fn list_messages_allows_member_of_non_primary_team() {
     let team_a = app.seed_team("A").await;
     let team_b = app.seed_team("B").await;
     let (_stale, agent_id) = agent_token(&app, "multi@test.dev", team_a).await;
-    app.add_membership(&agent_id, team_b, "supervisor", false).await;
+    app.add_membership(&agent_id, team_b, "supervisor", false)
+        .await;
     let token = app.login("multi@test.dev", "Secret123!").await.0; // re-login → token carries team_b
 
     let cust = app.seed_customer("line", "U9", "Bob", None).await;

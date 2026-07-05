@@ -379,7 +379,9 @@ async fn delete_team_removes_memberships() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;
     let team = app.seed_team("Purge").await;
-    let agent = app.seed_agent("purged@test.com", "password1", "agent").await;
+    let agent = app
+        .seed_agent("purged@test.com", "password1", "agent")
+        .await;
     app.add_membership(&agent, team, "member", true).await;
 
     let (status, _, _) = app
