@@ -143,6 +143,27 @@ async fn v2_cancel_status_pending_round_trip() {
         .await;
     let message_id = body["data"]["messageId"].as_str().unwrap().to_string();
 
+    let team: Option<i64> = sqlx::query_scalar("SELECT team_id FROM conversations WHERE id = $1")
+        .bind(&conversation)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+    let team = team.unwrap();
+    let other = app
+        .seed_agent("dm-other@test.dev", "pw123456", "agent")
+        .await;
+    app.add_membership(&other, team, "member", false).await;
+    let other_token = app.login("dm-other@test.dev", "pw123456").await.0;
+    let (status, _, _) = app
+        .request(
+            "DELETE",
+            &format!("/api/delayed-messages-v2/cancel/{message_id}"),
+            Some(&other_token),
+            Some(json!({"conversationId": conversation})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
     // Status while pending: countdown + cancellable.
     let (status, sbody, _) = app
         .request(

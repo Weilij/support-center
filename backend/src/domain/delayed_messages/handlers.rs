@@ -237,6 +237,26 @@ pub async fn v2_cancel(
     if body.conversation_id.as_deref().unwrap_or("").is_empty() {
         return Err(AppError::BadRequest("conversationId is required".into()));
     }
+    let conversation_id = body.conversation_id.as_deref().unwrap_or_default();
+    check_send_permission(&state, &user, conversation_id).await?;
+    let owner: Option<String> = sqlx::query_scalar(
+        "SELECT agent_id FROM scheduled_messages
+         WHERE id = $1 AND conversation_id = $2 AND status = 'pending'",
+    )
+    .bind(&message_id)
+    .bind(conversation_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some(owner) = owner else {
+        return Err(AppError::BadRequest(
+            "Message not found or already processed".into(),
+        ));
+    };
+    if !user.is_admin() && owner != user.id {
+        return Err(AppError::Forbidden(
+            "Only the scheduling agent can cancel this message".into(),
+        ));
+    }
     let reason = body.reason.as_deref().unwrap_or("User cancelled");
 
     let result = service::cancel_delayed(&state, &message_id, &user.id, Some(reason), false).await;

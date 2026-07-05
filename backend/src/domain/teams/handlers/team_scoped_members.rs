@@ -9,7 +9,7 @@ use crate::db::now_iso;
 use crate::domain::auth::store::log_activity;
 use crate::envelope;
 use crate::error::{AppError, HandlerResult as Result};
-use crate::middleware::auth::AuthUser;
+use crate::middleware::auth::{team_role_level, AuthUser};
 use crate::state::AppState;
 
 use crate::domain::teams::store::{self, MembershipRow};
@@ -155,6 +155,14 @@ pub async fn batch_add_members(
         return Err(AppError::BadRequest(
             "roleInTeam must be one of: member, lead, supervisor".into(),
         ));
+    }
+    if !user.is_admin() {
+        let current = user.team_role(id).unwrap_or("none");
+        if team_role_level(&role) > team_role_level(current) {
+            return Err(AppError::Forbidden(format!(
+                "Cannot assign role {role} above current role {current}"
+            )));
+        }
     }
     if !team_exists(&state, id).await? {
         return Err(AppError::NotFound("Team not found".into()));

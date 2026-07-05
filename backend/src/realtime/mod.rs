@@ -285,6 +285,10 @@ pub fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
             .route(
                 "/upload",
                 post(customer::upload)
+                    .layer::<_, std::convert::Infallible>(from_fn(rate_limit::limit(
+                        state.clone(),
+                        RatePolicy::UPLOAD,
+                    )))
                     .layer(axum::extract::DefaultBodyLimit::max(50 * 1024 * 1024)),
             )
             .fallback(customer::not_found_plain),
