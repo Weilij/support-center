@@ -2,6 +2,13 @@
 
 Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss-implementation.md`.
 
+**Note:** the session log below was kept current through 2026-06-26. Work since
+then (teams/inbox UX, platform-credential management, team-manager roles, the
+conversations full-access policy change, perf/indexing) is tracked instead as
+dated spec + plan pairs under `docs/superpowers/specs/` and
+`docs/superpowers/plans/` (one pair per feature) — check there and `git log`
+for the current state rather than assuming this log is exhaustive.
+
 ## Status
 
 - [x] Design doc written (`docs/superpowers/specs/2026-06-11-mcss-architecture-design.md`)
@@ -125,8 +132,15 @@ Remaining external/infrastructure boundaries:
 
 Conversation assignment is team-only. The product intentionally does not assign
 conversations to individual agents/operators, including the current signed-in
-user. The authoritative conversation assignee is `teamId` / `assignedTeam`;
-agent access is derived from team membership and the unassigned shared pool.
+user. The authoritative conversation assignee is `teamId` / `assignedTeam`.
+
+**Update 2026-07-05:** conversation *access* is no longer team-scoped. Per a
+policy change (commit `8987341`), every authenticated agent can see and act on
+every conversation, including other teams' and the unassigned pool; the 我的團隊
+inbox tab is now just a filter, not an access boundary. This reverses the
+team-scoped visibility/`can_act_on` hardening from `b37a17a`. Message/file
+bulk-export authorization is a separate code path and is unaffected — it
+remains team-scoped.
 
 Abandoned scope:
 

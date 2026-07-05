@@ -23,7 +23,7 @@ with signed URLs, WebSocket realtime (rooms, broadcasts, presence,
 collaboration), background job queue with retries + dead-letter,
 notifications/reminders/alerting, monitoring + circuit breaker,
 analytics/dashboards, reports + scheduling, system administration.
-**545 tests (integration + installer); clippy-clean.**
+**Integration + installer test suite; clippy-clean.**
 
 **Frontend** — shared API client (single-flight token refresh, guarded login
 redirect, backoff retries), optimistic-update store layer, realtime client
@@ -51,6 +51,7 @@ Key environment variables (see `backend/src/config.rs`): `DATABASE_URL`,
 rest), `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `LINE_BOT_ID`,
 `FACEBOOK_APP_SECRET` or `FB_APP_SECRET`, `FACEBOOK_VERIFY_TOKEN`,
 `FACEBOOK_PAGE_ACCESS_TOKEN`, `INSTAGRAM_ACCESS_TOKEN`, `LIFF_ID`,
+`LINE_LOGIN_CHANNEL_ID` (verifies LIFF ID tokens),
 `FRONTEND_URL`, `BACKEND_URL`, `PUBLIC_STORAGE_URL`, `FILE_SIGNING_SECRET`,
 `SHOPEE_PARTNER_ID`, `SHOPEE_PARTNER_KEY`, `SHOPEE_HOST`.
 
@@ -83,7 +84,7 @@ Backend tests create a throwaway PostgreSQL database per test
 (default `postgres://localhost/postgres`):
 
 ```bash
-cd backend && cargo test          # 545 tests (integration + installer)
+cd backend && cargo test          # integration + installer suite (needs local Postgres)
 cd backend && cargo clippy --all-targets
 cd frontend && npm run build      # type-check + bundle
 ```
@@ -105,7 +106,6 @@ kept at clearly marked boundaries:
   storage, refresh-before-expiry, callback wiring, signature-gated Webchat push
   ingestion, and SellerChat text outbound using shop-scoped tokens. Richer
   Shopee media/chat surfaces remain future integration work.
-- `TODO(cloud)` — installer's real cloud-provider provisioning.
 - Realtime customer-channel events now fan out across backend instances through
   Postgres-backed relay/ack tables. Broader room/presence scale-out remains a
   future hardening area if the deployment needs every realtime surface to span
