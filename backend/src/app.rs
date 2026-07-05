@@ -60,6 +60,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             state.clone(),
             crate::middleware::cors::cors_layer,
         ))
+        // Outermost: assign/propagate the request id + tracing span so every log line
+        // and the response envelope/header share one correlation id.
+        .layer(axum_mw::from_fn(
+            crate::middleware::request_id::request_id_layer,
+        ))
         .with_state(state)
 }
 

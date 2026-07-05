@@ -6,8 +6,13 @@ use axum::Json;
 use serde::Serialize;
 use serde_json::{json, Value};
 
+/// The current request's correlation id — the same value carried by the tracing
+/// span and the `X-Request-ID` header (set by `middleware::request_id`). Falls back
+/// to a freshly generated id outside an HTTP request (background workers, tests).
 pub fn request_id() -> String {
-    uuid::Uuid::new_v4().to_string()
+    crate::middleware::request_id::REQUEST_ID
+        .try_with(String::clone)
+        .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
 }
 
 pub fn now_iso() -> String {
