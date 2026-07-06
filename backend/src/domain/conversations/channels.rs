@@ -128,9 +128,74 @@ pub fn fb_send_body(recipient: &str, content: &str) -> serde_json::Value {
     })
 }
 
+/// Native Meta attachment type for a media kind on a given platform, or `None`
+/// when the platform can't send it natively (caller falls back to a text link).
+/// Instagram DM only reliably supports image attachments; Messenger supports all.
+fn meta_attachment_type(platform: &str, kind: MediaKind) -> Option<&'static str> {
+    match kind {
+        MediaKind::Image => Some("image"),
+        MediaKind::Video => (platform == "facebook").then_some("video"),
+        MediaKind::Audio => (platform == "facebook").then_some("audio"),
+        MediaKind::File => (platform == "facebook").then_some("file"),
+    }
+}
+
+/// One Meta Send-API message body for an outbound item (pure — unit-tested).
+/// Media is sent as a native `message.attachment` when the platform supports the
+/// kind; otherwise it degrades to a text body carrying the signed link (G1).
+pub fn fb_message_body(platform: &str, recipient: &str, it: &OutboundItem) -> serde_json::Value {
+    if let Some(m) = &it.media {
+        if let Some(att_type) = meta_attachment_type(platform, m.kind) {
+            return json!({
+                "recipient": { "id": recipient },
+                "messaging_type": "RESPONSE",
+                "message": {
+                    "attachment": {
+                        "type": att_type,
+                        "payload": { "url": m.url, "is_reusable": false },
+                    },
+                },
+            });
+        }
+        let link = format!("📎 {}\n{}", m.file_name.clone().unwrap_or_default(), m.url);
+        return fb_send_body(recipient, &link);
+    }
+    fb_send_body(recipient, &it.content)
+}
+
+/// Actionable classification of a Meta Send-API rejection (G3/G4).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum MetaReject {
+    /// Send blocked because the 24h customer-service window has closed (code 10).
+    WindowClosed,
+    /// Access token invalid/expired — OAuthException (code 190).
+    TokenExpired,
+    /// Anything else — keep the raw platform error.
+    Other,
+}
+
+/// Map a Meta error response body to an actionable class. Meta returns
+/// `{"error":{"code":..,"error_subcode":..,"type":".."}}`; code 190 =
+/// OAuthException (token), code 10 = messaging-window / permission (G3, G4).
+pub fn classify_meta_error(body: &str) -> MetaReject {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return MetaReject::Other;
+    };
+    let err = &v["error"];
+    match err.get("code").and_then(serde_json::Value::as_i64) {
+        Some(190) => MetaReject::TokenExpired,
+        Some(10) => MetaReject::WindowClosed,
+        _ => MetaReject::Other,
+    }
+}
+
 #[derive(Debug)]
 pub enum OutboundError {
     InvalidRecipient(&'static str),
+    /// Meta rejected the send because the 24h reply window is closed (G3).
+    MetaWindowClosed(&'static str),
+    /// Meta rejected the send because the access token is invalid/expired (G4).
+    MetaTokenExpired(&'static str),
     RequestFailed {
         platform: &'static str,
         source: reqwest::Error,
@@ -161,6 +226,14 @@ impl fmt::Display for OutboundError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidRecipient(message) => f.write_str(message),
+            Self::MetaWindowClosed(platform) => write!(
+                f,
+                "{platform}：超出 24 小時客服回覆窗，需等客戶再次來訊後才能回覆（或使用已核准的訊息標籤）"
+            ),
+            Self::MetaTokenExpired(platform) => write!(
+                f,
+                "{platform}：頻道存取權杖已失效或過期，請至頻道管理重新設定憑證"
+            ),
             Self::RequestFailed { platform, source } => {
                 write!(f, "{platform} request failed: {source}")
             }
@@ -287,6 +360,7 @@ async fn line_push(
 /// FB has no batch endpoint — send one message per item, return the last id.
 async fn fb_send(
     graph_url: &str,
+    platform: &str,
     token: &str,
     recipient: &str,
     items: &[OutboundItem],
@@ -295,16 +369,12 @@ async fn fb_send(
     let url = format!("{base}/me/messages?access_token={token}");
     let mut last_id = String::new();
     for it in items {
-        let content = match &it.media {
-            Some(m) => format!("📎 {}\n{}", m.file_name.clone().unwrap_or_default(), m.url),
-            None => it.content.clone(),
-        };
         let Some(client) = http_client() else {
             return Err(OutboundError::ClientUnavailable("facebook"));
         };
         let resp = client
             .post(&url)
-            .json(&fb_send_body(recipient, &content))
+            .json(&fb_message_body(platform, recipient, it))
             .send()
             .await
             .map_err(|source| OutboundError::RequestFailed {
@@ -314,10 +384,19 @@ async fn fb_send(
         if !resp.status().is_success() {
             let status = resp.status();
             let txt = resp.text().await.unwrap_or_default();
-            return Err(OutboundError::PlatformRejected {
-                platform: "Facebook",
-                status,
-                body: txt,
+            let plat_name = if platform == "instagram" {
+                "Instagram"
+            } else {
+                "Facebook"
+            };
+            return Err(match classify_meta_error(&txt) {
+                MetaReject::WindowClosed => OutboundError::MetaWindowClosed(plat_name),
+                MetaReject::TokenExpired => OutboundError::MetaTokenExpired(plat_name),
+                MetaReject::Other => OutboundError::PlatformRejected {
+                    platform: "Facebook",
+                    status,
+                    body: txt,
+                },
             });
         }
         let v: serde_json::Value = resp.json().await.unwrap_or_else(|_| json!({}));
@@ -562,11 +641,13 @@ impl OutboundGateway {
                 None => Err(OutboundError::MissingCredentials("LINE")),
             },
             "facebook" => match &self.facebook {
-                Some(tok) => fb_send(&self.meta_graph_url, tok, recipient, items).await,
+                Some(tok) => fb_send(&self.meta_graph_url, "facebook", tok, recipient, items).await,
                 None => Err(OutboundError::UnsupportedPlatform("facebook".into())),
             },
             "instagram" => match &self.instagram {
-                Some(tok) => fb_send(&self.meta_graph_url, tok, recipient, items).await,
+                Some(tok) => {
+                    fb_send(&self.meta_graph_url, "instagram", tok, recipient, items).await
+                }
                 None => Err(OutboundError::UnsupportedPlatform("instagram".into())),
             },
             "shopee" => match (&self.shopee, &self.shopee_db) {
@@ -660,6 +741,7 @@ pub async fn deliver_pending(input: PendingDelivery) {
     let mut failed = 0usize;
     let mut platform_message_id: Option<String> = None;
     let mut last_error: Option<String> = None;
+    let mut token_expired = false;
 
     for batch in items.chunks(BATCH_CAP) {
         match gateway.send_batch(&platform, &recipient, batch).await {
@@ -669,9 +751,22 @@ pub async fn deliver_pending(input: PendingDelivery) {
             }
             Err(e) => {
                 failed += 1;
+                if matches!(e, OutboundError::MetaTokenExpired(_)) {
+                    token_expired = true;
+                }
                 last_error = Some(e.to_string());
             }
         }
+    }
+
+    // Token expiry surfaces on the channel integration so admins can re-auth (G4).
+    if token_expired {
+        record_channel_token_error(
+            &db,
+            &platform,
+            last_error.as_deref().unwrap_or("token expired"),
+        )
+        .await;
     }
 
     // Partial success: some but not all platform batches succeeded (CRD 773).
@@ -720,6 +815,33 @@ pub async fn deliver_pending(input: PendingDelivery) {
             "timestamp": now,
         }),
     );
+}
+
+/// Record a token-expiry error on a platform's active integration(s) so the
+/// channel-management UI shows the need to re-authenticate (G4). Best-effort;
+/// scoped to platform (the outbound token is resolved per platform).
+async fn record_channel_token_error(db: &PgPool, platform: &str, message: &str) {
+    let now = crate::db::now_iso();
+    let last_error = serde_json::json!({
+        "timestamp": now,
+        "type": "token_expired",
+        "message": message,
+        "context": "outbound_send",
+    })
+    .to_string();
+    if let Err(e) = sqlx::query(
+        "UPDATE channel_integrations
+            SET last_error = $1, is_verified = 0, error_count = error_count + 1, updated_at = $2
+          WHERE platform = $3 AND is_active = 1",
+    )
+    .bind(&last_error)
+    .bind(&now)
+    .bind(platform)
+    .execute(db)
+    .await
+    {
+        tracing::warn!(error = %e, platform, "failed to record channel token error");
+    }
 }
 
 /// Fetch LINE message content (image/video/audio/file) with the channel token.
@@ -835,6 +957,106 @@ mod gateway_tests {
         assert_eq!(m[4]["type"], "text");
         assert!(m[4]["text"].as_str().unwrap().contains("report.pdf"));
         assert!(m[4]["text"].as_str().unwrap().contains("📎"));
+    }
+
+    #[test]
+    fn fb_message_body_native_attachment_and_ig_fallback() {
+        let img = OutboundItem {
+            content: "pic".into(),
+            media: Some(OutboundMedia {
+                kind: MediaKind::Image,
+                url: "https://h/o.jpg".into(),
+                preview_url: None,
+                file_name: None,
+                duration_ms: None,
+            }),
+        };
+        let file = OutboundItem {
+            content: "doc".into(),
+            media: Some(OutboundMedia {
+                kind: MediaKind::File,
+                url: "https://h/d.pdf".into(),
+                preview_url: None,
+                file_name: Some("report.pdf".into()),
+                duration_ms: None,
+            }),
+        };
+        let vid = OutboundItem {
+            content: "clip".into(),
+            media: Some(OutboundMedia {
+                kind: MediaKind::Video,
+                url: "https://h/v.mp4".into(),
+                preview_url: None,
+                file_name: None,
+                duration_ms: None,
+            }),
+        };
+
+        // Text → text body (RESPONSE).
+        let text = fb_message_body("facebook", "PSID", &OutboundItem::text("hi"));
+        assert_eq!(text["message"]["text"], "hi");
+        assert_eq!(text["messaging_type"], "RESPONSE");
+
+        // FB image → native attachment; IG image → native attachment too.
+        let fb_img = fb_message_body("facebook", "PSID", &img);
+        assert_eq!(fb_img["message"]["attachment"]["type"], "image");
+        assert_eq!(
+            fb_img["message"]["attachment"]["payload"]["url"],
+            "https://h/o.jpg"
+        );
+        assert_eq!(
+            fb_img["message"]["attachment"]["payload"]["is_reusable"],
+            false
+        );
+        assert_eq!(
+            fb_message_body("instagram", "IGSID", &img)["message"]["attachment"]["type"],
+            "image"
+        );
+
+        // FB file/video → native; IG file/video → text-link fallback.
+        assert_eq!(
+            fb_message_body("facebook", "PSID", &file)["message"]["attachment"]["type"],
+            "file"
+        );
+        assert_eq!(
+            fb_message_body("facebook", "PSID", &vid)["message"]["attachment"]["type"],
+            "video"
+        );
+        let ig_file = fb_message_body("instagram", "IGSID", &file);
+        assert!(ig_file["message"]["attachment"].is_null());
+        assert!(ig_file["message"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("report.pdf"));
+        let ig_vid = fb_message_body("instagram", "IGSID", &vid);
+        assert!(ig_vid["message"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("https://h/v.mp4"));
+    }
+
+    #[test]
+    fn classify_meta_error_maps_codes_and_display_is_actionable() {
+        assert_eq!(
+            classify_meta_error(r#"{"error":{"code":190,"type":"OAuthException"}}"#),
+            MetaReject::TokenExpired
+        );
+        assert_eq!(
+            classify_meta_error(r#"{"error":{"code":10,"error_subcode":2018278}}"#),
+            MetaReject::WindowClosed
+        );
+        assert_eq!(
+            classify_meta_error(r#"{"error":{"code":100}}"#),
+            MetaReject::Other
+        );
+        assert_eq!(classify_meta_error("not json"), MetaReject::Other);
+
+        assert!(OutboundError::MetaWindowClosed("Facebook")
+            .to_string()
+            .contains("24 小時"));
+        assert!(OutboundError::MetaTokenExpired("Instagram")
+            .to_string()
+            .contains("權杖"));
     }
 
     #[test]
@@ -1123,5 +1345,85 @@ mod gateway_tests {
         assert!(fetch_line_media_from_base(&base, "bad", "mid-1", false)
             .await
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn fb_send_posts_native_attachment_and_maps_window_error() {
+        use axum::routing::post;
+        use axum::{Json, Router};
+        use serde_json::Value;
+
+        // Mock Graph /me/messages: succeeds only for a native image attachment;
+        // returns a code-10 error for recipient "window".
+        async fn messages(Json(body): Json<Value>) -> axum::response::Response {
+            use axum::http::StatusCode;
+            use axum::response::IntoResponse;
+            if body["recipient"]["id"] == "window" {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":{"code":10,"error_subcode":2018278}})),
+                )
+                    .into_response();
+            }
+            if body["recipient"]["id"] == "deadtoken" {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"error":{"code":190,"type":"OAuthException"}})),
+                )
+                    .into_response();
+            }
+            if body["message"]["attachment"]["type"] == "image" {
+                (StatusCode::OK, Json(json!({"message_id":"m-ok"}))).into_response()
+            } else {
+                (StatusCode::BAD_REQUEST, Json(json!({"error":{"code":100}}))).into_response()
+            }
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route("/me/messages", post(messages)),
+            )
+            .await
+            .unwrap();
+        });
+
+        let mut c = crate::config::test_config();
+        c.facebook_page_access_token = Some("tok".into());
+        c.meta_graph_url = format!("http://{addr}");
+        let g = OutboundGateway::from_config(&c);
+
+        let img = OutboundItem {
+            content: "pic".into(),
+            media: Some(OutboundMedia {
+                kind: MediaKind::Image,
+                url: "https://h/o.jpg".into(),
+                preview_url: None,
+                file_name: None,
+                duration_ms: None,
+            }),
+        };
+        // G1: native image attachment accepted by the mock.
+        assert_eq!(
+            g.send_batch("facebook", "PSID", std::slice::from_ref(&img))
+                .await
+                .unwrap(),
+            "m-ok"
+        );
+        // G3: code-10 rejection maps to the actionable window-closed error.
+        let err = g
+            .send_batch("facebook", "window", &[OutboundItem::text("hi")])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, OutboundError::MetaWindowClosed(_)));
+        assert!(err.to_string().contains("24 小時"));
+        // G4: code-190 rejection maps to the token-expired error.
+        let token_err = g
+            .send_batch("facebook", "deadtoken", &[OutboundItem::text("hi")])
+            .await
+            .unwrap_err();
+        assert!(matches!(token_err, OutboundError::MetaTokenExpired(_)));
     }
 }
