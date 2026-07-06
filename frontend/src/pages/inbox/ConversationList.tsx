@@ -143,11 +143,8 @@ export function ConversationList({
   return (
     <div className="cs-conv-list" style={fullWidth ? { width: '100%', flexShrink: 1 } : undefined}>
       <div className="cs-conv-head">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
           <span style={{ fontSize: 17, fontWeight: 700, color: 'var(--ink)' }}>對話收件匣</span>
-          <button className="cs-icon-btn" aria-label="篩選" title="篩選" style={{ width: 34, height: 34 }}>
-            <Icon name="filter" w={18} />
-          </button>
         </div>
 
         <div style={{ position: 'relative', marginBottom: 0 }}>

@@ -178,9 +178,6 @@ export function MessageComposer({
               style={{ display: 'none' }}
               onChange={(event) => { if (event.target.files) void onAddFiles(event.target.files); event.target.value = '' }}
             />
-            <button type="button" className="cs-composer-ico" aria-label="表情">
-              <Icon name="emoji" w={20} />
-            </button>
             <button type="button" className="cs-composer-ico" aria-label="快捷回覆" onClick={() => setMgrOpen(true)}>
               <Icon name="zap" w={20} />
             </button>
