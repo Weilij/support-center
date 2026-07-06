@@ -6,6 +6,12 @@ import { useEffect, useState } from 'react'
 import { get, put, post } from '../api/client'
 import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'
+import {
+  soundEnabled,
+  setSoundEnabled,
+  notificationPermission,
+  requestNotificationPermission,
+} from '../realtime/incomingAlerts'
 
 interface Profile {
   id?: string
@@ -22,6 +28,8 @@ export default function ProfilePage() {
   const [newPassword, setNewPassword] = useState('')
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [sound, setSound] = useState(soundEnabled())
+  const [notifyPerm, setNotifyPerm] = useState(notificationPermission())
 
   useEffect(() => {
     void get<{ user?: Profile }>('/api/auth/profile').then((resp) => {
@@ -70,6 +78,37 @@ export default function ProfilePage() {
           </label>
           <button type="submit">更新名稱</button>
         </form>
+      </Card>
+
+      <Card title="通知偏好" style={{ marginBottom: 'var(--sp-4)' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <input
+            type="checkbox"
+            checked={sound}
+            onChange={(e) => { setSound(e.target.checked); setSoundEnabled(e.target.checked) }}
+          />
+          新訊息音效提示
+        </label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+            桌面通知：
+            {notifyPerm === 'granted' ? '已開啟'
+              : notifyPerm === 'denied' ? '已被瀏覽器封鎖'
+              : notifyPerm === 'unsupported' ? '此瀏覽器不支援'
+              : '尚未開啟'}
+          </span>
+          {notifyPerm === 'default' && (
+            <button
+              type="button"
+              onClick={() => void requestNotificationPermission().then(setNotifyPerm)}
+            >
+              開啟桌面通知
+            </button>
+          )}
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--muted)', margin: '10px 0 0' }}>
+          桌面通知只在你切換到其他分頁或視窗時發出，點擊可跳回該對話。
+        </p>
       </Card>
 
       <Card title="變更密碼">

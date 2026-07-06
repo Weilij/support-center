@@ -14,6 +14,7 @@ import { can, type Area } from '../auth/permissions'
 import { session, authChanged } from '../auth/session'
 import { useHotkeys } from '../hooks/useHotkeys'
 import { notificationsStore } from '../stores/notifications'
+import { initIncomingAlerts } from '../realtime/incomingAlerts'
 import { useStore } from '../stores/store'
 import { loadTeams, teamsStore } from '../stores/teams'
 import { ConnectionBanner } from './ConnectionBanner'
@@ -286,6 +287,9 @@ export default function AppShell({
       void loadTeams()
     }
   }, [teams.items.length])
+
+  // Sound + desktop alerts for incoming messages (Phase 2.3).
+  useEffect(() => initIncomingAlerts((path) => navigate(path)), [navigate])
 
   const logout = async () => {
     // Server logout is best-effort (CRD §8.1 sign-out: failures ignored).
