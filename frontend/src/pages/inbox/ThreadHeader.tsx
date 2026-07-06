@@ -1,5 +1,6 @@
 import { Avatar } from '../../components/Avatar'
 import { ChanGlyph } from '../../components/ChanGlyph'
+import { AssignMenu } from '../../components/ConversationAssign'
 import { Icon } from '../../components/Icon'
 import { CHANNELS, channelOf } from '../../components/channels'
 import type { ConvMeta } from './types'
@@ -9,10 +10,11 @@ export function ThreadHeader({
   meta,
   filesCount,
   pendingCount,
+  currentTeamId,
   onBack,
   onToggleFiles,
   onToggleSchedule,
-  onAssign,
+  onAssignResult,
   onToggleCustomerPanel,
   showCustomerPanelToggle,
 }: {
@@ -20,10 +22,11 @@ export function ThreadHeader({
   meta: ConvMeta
   filesCount: number
   pendingCount: number
+  currentTeamId?: number | null
   onBack?: () => void
   onToggleFiles: () => void
   onToggleSchedule: () => void
-  onAssign: () => void
+  onAssignResult?: (message: string) => void
   onToggleCustomerPanel?: () => void
   showCustomerPanelToggle?: boolean
 }) {
@@ -76,15 +79,11 @@ export function ThreadHeader({
           count={pendingCount}
           onClick={onToggleSchedule}
         />
-        <button
-          className="cs-icon-btn"
-          aria-label="指派團隊"
-          title="指派團隊"
-          style={{ width: 38, height: 38 }}
-          onClick={onAssign}
-        >
-          <Icon name="users" w={19} />
-        </button>
+        <AssignMenu
+          conversationId={convId}
+          currentTeamId={currentTeamId}
+          onResult={onAssignResult}
+        />
         {showCustomerPanelToggle && (
           <button
             className="cs-icon-btn"

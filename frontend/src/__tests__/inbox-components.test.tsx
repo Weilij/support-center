@@ -8,6 +8,12 @@ import { ThreadHeader } from '../pages/inbox/ThreadHeader'
 import type { InboxMessage } from '../pages/inbox/types'
 import type { Conversation } from '../stores/conversations'
 
+// The header's assign control is a self-contained menu (Phase 2.1); stub it so
+// this presentational test stays decoupled from the teams store.
+vi.mock('../components/ConversationAssign', () => ({
+  AssignMenu: () => <button aria-label="指派團隊" />,
+}))
+
 afterEach(() => {
   cleanup()
 })
@@ -78,7 +84,6 @@ describe('Inbox thread header', () => {
   it('renders channel metadata, counters, and action buttons', () => {
     const onFiles = vi.fn()
     const onSchedule = vi.fn()
-    const onAssign = vi.fn()
     const onCustomer = vi.fn()
 
     render(
@@ -89,7 +94,6 @@ describe('Inbox thread header', () => {
         pendingCount={2}
         onToggleFiles={onFiles}
         onToggleSchedule={onSchedule}
-        onAssign={onAssign}
         onToggleCustomerPanel={onCustomer}
         showCustomerPanelToggle
       />,
@@ -99,15 +103,14 @@ describe('Inbox thread header', () => {
     expect(screen.getByText(/透過/)).toBeTruthy()
     expect(screen.getByText('3')).toBeTruthy()
     expect(screen.getByText('2')).toBeTruthy()
+    expect(screen.getByLabelText('指派團隊')).toBeTruthy()
 
     fireEvent.click(screen.getByLabelText('檔案'))
     fireEvent.click(screen.getByLabelText('排程'))
-    fireEvent.click(screen.getByLabelText('指派團隊'))
     fireEvent.click(screen.getByLabelText('客戶資訊'))
 
     expect(onFiles).toHaveBeenCalledTimes(1)
     expect(onSchedule).toHaveBeenCalledTimes(1)
-    expect(onAssign).toHaveBeenCalledTimes(1)
     expect(onCustomer).toHaveBeenCalledTimes(1)
   })
 })

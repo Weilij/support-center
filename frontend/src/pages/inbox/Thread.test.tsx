@@ -46,7 +46,7 @@ vi.mock('../../stores/conversations', () => ({
 vi.mock('./ThreadHeader', () => ({ ThreadHeader: () => null }))
 vi.mock('./FilesDrawer', () => ({ FilesDrawer: () => null }))
 vi.mock('./ScheduleDrawer', () => ({ ScheduleDrawer: () => null }))
-vi.mock('../../components/ConversationAssign', () => ({ AssignDialog: () => null }))
+vi.mock('../../components/ConversationAssign', () => ({ AssignMenu: () => null }))
 vi.mock('../../components/ui', () => ({ Toast: () => null }))
 vi.mock('./MessageList', () => ({
   MessageList: ({ messages, error }: { messages: Array<{ id: string; content?: string; pending?: boolean }>; error: string | null }) => (

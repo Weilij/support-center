@@ -7,7 +7,7 @@ import {
   transferConversation,
   unassignConversation,
 } from '../stores/conversations'
-import { AssignDialog } from './ConversationAssign'
+import { AssignMenu } from './ConversationAssign'
 
 vi.mock('../stores/conversations', () => ({
   assignConversation: vi.fn(async () => true),
@@ -19,109 +19,86 @@ const assignMock = vi.mocked(assignConversation)
 const transferMock = vi.mocked(transferConversation)
 const unassignMock = vi.mocked(unassignConversation)
 
-describe('AssignDialog', () => {
-  afterEach(() => {
-    cleanup()
+function seedTeams() {
+  teamsStore.set({
+    items: [
+      { id: 10, name: 'Support' },
+      { id: 20, name: 'Billing' },
+    ],
+    busy: false,
+    error: null,
   })
+  teamsStore.markFresh()
+}
 
+describe('AssignMenu', () => {
+  afterEach(cleanup)
   beforeEach(() => {
     assignMock.mockClear()
     transferMock.mockClear()
     unassignMock.mockClear()
-    teamsStore.set({
-      items: [
-        { id: 10, name: 'Support' },
-        { id: 20, name: 'Billing' },
-      ],
-      busy: false,
-      error: null,
-    })
-    teamsStore.markFresh()
+    seedTeams()
   })
 
-  it('requires and submits a target team for assignment', async () => {
-    const { getByText, getByLabelText } = render(
-      <AssignDialog open mode="assign" conversationId="c1" onClose={() => {}} />,
+  it('assigns immediately when a team is picked and no current team exists', async () => {
+    const onResult = vi.fn()
+    const { getByLabelText, getByText } = render(
+      <AssignMenu conversationId="c1" currentTeamId={null} onResult={onResult} />,
     )
 
-    fireEvent.click(getByText('確認'))
-    expect(getByText('請選擇團隊')).toBeTruthy()
-    expect(assignMock).not.toHaveBeenCalled()
+    fireEvent.click(getByLabelText('指派團隊')) // open the dropdown
+    fireEvent.click(getByText('Support'))
 
-    fireEvent.change(getByLabelText('指派團隊'), { target: { value: '10' } })
-    fireEvent.change(getByLabelText('原因（選填，提供後會寫入路由紀錄）'), {
-      target: { value: 'handoff' },
-    })
-    fireEvent.click(getByText('確認'))
-
-    await waitFor(() => expect(assignMock).toHaveBeenCalledWith('c1', 10, 'handoff'))
-    expect(assignMock.mock.calls[0]).not.toContain('agent-1')
+    await waitFor(() => expect(assignMock).toHaveBeenCalledWith('c1', 10, undefined))
+    expect(transferMock).not.toHaveBeenCalled()
+    await waitFor(() => expect(onResult).toHaveBeenCalledWith('已指派給「Support」'))
   })
 
-  it('submits team-to-team transfer without an agent id', async () => {
-    const { getByText, getByLabelText, queryByText } = render(
-      <AssignDialog
-        open
-        mode="transfer"
-        conversationId="c1"
-        currentTeamId={10}
-        onClose={() => {}}
-      />,
+  it('transfers (not assigns) when a current team exists', async () => {
+    const { getByLabelText, getByText } = render(
+      <AssignMenu conversationId="c1" currentTeamId={10} onResult={vi.fn()} />,
     )
 
-    expect(queryByText('Support')).toBeNull()
-    fireEvent.change(getByLabelText('轉接至團隊'), { target: { value: '20' } })
-    fireEvent.click(getByText('確認'))
+    fireEvent.click(getByLabelText('指派團隊'))
+    fireEvent.click(getByText('Billing'))
 
     await waitFor(() => expect(transferMock).toHaveBeenCalledWith('c1', 20, 10, undefined))
-    expect(transferMock.mock.calls[0]).not.toContain('agent-1')
-  })
-})
-
-describe('AssignDialog (unified, no mode)', () => {
-  afterEach(() => {
-    cleanup()
+    expect(assignMock).not.toHaveBeenCalled()
   })
 
-  beforeEach(() => {
-    assignMock.mockClear()
-    transferMock.mockClear()
-    unassignMock.mockClear()
-    teamsStore.set({
-      items: [
-        { id: 5, name: 'A' },
-        { id: 7, name: 'B' },
-      ],
-      busy: false,
-      error: null,
-    })
-    teamsStore.markFresh()
-  })
-
-  it('assigns when there is no current team', async () => {
-    const { getByRole, getByLabelText } = render(
-      <AssignDialog open conversationId="c1" currentTeamId={null} onClose={() => {}} />,
+  it('passes an optional reason through when provided', async () => {
+    const { getByLabelText, getByText } = render(
+      <AssignMenu conversationId="c1" currentTeamId={null} onResult={vi.fn()} />,
     )
-    fireEvent.change(getByLabelText(/團隊/), { target: { value: '7' } })
-    fireEvent.click(getByRole('button', { name: /確認|確定/ }))
-    await waitFor(() => expect(assignMock).toHaveBeenCalledWith('c1', 7, undefined))
-    expect(transferMock).not.toHaveBeenCalled()
-  })
 
-  it('transfers when a current team exists', async () => {
-    const { getByRole, getByLabelText } = render(
-      <AssignDialog open conversationId="c1" currentTeamId={5} onClose={() => {}} />,
-    )
-    fireEvent.change(getByLabelText(/團隊/), { target: { value: '7' } })
-    fireEvent.click(getByRole('button', { name: /確認|確定/ }))
-    await waitFor(() => expect(transferMock).toHaveBeenCalledWith('c1', 7, 5, undefined))
+    fireEvent.click(getByLabelText('指派團隊'))
+    fireEvent.click(getByText('填寫原因…'))
+    fireEvent.change(getByLabelText('指派原因'), { target: { value: 'VIP handoff' } })
+    fireEvent.click(getByText('Support'))
+
+    await waitFor(() => expect(assignMock).toHaveBeenCalledWith('c1', 10, 'VIP handoff'))
   })
 
   it('unassigns via the 取消指派 action', async () => {
-    const { getByRole } = render(
-      <AssignDialog open conversationId="c1" currentTeamId={5} onClose={() => {}} />,
+    const { getByLabelText, getByText } = render(
+      <AssignMenu conversationId="c1" currentTeamId={10} onResult={vi.fn()} />,
     )
-    fireEvent.click(getByRole('button', { name: /取消指派/ }))
+
+    fireEvent.click(getByLabelText('指派團隊'))
+    fireEvent.click(getByText('取消指派'))
+
     await waitFor(() => expect(unassignMock).toHaveBeenCalledWith('c1', undefined))
+  })
+
+  it('does not resubmit when the current team is re-picked', async () => {
+    const { getByLabelText, getByText } = render(
+      <AssignMenu conversationId="c1" currentTeamId={10} onResult={vi.fn()} />,
+    )
+
+    fireEvent.click(getByLabelText('指派團隊'))
+    fireEvent.click(getByText('Support')) // Support is the current team (id 10)
+
+    expect(assignMock).not.toHaveBeenCalled()
+    expect(transferMock).not.toHaveBeenCalled()
   })
 })

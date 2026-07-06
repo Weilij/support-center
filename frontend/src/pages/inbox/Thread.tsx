@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEven
 
 import { get, post } from '../../api/client'
 import { session } from '../../auth/session'
-import { AssignDialog } from '../../components/ConversationAssign'
 import { Toast } from '../../components/ui'
 import { onEvent, readMessageEvent, subscribeConversation, unsubscribeConversation } from '../../realtime/client'
 import { useConnectionState } from '../../hooks/useConnectionState'
@@ -45,7 +44,6 @@ export function Thread({
   const drafts = useRef<Map<string, string>>(new Map())
   const prevConvId = useRef(convId)
   const [error, setError] = useState<string | null>(null)
-  const [assignOpen, setAssignOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const bottom = useRef<HTMLDivElement>(null)
 
@@ -288,10 +286,11 @@ export function Thread({
         meta={meta}
         filesCount={files.length}
         pendingCount={pending.length}
+        currentTeamId={currentTeamId}
         onBack={onBack}
         onToggleFiles={() => setShowFiles((value) => !value)}
         onToggleSchedule={() => setShowSchedule((value) => !value)}
-        onAssign={() => setAssignOpen(true)}
+        onAssignResult={setToast}
         onToggleCustomerPanel={onToggleCustPanel}
         showCustomerPanelToggle={showCustToggle}
       />
@@ -320,15 +319,6 @@ export function Thread({
         onSubmit={send}
         offline={offline}
       />
-
-      {convId && assignOpen && (
-        <AssignDialog
-          open
-          conversationId={convId}
-          currentTeamId={currentTeamId}
-          onClose={() => setAssignOpen(false)}
-        />
-      )}
 
       <FilesDrawer
         open={showFiles}
