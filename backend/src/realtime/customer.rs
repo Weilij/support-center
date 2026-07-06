@@ -398,17 +398,18 @@ async fn require_conversation_exists(
     state: &AppState,
     conversation_id: &str,
 ) -> Result<(), Response> {
-    let exists: Option<i64> =
-        sqlx::query_scalar("SELECT 1::bigint FROM conversations WHERE id = $1 AND deleted_at IS NULL")
-            .bind(conversation_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|_| {
-                fail(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to fetch conversation",
-                )
-            })?;
+    let exists: Option<i64> = sqlx::query_scalar(
+        "SELECT 1::bigint FROM conversations WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(conversation_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| {
+        fail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to fetch conversation",
+        )
+    })?;
     if exists.is_none() {
         return Err(fail(StatusCode::NOT_FOUND, "Conversation not found"));
     }

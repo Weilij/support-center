@@ -15,7 +15,9 @@ async fn admin_token(app: &TestApp) -> String {
 /// role is what grants team-leader capability now (CRD 2303). (The legacy global
 /// "team" role no longer exists.)
 async fn leader_token(app: &TestApp) -> String {
-    let agent = app.seed_agent("leader@test.com", "password1", "agent").await;
+    let agent = app
+        .seed_agent("leader@test.com", "password1", "agent")
+        .await;
     let team = app.seed_team("Leaders").await;
     app.add_membership(&agent, team, "supervisor", true).await;
     app.login("leader@test.com", "password1").await.0

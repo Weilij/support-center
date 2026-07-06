@@ -1151,8 +1151,16 @@ mod me_teams_tests {
     #[test]
     fn serializes_memberships_with_in_team_role() {
         let teams = vec![
-            TeamMembership { team_id: 7, role: "supervisor".into(), is_primary: true },
-            TeamMembership { team_id: 9, role: "member".into(), is_primary: false },
+            TeamMembership {
+                team_id: 7,
+                role: "supervisor".into(),
+                is_primary: true,
+            },
+            TeamMembership {
+                team_id: 9,
+                role: "member".into(),
+                is_primary: false,
+            },
         ];
         assert_eq!(
             membership_teams_json(&teams),

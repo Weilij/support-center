@@ -82,7 +82,9 @@ async fn channel_ws_fast_path_presence_and_multi_tab_lifecycle() {
     // alice and bob are *distinct* agents: presence dedup is per-user, so the
     // "last tab closing emits USER_DISCONNECTED" contract below only holds when
     // alice is a different user than bob (otherwise alice keeps the user online).
-    let bob_agent_id = app.seed_agent("agent2@cust.io", "Secret123!", "agent").await;
+    let bob_agent_id = app
+        .seed_agent("agent2@cust.io", "Secret123!", "agent")
+        .await;
     let alice_token = mint(&s.agent_id, "agent", 3600);
     let bob_token = mint(&bob_agent_id, "agent", 3600);
 
