@@ -117,6 +117,7 @@ pub async fn spawn_app_custom(customize: impl FnOnce(&mut Config)) -> TestApp {
         line_bot_info_url: "https://api.line.me/v2/bot/info".into(),
         line_content_api_base_url: "https://api-data.line.me".into(),
         meta_graph_url: "https://graph.facebook.com/v20.0".into(),
+        meta_human_agent_tag: false,
         facebook_app_secret: Some("test-fb-secret".into()),
         facebook_verify_token: Some("test-verify-token".into()),
         facebook_page_access_token: None,

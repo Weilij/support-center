@@ -143,24 +143,36 @@ fn meta_attachment_type(platform: &str, kind: MediaKind) -> Option<&'static str>
 /// One Meta Send-API message body for an outbound item (pure — unit-tested).
 /// Media is sent as a native `message.attachment` when the platform supports the
 /// kind; otherwise it degrades to a text body carrying the signed link (G1).
-pub fn fb_message_body(platform: &str, recipient: &str, it: &OutboundItem) -> serde_json::Value {
-    if let Some(m) = &it.media {
-        if let Some(att_type) = meta_attachment_type(platform, m.kind) {
-            return json!({
-                "recipient": { "id": recipient },
-                "messaging_type": "RESPONSE",
-                "message": {
-                    "attachment": {
-                        "type": att_type,
-                        "payload": { "url": m.url, "is_reusable": false },
-                    },
+/// `human_agent` selects the HUMAN_AGENT message tag (7-day window) over the
+/// default RESPONSE (24h window) — G5.
+pub fn fb_message_body(
+    platform: &str,
+    recipient: &str,
+    it: &OutboundItem,
+    human_agent: bool,
+) -> serde_json::Value {
+    let message = match &it.media {
+        Some(m) => match meta_attachment_type(platform, m.kind) {
+            Some(att_type) => json!({
+                "attachment": {
+                    "type": att_type,
+                    "payload": { "url": m.url, "is_reusable": false },
                 },
-            });
-        }
-        let link = format!("📎 {}\n{}", m.file_name.clone().unwrap_or_default(), m.url);
-        return fb_send_body(recipient, &link);
+            }),
+            None => json!({
+                "text": format!("📎 {}\n{}", m.file_name.clone().unwrap_or_default(), m.url),
+            }),
+        },
+        None => json!({ "text": it.content }),
+    };
+    let mut body = json!({ "recipient": { "id": recipient }, "message": message });
+    if human_agent {
+        body["messaging_type"] = json!("MESSAGE_TAG");
+        body["tag"] = json!("HUMAN_AGENT");
+    } else {
+        body["messaging_type"] = json!("RESPONSE");
     }
-    fb_send_body(recipient, &it.content)
+    body
 }
 
 /// Actionable classification of a Meta Send-API rejection (G3/G4).
@@ -364,6 +376,7 @@ async fn fb_send(
     token: &str,
     recipient: &str,
     items: &[OutboundItem],
+    human_agent: bool,
 ) -> OutboundResult<String> {
     let base = graph_url.trim_end_matches('/');
     let url = format!("{base}/me/messages?access_token={token}");
@@ -374,7 +387,7 @@ async fn fb_send(
         };
         let resp = client
             .post(&url)
-            .json(&fb_message_body(platform, recipient, it))
+            .json(&fb_message_body(platform, recipient, it, human_agent))
             .send()
             .await
             .map_err(|source| OutboundError::RequestFailed {
@@ -572,6 +585,7 @@ pub struct OutboundGateway {
     facebook: Option<String>,
     instagram: Option<String>,
     meta_graph_url: String,
+    human_agent_tag: bool,
     shopee: Option<crate::domain::shopee::client::ShopeeClient>,
     shopee_db: Option<PgPool>,
     encryption_key: Option<String>,
@@ -600,6 +614,7 @@ impl OutboundGateway {
                         .filter(|t| !t.is_empty())
                 }),
             meta_graph_url: config.meta_graph_url.clone(),
+            human_agent_tag: config.meta_human_agent_tag,
             shopee: crate::domain::shopee::client::ShopeeClient::from_config(config),
             shopee_db: None,
             encryption_key: config.encryption_key.clone(),
@@ -622,6 +637,7 @@ impl OutboundGateway {
             facebook: resolve_channel(state, "facebook").await.access_token,
             instagram: resolve_channel(state, "instagram").await.access_token,
             meta_graph_url: state.config.meta_graph_url.clone(),
+            human_agent_tag: state.config.meta_human_agent_tag,
             shopee: crate::domain::shopee::client::ShopeeClient::from_config(&state.config),
             shopee_db: Some(state.db.clone()),
             encryption_key: state.config.encryption_key.clone(),
@@ -641,12 +657,30 @@ impl OutboundGateway {
                 None => Err(OutboundError::MissingCredentials("LINE")),
             },
             "facebook" => match &self.facebook {
-                Some(tok) => fb_send(&self.meta_graph_url, "facebook", tok, recipient, items).await,
+                Some(tok) => {
+                    fb_send(
+                        &self.meta_graph_url,
+                        "facebook",
+                        tok,
+                        recipient,
+                        items,
+                        self.human_agent_tag,
+                    )
+                    .await
+                }
                 None => Err(OutboundError::UnsupportedPlatform("facebook".into())),
             },
             "instagram" => match &self.instagram {
                 Some(tok) => {
-                    fb_send(&self.meta_graph_url, "instagram", tok, recipient, items).await
+                    fb_send(
+                        &self.meta_graph_url,
+                        "instagram",
+                        tok,
+                        recipient,
+                        items,
+                        self.human_agent_tag,
+                    )
+                    .await
                 }
                 None => Err(OutboundError::UnsupportedPlatform("instagram".into())),
             },
@@ -1015,13 +1049,19 @@ mod gateway_tests {
             }),
         };
 
-        // Text → text body (RESPONSE).
-        let text = fb_message_body("facebook", "PSID", &OutboundItem::text("hi"));
+        // Text → text body (default RESPONSE window).
+        let text = fb_message_body("facebook", "PSID", &OutboundItem::text("hi"), false);
         assert_eq!(text["message"]["text"], "hi");
         assert_eq!(text["messaging_type"], "RESPONSE");
+        assert!(text.get("tag").is_none());
+
+        // G5: HUMAN_AGENT tag (7-day window) when enabled.
+        let tagged = fb_message_body("facebook", "PSID", &OutboundItem::text("hi"), true);
+        assert_eq!(tagged["messaging_type"], "MESSAGE_TAG");
+        assert_eq!(tagged["tag"], "HUMAN_AGENT");
 
         // FB image → native attachment; IG image → native attachment too.
-        let fb_img = fb_message_body("facebook", "PSID", &img);
+        let fb_img = fb_message_body("facebook", "PSID", &img, false);
         assert_eq!(fb_img["message"]["attachment"]["type"], "image");
         assert_eq!(
             fb_img["message"]["attachment"]["payload"]["url"],
@@ -1032,26 +1072,26 @@ mod gateway_tests {
             false
         );
         assert_eq!(
-            fb_message_body("instagram", "IGSID", &img)["message"]["attachment"]["type"],
+            fb_message_body("instagram", "IGSID", &img, false)["message"]["attachment"]["type"],
             "image"
         );
 
         // FB file/video → native; IG file/video → text-link fallback.
         assert_eq!(
-            fb_message_body("facebook", "PSID", &file)["message"]["attachment"]["type"],
+            fb_message_body("facebook", "PSID", &file, false)["message"]["attachment"]["type"],
             "file"
         );
         assert_eq!(
-            fb_message_body("facebook", "PSID", &vid)["message"]["attachment"]["type"],
+            fb_message_body("facebook", "PSID", &vid, false)["message"]["attachment"]["type"],
             "video"
         );
-        let ig_file = fb_message_body("instagram", "IGSID", &file);
+        let ig_file = fb_message_body("instagram", "IGSID", &file, false);
         assert!(ig_file["message"]["attachment"].is_null());
         assert!(ig_file["message"]["text"]
             .as_str()
             .unwrap()
             .contains("report.pdf"));
-        let ig_vid = fb_message_body("instagram", "IGSID", &vid);
+        let ig_vid = fb_message_body("instagram", "IGSID", &vid, false);
         assert!(ig_vid["message"]["text"]
             .as_str()
             .unwrap()

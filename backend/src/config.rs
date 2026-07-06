@@ -77,6 +77,10 @@ pub struct Config {
     pub line_content_api_base_url: String,
     /// Meta Graph API base URL used to verify Facebook/WhatsApp credentials.
     pub meta_graph_url: String,
+    /// Send Meta outbound with the HUMAN_AGENT message tag (7-day window) instead
+    /// of RESPONSE (24h). Requires the Human Agent permission on the Meta app;
+    /// off by default (G5).
+    pub meta_human_agent_tag: bool,
     /// Separate HMAC secret for signing/verifying file download URLs (review #8).
     /// Falls back to `jwt_secret` when unset so existing deployments keep working.
     pub file_signing_secret: Option<String>,
@@ -172,6 +176,9 @@ impl Config {
                 .map(|s| s.trim_end_matches('/').to_string())
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "https://graph.facebook.com/v21.0".into()),
+            meta_human_agent_tag: std::env::var("META_HUMAN_AGENT_TAG")
+                .ok()
+                .is_some_and(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes")),
             facebook_verify_token: std::env::var("FACEBOOK_VERIFY_TOKEN")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -286,6 +293,7 @@ pub fn test_config() -> Config {
         line_bot_info_url: "https://api.line.me/v2/bot/info".into(),
         line_content_api_base_url: "https://api-data.line.me".into(),
         meta_graph_url: "https://graph.facebook.com/v21.0".into(),
+        meta_human_agent_tag: false,
         file_signing_secret: None,
         shopee_partner_id: None,
         shopee_partner_key: None,
