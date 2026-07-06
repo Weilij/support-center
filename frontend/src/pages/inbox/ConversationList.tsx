@@ -3,6 +3,7 @@ import { useLayoutEffect, useRef, useState } from 'react'
 import { Avatar } from '../../components/Avatar'
 import { ChanGlyph } from '../../components/ChanGlyph'
 import { Tag } from '../../components/Chip'
+import { ErrorRetry } from '../../components/ErrorRetry'
 import { Icon } from '../../components/Icon'
 import { channelOf } from '../../components/channels'
 import { recordPositions, animateMoves } from '../../lib/flip'
@@ -116,12 +117,16 @@ function ConversationItem({
 export function ConversationList({
   items,
   busy,
+  error,
+  onRetry,
   selectedId,
   onSelect,
   fullWidth,
 }: {
   items: Conversation[]
   busy: boolean
+  error?: string | null
+  onRetry?: () => void
   selectedId: string | undefined
   onSelect: (id: string) => void
   fullWidth?: boolean
@@ -209,10 +214,11 @@ export function ConversationList({
       </div>
 
       <div ref={listRef} style={{ flex: 1, overflowY: 'auto' }}>
-        {busy && filtered.length === 0 && (
+        {error && items.length === 0 && <ErrorRetry message={error} onRetry={onRetry} />}
+        {!error && busy && filtered.length === 0 && (
           <p style={{ color: 'var(--muted)', fontSize: 13, padding: '16px 20px' }}>載入中…</p>
         )}
-        {!busy && filtered.length === 0 && (
+        {!error && !busy && filtered.length === 0 && (
           <p style={{ color: 'var(--muted)', fontSize: 13, padding: '16px 20px' }}>沒有對話</p>
         )}
         {filtered.map((conversation) => (

@@ -9,6 +9,8 @@ import { can } from '../auth/permissions'
 import { session } from '../auth/session'
 import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'
+import { Loading } from '../components/Loading'
+import { ErrorRetry } from '../components/ErrorRetry'
 
 interface Report {
   id: string
@@ -34,11 +36,14 @@ export default function Reports() {
   const [busy, setBusy] = useState(false)
   const [preview, setPreview] = useState<unknown | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
+  const [loading, setLoading] = useState(true)
 
   const load = async () => {
+    setError(null)
     const resp = await get<{ reports?: Report[] }>('/api/reports')
     if (resp.success && resp.data) setReports(resp.data.reports ?? [])
     else setError(resp.message ?? null)
+    setLoading(false)
   }
   useEffect(() => {
     void load()
@@ -86,7 +91,7 @@ export default function Reports() {
   return (
     <div style={{ maxWidth: 720, margin: '0 auto', padding: '0 16px' }}>
       <PageHeader title="報表" />
-      {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
+      {error && <ErrorRetry message={error} onRetry={() => { setLoading(true); void load() }} />}
 
       <Card title="產生報表" style={{ marginBottom: 'var(--sp-4)' }}>
         <form onSubmit={generate} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -106,6 +111,7 @@ export default function Reports() {
       </Card>
 
       <Card title="報表清單">
+        {loading ? <Loading /> : (
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--hairline)' }}>
@@ -127,6 +133,7 @@ export default function Reports() {
             ))}
           </tbody>
         </table>
+        )}
       </Card>
 
       <Modal open={previewOpen} title="報表預覽" onClose={() => setPreviewOpen(false)} width={560}>

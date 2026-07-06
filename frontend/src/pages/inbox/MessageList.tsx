@@ -1,6 +1,7 @@
 import type { RefObject } from 'react'
 
 import { Avatar } from '../../components/Avatar'
+import { ErrorRetry } from '../../components/ErrorRetry'
 import { MessageMedia, isMediaKind, kindFromMime } from '../../components/MessageMedia'
 import type { InboxMessage } from './types'
 
@@ -23,6 +24,7 @@ export function MessageList({
   convId,
   messages,
   error,
+  onRetry,
   customerName,
   customerAvatarUrl,
   bottomRef,
@@ -30,6 +32,7 @@ export function MessageList({
   convId: string
   messages: InboxMessage[]
   error: string | null
+  onRetry?: () => void
   customerName: string
   customerAvatarUrl?: string
   bottomRef: RefObject<HTMLDivElement>
@@ -47,9 +50,7 @@ export function MessageList({
 
   return (
     <div className="cs-thread-body" style={{ overflowY: 'auto' }}>
-      {error && (
-        <p role="alert" style={{ color: 'crimson', fontSize: 13 }}>{error}</p>
-      )}
+      {error && <ErrorRetry message={error} onRetry={onRetry} pad={false} />}
       {messagesWithSeps.map((item, index) => {
         if (item.type === 'sep') {
           return <div key={`sep-${index}`} className="cs-day-sep">{item.label}</div>

@@ -45,6 +45,7 @@ export function Thread({
   const prevConvId = useRef(convId)
   const [error, setError] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
   const bottom = useRef<HTMLDivElement>(null)
 
   const [showFiles, setShowFiles] = useState(false)
@@ -171,6 +172,7 @@ export function Thread({
       }
     })
     const loadMessages = async () => {
+      setError(null)
       const resp = await get<{ items?: InboxMessage[]; messages?: InboxMessage[] }>(
         `/api/conversations/${convId}/messages`,
       )
@@ -210,7 +212,7 @@ export function Thread({
       offReconnect()
       unsubscribeConversation(convId)
     }
-  }, [convId]) // onMetaLoaded intentionally omitted — stable callback ref
+  }, [convId, reloadKey]) // onMetaLoaded intentionally omitted — stable callback ref
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: 'smooth' })
@@ -299,6 +301,7 @@ export function Thread({
         convId={convId}
         messages={messages}
         error={error}
+        onRetry={() => setReloadKey((key) => key + 1)}
         customerName={customerName}
         customerAvatarUrl={customerAvatarUrl}
         bottomRef={bottom}

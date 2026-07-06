@@ -13,6 +13,7 @@ import {
 import { can, type Area } from './auth/permissions'
 import { session } from './auth/session'
 import { t } from './i18n'
+import { Loading } from './components/Loading'
 import AppShell from './components/AppShell'
 
 // Route-based code splitting: each page is its own chunk, fetched on demand behind
@@ -107,14 +108,9 @@ export function Guard({ meta, children }: { meta: RouteMeta; children: React.Rea
   return <>{children}</>
 }
 
-// Fallback shown while a route's lazy chunk loads (matches the app's muted
-// "載入中…" loading style, e.g. DataTable).
+// Fallback shown while a route's lazy chunk loads.
 function PageLoading() {
-  return (
-    <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>
-      載入中…
-    </div>
-  )
+  return <Loading />
 }
 
 const page = (meta: RouteMeta, element: React.ReactNode) => (

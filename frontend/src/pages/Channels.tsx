@@ -10,6 +10,8 @@ import { can } from '../auth/permissions'
 import { session } from '../auth/session'
 import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'
+import { Loading } from '../components/Loading'
+import { ErrorRetry } from '../components/ErrorRetry'
 
 interface Channel {
   id: number
@@ -71,12 +73,15 @@ export default function Channels() {
   const [message, setMessage] = useState<string | null>(null)
   // One field bag per platform: { platform: { field: value } }.
   const [forms, setForms] = useState<Record<string, Record<string, string>>>({})
+  const [loading, setLoading] = useState(true)
 
   const load = async () => {
+    setError(null)
     const resp = await get<Channel[]>('/api/channels')
     if (resp.success && Array.isArray(resp.data)) setChannels(resp.data)
     else if (resp.success) setChannels([])
     else setError(resp.message ?? null)
+    setLoading(false)
   }
   useEffect(() => {
     void load()
@@ -147,11 +152,8 @@ export default function Channels() {
     <div style={{ maxWidth: 720, margin: '0 auto', padding: '0 16px' }}>
       <PageHeader title="頻道管理" />
       {message && <p style={{ color: 'seagreen' }}>{message}</p>}
-      {error && (
-        <p role="alert" style={{ color: 'crimson' }}>
-          {error}
-        </p>
-      )}
+      {error && <ErrorRetry message={error} onRetry={() => { setLoading(true); void load() }} />}
+      {loading && <Loading />}
 
       {PLATFORM_KEYS.map((platform) => {
         const descriptor = PLATFORM_FORMS[platform]
@@ -171,7 +173,7 @@ export default function Channels() {
                     {existing.isVerified ? '已驗證' : '未驗證'}
                   </small>
                   {(existing.errorCount ?? 0) > 0 && (
-                    <small style={{ color: 'crimson' }}>錯誤 {existing.errorCount}</small>
+                    <small style={{ color: 'var(--color-danger)' }}>錯誤 {existing.errorCount}</small>
                   )}
                 </>
               )}

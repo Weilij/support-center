@@ -267,7 +267,7 @@ export default function Teams() {
     <div style={{ maxWidth: 920, margin: '0 auto', padding: '0 16px' }}>
       <PageHeader title="團隊管理" />
 
-      {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
+      {error && <p role="alert" style={{ color: 'var(--color-danger)' }}>{error}</p>}
 
       {isAdmin && (
         <Card style={{ marginBottom: 'var(--sp-4)' }}>
@@ -294,10 +294,26 @@ export default function Teams() {
                   gap: 6,
                 }}
               >
-                <span style={{ flex: 1 }} onClick={() => void openTeam(team.id)}>
+                <button
+                  type="button"
+                  onClick={() => void openTeam(team.id)}
+                  style={{
+                    flex: 1,
+                    textAlign: 'left',
+                    background: 'transparent',
+                    border: 'none',
+                    padding: 0,
+                    font: 'inherit',
+                    color: 'inherit',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                  }}
+                >
                   <strong>{team.name}</strong>
                   {team.memberCount !== undefined && <span>（{team.memberCount}）</span>}
-                </span>
+                </button>
                 <button onClick={() => void showQr(team.id)} title="加入 QR code">
                   QR
                 </button>
@@ -312,14 +328,14 @@ export default function Teams() {
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 'var(--sp-3)' }}>
                 <h3 style={{ margin: 0 }}>成員</h3>
                 {picked.size > 0 && (
-                  <button onClick={() => setConfirmDelete(true)} style={{ color: 'crimson', marginLeft: 'auto' }}>
+                  <button onClick={() => setConfirmDelete(true)} style={{ color: 'var(--color-danger)', marginLeft: 'auto' }}>
                     移出團隊（{picked.size}）
                   </button>
                 )}
                 {isAdmin && (
                   <button
                     onClick={() => setConfirmDeleteTeam(true)}
-                    style={{ color: 'crimson', marginLeft: picked.size > 0 ? 0 : 'auto' }}
+                    style={{ color: 'var(--color-danger)', marginLeft: picked.size > 0 ? 0 : 'auto' }}
                   >
                     刪除團隊…
                   </button>

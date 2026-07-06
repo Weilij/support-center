@@ -33,6 +33,11 @@
   --warn:  oklch(0.78 0.13 78);
   --busy:  oklch(0.68 0.16 25);
 
+  /* 危險／錯誤語意色（取代散落的 crimson） */
+  --color-danger: #dc2626;
+  --amber-50:  #fffbeb;
+  --amber-700: #b45309;
+
   /* 渠道品牌色 */
   --line-green:  #06c755;
   --wa-green:    #25d366;
@@ -422,6 +427,23 @@ input:focus, select:focus, textarea:focus {
 .cs-conv-time { font-size: 11.5px; color: var(--muted-2); flex-shrink: 0; }
 .cs-conv-prev { font-size: 12.5px; color: var(--muted); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.45; }
 .cs-conv-unread { width: 8px; height: 8px; border-radius: 50%; background: var(--status-unread); flex-shrink: 0; align-self: center; }
+/* Shared spinner (Loading component) */
+@keyframes cs-spin { to { transform: rotate(360deg); } }
+.cs-spinner {
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 2.5px solid var(--line);
+  border-top-color: var(--blue-500);
+  animation: cs-spin 0.7s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) { .cs-spinner { animation-duration: 1.6s; } }
+
+/* Global keyboard-focus ring (Phase 3.5 a11y) */
+:focus-visible {
+  outline: 2px solid var(--blue-500);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 .cs-assign-menu {
   position: absolute; top: calc(100% + 6px); right: 0; z-index: 40;
   min-width: 220px; max-width: 280px;
@@ -437,7 +459,7 @@ input:focus, select:focus, textarea:focus {
 }
 .cs-assign-item:hover:not(:disabled) { background: var(--bg); }
 .cs-assign-item:disabled { opacity: .55; cursor: default; }
-.cs-assign-item--danger { color: var(--color-danger, crimson); }
+.cs-assign-item--danger { color: var(--color-danger); }
 .cs-assign-menu-foot { border-top: 1px solid var(--line); margin-top: 4px; padding: 8px 6px 4px; }
 .cs-assign-reason-toggle { border: none; background: transparent; color: var(--blue-600); font-size: 12.5px; cursor: pointer; padding: 2px 4px; }
 .cs-conn-banner {
@@ -532,6 +554,11 @@ input:focus, select:focus, textarea:focus {
   --status-online-soft: rgba(22, 163, 74, .20);
   --status-event-soft:  rgba(217, 119, 6, .20);
   --status-urgent-soft: rgba(220, 38, 38, .22);
+
+  /* Brighten danger/amber for legibility on dark surfaces */
+  --color-danger: #f87171;
+  --amber-50:  rgba(217, 119, 6, .16);
+  --amber-700: #fbbf24;
 }
 
 /* Slash command menu (composer canned replies) */

@@ -2,11 +2,13 @@
 // Real data only: /api/system/stats, loadAgents(), loadStatusStatistics(),
 // loadConversations(). No fabricated numbers or percentages.
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { get } from '../api/client'
 import { Card } from '../components/Card'
+import { Loading } from '../components/Loading'
+import { ErrorRetry } from '../components/ErrorRetry'
 import { Avatar } from '../components/Avatar'
 import { ChanGlyph } from '../components/ChanGlyph'
 import { Tag } from '../components/Chip'
@@ -85,7 +87,7 @@ function KpiRow({
         iconBg="#e0f2fe"
         iconColor="#0284c7"
         label="對話總數"
-        value={stats ? stats.totalConversations.toLocaleString() : '—'}
+        value={stats ? stats.totalConversations.toLocaleString('zh-TW') : '—'}
         unit="則"
       />
       <KpiCard
@@ -93,7 +95,7 @@ function KpiRow({
         iconBg="#e0f2fe"
         iconColor="#0284c7"
         label="訊息總數"
-        value={stats ? stats.totalMessages.toLocaleString() : '—'}
+        value={stats ? stats.totalMessages.toLocaleString('zh-TW') : '—'}
         unit="則"
       />
       <KpiCard
@@ -101,7 +103,7 @@ function KpiRow({
         iconBg="#dcfce7"
         iconColor="#16a34a"
         label="客戶總數"
-        value={stats ? stats.totalCustomers.toLocaleString() : '—'}
+        value={stats ? stats.totalCustomers.toLocaleString('zh-TW') : '—'}
         unit="位"
       />
       <KpiCard
@@ -332,24 +334,43 @@ export default function Dashboard() {
   const [stats, setStats] = useState<SystemStats | null>(null)
   const [agents, setAgents] = useState<Agent[]>([])
   const [presenceOnline, setPresenceOnline] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   const { items: conversations } = useStore(conversationsStore)
 
-  useEffect(() => {
-    // System stats
-    void get<SystemStats>('/api/system/stats').then((resp) => {
-      if (resp.success && resp.data) setStats(resp.data)
-    })
+  const load = useCallback(async () => {
+    setError(null)
+    setLoading(true)
+    const resp = await get<SystemStats>('/api/system/stats')
+    if (resp.success && resp.data) setStats(resp.data)
+    else setError(resp.message ?? '無法載入儀表板')
+    setLoading(false)
 
-    // Conversations
     void loadConversations()
-
-    // Agents roster + presence
     void loadAgents().then(({ items }) => setAgents(items))
-    void loadStatusStatistics().then((counts) => {
-      setPresenceOnline(counts.online ?? 0)
-    })
+    void loadStatusStatistics().then((counts) => setPresenceOnline(counts.online ?? 0))
   }, [])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  if (loading && !stats) {
+    return (
+      <main style={{ padding: '28px 32px' }}>
+        <Loading />
+      </main>
+    )
+  }
+
+  if (error && !stats) {
+    return (
+      <main style={{ padding: '28px 32px' }}>
+        <ErrorRetry message={error} onRetry={() => void load()} />
+      </main>
+    )
+  }
 
   return (
     <main

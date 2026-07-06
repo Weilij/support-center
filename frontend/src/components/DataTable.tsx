@@ -4,6 +4,9 @@
 
 import type { ReactNode } from 'react'
 
+import { Loading } from './Loading'
+import { ErrorRetry } from './ErrorRetry'
+
 export interface Column<T> {
   key: string
   header: ReactNode
@@ -19,6 +22,8 @@ export interface DataTableProps<T> {
   rowKey: (row: T) => string | number
   busy?: boolean
   error?: string | null
+  /// Optional retry handler; when provided the error state offers a 重試 button.
+  onRetry?: () => void
   /// Empty-state message when rows is empty and not busy.
   empty?: ReactNode
   onRowClick?: (row: T) => void
@@ -37,16 +42,13 @@ export function DataTable<T>({
   rowKey,
   busy,
   error,
+  onRetry,
   empty = '沒有資料',
   onRowClick,
 }: DataTableProps<T>) {
   return (
     <div style={{ overflowX: 'auto', overflowY: 'auto', background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 'var(--radius-lg)', boxShadow: 'var(--shadow-sm)' }}>
-      {error && (
-        <p role="alert" style={{ color: 'crimson', margin: '8px 0' }}>
-          {error}
-        </p>
-      )}
+      {error && <ErrorRetry message={error} onRetry={onRetry} />}
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr>
@@ -70,16 +72,16 @@ export function DataTable<T>({
           </tr>
         </thead>
         <tbody>
-          {busy && rows.length === 0 && (
+          {busy && rows.length === 0 && !error && (
             <tr>
-              <td style={{ ...cell, color: '#888' }} colSpan={columns.length}>
-                載入中…
+              <td style={{ ...cell }} colSpan={columns.length}>
+                <Loading pad={false} />
               </td>
             </tr>
           )}
-          {!busy && rows.length === 0 && (
+          {!busy && rows.length === 0 && !error && (
             <tr>
-              <td style={{ ...cell, color: '#888' }} colSpan={columns.length}>
+              <td style={{ ...cell, color: 'var(--muted)' }} colSpan={columns.length}>
                 {empty}
               </td>
             </tr>
@@ -88,6 +90,14 @@ export function DataTable<T>({
             <tr
               key={rowKey(row)}
               onClick={onRowClick ? () => onRowClick(row) : undefined}
+              tabIndex={onRowClick ? 0 : undefined}
+              role={onRowClick ? 'button' : undefined}
+              onKeyDown={onRowClick ? (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  onRowClick(row)
+                }
+              } : undefined}
               style={{ cursor: onRowClick ? 'pointer' : 'default' }}
             >
               {columns.map((c) => (
@@ -118,7 +128,7 @@ export function Pagination({ page, total, pageSize, onPage }: PaginationProps) {
       <button disabled={page <= 1} onClick={() => onPage(page - 1)}>
         上一頁
       </button>
-      <span style={{ fontSize: 14, color: '#555' }}>
+      <span style={{ fontSize: 14, color: 'var(--muted)' }}>
         第 {page} / {pages} 頁（共 {total} 筆）
       </span>
       <button disabled={page >= pages} onClick={() => onPage(page + 1)}>

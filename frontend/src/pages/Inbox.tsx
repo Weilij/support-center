@@ -25,7 +25,7 @@ import type { ConvMeta } from './inbox/types'
 export default function Inbox() {
   const { id: paramId } = useParams<{ id?: string }>()
   const navigate = useNavigate()
-  const { items, busy } = useStore(conversationsStore)
+  const { items, busy, error } = useStore(conversationsStore)
   const [selectedId, setSelectedId] = useState<string | undefined>(paramId)
   const [meta, setMeta] = useState<ConvMeta>({})
 
@@ -97,6 +97,8 @@ export default function Inbox() {
           <ConversationList
             items={items}
             busy={busy}
+            error={error}
+            onRetry={() => void loadConversations()}
             selectedId={selectedId}
             onSelect={handleSelect}
             fullWidth
@@ -145,6 +147,8 @@ export default function Inbox() {
         <ConversationList
           items={items}
           busy={busy}
+          error={error}
+          onRetry={() => void loadConversations()}
           selectedId={selectedId}
           onSelect={handleSelect}
         />
@@ -192,6 +196,8 @@ export default function Inbox() {
       <ConversationList
         items={items}
         busy={busy}
+        error={error}
+        onRetry={() => void loadConversations()}
         selectedId={selectedId}
         onSelect={handleSelect}
       />

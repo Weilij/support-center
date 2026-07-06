@@ -2,7 +2,7 @@
 // right-side Drawer for detail panels, and a ConfirmDialog built on Modal for
 // destructive/bulk actions. All dismiss on backdrop click and Escape.
 
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
 
 const backdrop: React.CSSProperties = {
@@ -23,6 +23,43 @@ function useEscape(onClose: () => void) {
   }, [onClose])
 }
 
+const FOCUSABLE =
+  'a[href], button:not([disabled]), textarea, input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+/// Trap Tab focus inside the dialog while open; focus the first control on open
+/// and restore focus to the previously-focused element on close (Phase 3.5).
+function useFocusTrap(active: boolean) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const node = ref.current
+    if (!active || !node) return
+    const previouslyFocused = document.activeElement as HTMLElement | null
+    const visible = () =>
+      Array.from(node.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((el) => el.offsetParent !== null)
+    ;(visible()[0] ?? node).focus()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return
+      const items = visible()
+      if (items.length === 0) return
+      const first = items[0]
+      const last = items[items.length - 1]
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault()
+        first.focus()
+      }
+    }
+    node.addEventListener('keydown', onKey)
+    return () => {
+      node.removeEventListener('keydown', onKey)
+      previouslyFocused?.focus?.()
+    }
+  }, [active])
+  return ref
+}
+
 export interface ModalProps {
   open: boolean
   title?: ReactNode
@@ -33,10 +70,13 @@ export interface ModalProps {
 
 export function Modal({ open, title, onClose, children, width = 480 }: ModalProps) {
   useEscape(onClose)
+  const dialogRef = useFocusTrap(open)
   if (!open) return null
   return (
     <div style={{ ...backdrop, alignItems: 'center', justifyContent: 'center' }} onClick={onClose}>
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         onClick={(e) => e.stopPropagation()}
@@ -125,7 +165,7 @@ export function ConfirmDialog({
         <button onClick={onCancel}>取消</button>
         <button
           onClick={onConfirm}
-          style={danger ? { background: 'crimson', color: 'white', border: 'none', padding: '6px 14px', borderRadius: 6 } : undefined}
+          style={danger ? { background: 'var(--color-danger)', color: 'white', border: 'none', padding: '6px 14px', borderRadius: 6 } : undefined}
         >
           {confirmLabel}
         </button>
