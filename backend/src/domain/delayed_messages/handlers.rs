@@ -239,9 +239,12 @@ pub async fn v2_cancel(
     }
     let conversation_id = body.conversation_id.as_deref().unwrap_or_default();
     check_send_permission(&state, &user, conversation_id).await?;
+    // Ownership check across *any* state: filtering to status='pending' here
+    // would collapse "already cancelled" into "not found" and drop the
+    // "Message already {status}" feedback the service layer produces below.
     let owner: Option<String> = sqlx::query_scalar(
         "SELECT agent_id FROM scheduled_messages
-         WHERE id = $1 AND conversation_id = $2 AND status = 'pending'",
+         WHERE id = $1 AND conversation_id = $2",
     )
     .bind(&message_id)
     .bind(conversation_id)
