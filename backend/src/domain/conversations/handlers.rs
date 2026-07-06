@@ -663,6 +663,26 @@ fn file_name_from_metadata(metadata: Option<&str>) -> Option<String> {
         .map(|s| s.replace(['"', '\\', '\r', '\n'], "_"))
 }
 
+/// The ingest platform + inbound media source URL from a message's metadata.
+/// LINE stores a `mediaId` (fetched via the content API); Meta (facebook/
+/// instagram) stores a direct CDN `contentUrl` (G2).
+fn media_source_from_metadata(metadata: Option<&str>) -> (Option<String>, Option<String>) {
+    let Some(v) = metadata.and_then(|m| serde_json::from_str::<Value>(m).ok()) else {
+        return (None, None);
+    };
+    let platform = v
+        .get("platform")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let content_url = v
+        .get("media")
+        .and_then(|m| m.get("contentUrl"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    (platform, content_url)
+}
+
 async fn proxy_media_inner(
     state: &Arc<AppState>,
     user: &AuthUser,
@@ -687,20 +707,32 @@ async fn proxy_media_inner(
             "No downloadable media for this message".into(),
         ));
     }
-    let message_id = row
-        .platform_message_id
-        .clone()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| AppError::NotFound("Media unavailable".into()))?;
-    let token = crate::domain::channels::resolve::resolve_channel(state, "line")
-        .await
-        .access_token
-        .filter(|t| !t.is_empty())
-        .ok_or_else(|| AppError::NotFound("Media unavailable".into()))?;
-    let use_preview = preview && (row.content_type == "image" || row.content_type == "video");
-    let (bytes, content_type) = channels::fetch_line_media(&token, &message_id, use_preview)
-        .await
-        .ok_or_else(|| AppError::NotFound("Media unavailable".into()))?;
+    // Meta (facebook/instagram) inbound media is a direct CDN URL in metadata;
+    // LINE media is fetched live from the content API by message id (G2).
+    let (platform, content_url) = media_source_from_metadata(row.metadata.as_deref());
+    let (bytes, content_type) =
+        if matches!(platform.as_deref(), Some("facebook") | Some("instagram")) {
+            let url = content_url.ok_or_else(|| AppError::NotFound("Media unavailable".into()))?;
+            channels::fetch_url_media(&url)
+                .await
+                .ok_or_else(|| AppError::NotFound("Media unavailable".into()))?
+        } else {
+            let message_id = row
+                .platform_message_id
+                .clone()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| AppError::NotFound("Media unavailable".into()))?;
+            let token = crate::domain::channels::resolve::resolve_channel(state, "line")
+                .await
+                .access_token
+                .filter(|t| !t.is_empty())
+                .ok_or_else(|| AppError::NotFound("Media unavailable".into()))?;
+            let use_preview =
+                preview && (row.content_type == "image" || row.content_type == "video");
+            channels::fetch_line_media(&token, &message_id, use_preview)
+                .await
+                .ok_or_else(|| AppError::NotFound("Media unavailable".into()))?
+        };
 
     let mut resp = (StatusCode::OK, bytes).into_response();
     let h = resp.headers_mut();

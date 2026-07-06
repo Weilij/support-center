@@ -1456,6 +1456,77 @@ async fn seed_media_message(
 }
 
 #[tokio::test]
+async fn media_proxy_streams_facebook_cdn_url() {
+    use axum::routing::get;
+    use axum::Router;
+
+    // Mock Meta CDN serving image bytes at a direct URL (no bearer).
+    async fn cdn() -> axum::response::Response {
+        use axum::http::header;
+        use axum::response::IntoResponse;
+        (
+            [(header::CONTENT_TYPE, "image/png")],
+            axum::body::Bytes::from_static(b"fb-png-bytes"),
+        )
+            .into_response()
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/img.png", get(cdn)))
+            .await
+            .unwrap();
+    });
+    let cdn_url = format!("http://{addr}/img.png");
+
+    let app = spawn_app().await;
+    let token = admin_token(&app).await;
+    let cust = app.seed_customer("facebook", "PSID1", "Bob", None).await;
+    let conv = app.seed_conversation(cust, None, "active").await;
+    let customer_id: Option<i64> =
+        sqlx::query_scalar("SELECT customer_id FROM conversations WHERE id = $1")
+            .bind(&conv)
+            .fetch_optional(&app.state.db)
+            .await
+            .unwrap();
+    let msg = uuid::Uuid::new_v4().to_string();
+    let metadata = serde_json::json!({
+        "platform": "facebook",
+        "source": "webhook",
+        "media": { "type": "image", "contentUrl": cdn_url },
+    })
+    .to_string();
+    sqlx::query(
+        "INSERT INTO messages (id, conversation_id, sender_type, customer_id, content,
+                               content_type, platform_message_id, metadata, created_at)
+         VALUES ($1, $2, 'customer', $3, '[Image]', 'image', 'fb-mid-1', $4, $5)",
+    )
+    .bind(&msg)
+    .bind(&conv)
+    .bind(customer_id)
+    .bind(&metadata)
+    .bind(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+
+    // The proxy now serves Meta media by streaming the CDN URL (was 404 before G2).
+    let (status, _, headers) = app
+        .request(
+            "GET",
+            &format!("/api/conversations/{conv}/messages/{msg}/media"),
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers.get("content-type").and_then(|v| v.to_str().ok()),
+        Some("image/png")
+    );
+}
+
+#[tokio::test]
 async fn media_proxy_text_message_is_404() {
     let app = spawn_app().await;
     let token = admin_token(&app).await;

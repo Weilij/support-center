@@ -886,6 +886,29 @@ pub(crate) async fn fetch_line_media_from_base(
     Some((bytes.to_vec(), content_type))
 }
 
+/// Fetch inbound media from a direct URL (Meta attachment CDN URLs are public
+/// temporary links — no bearer token). Returns `(bytes, content_type)` or `None`
+/// on any failure (e.g. an expired URL) — best-effort, never panics (G2).
+pub(crate) async fn fetch_url_media(url: &str) -> Option<(Vec<u8>, String)> {
+    let resp = http_client()?
+        .get(url)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let bytes = resp.bytes().await.ok()?;
+    Some((bytes.to_vec(), content_type))
+}
+
 #[cfg(test)]
 mod gateway_tests {
     use super::*;
