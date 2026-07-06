@@ -60,7 +60,8 @@ function ConversationItem({
   const platform = String(conv.platform ?? conv['channel'] ?? 'chat')
   const chanKey = channelOf(platform) as 'chat' | 'line' | 'wa' | 'fb' | 'ig' | 'shopee'
   const name = conv.customerName ?? conv.id
-  const unread = (conv.unreadCount ?? 0) > 0
+  const unreadCount = conv.unreadCount ?? 0
+  const unread = unreadCount > 0
   const tags = (conv['tags'] as string[] | undefined) ?? []
 
   return (
@@ -84,10 +85,21 @@ function ConversationItem({
         </div>
         <div
           className="cs-conv-prev"
-          style={unread ? { color: 'var(--ink-2)', fontWeight: 600 } : undefined}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            ...(unread ? { color: 'var(--ink-2)', fontWeight: 600 } : null),
+          }}
         >
-          {conv.lastMessage ?? ''}
-          {unread && <span className="cs-conv-unread" style={{ marginLeft: 6 }} />}
+          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {conv.lastMessage ?? ''}
+          </span>
+          {unread && (
+            <span className="cs-conv-unread-badge" aria-label={`${unreadCount} 則未讀`}>
+              {unreadCount > 99 ? '99+' : unreadCount}
+            </span>
+          )}
         </div>
         {tags.length > 0 && (
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>

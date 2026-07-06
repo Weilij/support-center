@@ -51,6 +51,24 @@ describe('ConversationList 我的團隊 tab', () => {
     expect(screen.queryByText('Conv Z')).toBeNull()
   })
 
+  it('renders the unread count as a badge, capped at 99+', () => {
+    render(
+      <ConversationList
+        items={[
+          conversation({ id: 'a', customerName: 'Few', unreadCount: 3 }),
+          conversation({ id: 'b', customerName: 'Many', unreadCount: 150 }),
+          conversation({ id: 'c', customerName: 'None', unreadCount: 0 }),
+        ]}
+        busy={false}
+        selectedId={undefined}
+        onSelect={vi.fn()}
+      />,
+    )
+    expect(screen.getByLabelText('3 則未讀').textContent).toBe('3')
+    expect(screen.getByLabelText('150 則未讀').textContent).toBe('99+')
+    expect(screen.queryByLabelText('0 則未讀')).toBeNull()
+  })
+
   it('offers 全部/未讀/我的團隊 tabs and no 待跟進', () => {
     render(
       <ConversationList
