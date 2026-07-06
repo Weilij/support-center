@@ -11,6 +11,7 @@ import { session } from '../auth/session'
 import { StatCard, Toast } from '../components/ui'
 import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'
+import { ConfirmDialog } from '../components/Modal'
 
 interface NotifStats {
   total?: number
@@ -28,15 +29,23 @@ export default function Notifications() {
   const [content, setContent] = useState('')
   const [priority, setPriority] = useState('normal')
   const [toast, setToast] = useState<string | null>(null)
+  const [confirmBroadcast, setConfirmBroadcast] = useState(false)
+
+  const canBroadcast = title.trim() !== '' && content.trim() !== ''
 
   useEffect(() => {
     void loadNotifications()
     if (canAccessSystem) void get<NotifStats>('/api/notifications/stats').then((r) => r.success && r.data && setStats(r.data))
   }, [canAccessSystem])
 
-  const broadcast = async (e: React.FormEvent) => {
+  const requestBroadcast = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!title.trim() || !content.trim()) return
+    if (!canBroadcast) return
+    setConfirmBroadcast(true)
+  }
+
+  const doBroadcast = async () => {
+    setConfirmBroadcast(false)
     const resp = await post<{ recipientCount?: number }>('/api/notifications/broadcast', {
       title: title.trim(),
       content: content.trim(),
@@ -76,7 +85,7 @@ export default function Notifications() {
             <StatCard label="失敗" value={stats.failed ?? 0} />
           </div>
           <Card title="廣播通知" style={{ marginBottom: 'var(--sp-5)' }}>
-            <form onSubmit={broadcast} style={{ display: 'grid', gap: 'var(--sp-3)' }}>
+            <form onSubmit={requestBroadcast} style={{ display: 'grid', gap: 'var(--sp-3)' }}>
               <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="標題" />
               <textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="內容" style={{ minHeight: 60 }} />
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -85,7 +94,7 @@ export default function Notifications() {
                   <option value="high">高</option>
                   <option value="urgent">緊急</option>
                 </select>
-                <button type="submit">發送廣播</button>
+                <button type="submit" disabled={!canBroadcast}>發送廣播</button>
               </div>
             </form>
           </Card>
@@ -116,6 +125,14 @@ export default function Notifications() {
           ))}
         </ul>
       </Card>
+
+      <ConfirmDialog
+        open={confirmBroadcast}
+        message={`確定要將這則廣播發送給所有使用者嗎？「${title.trim()}」將立即送達每一位使用者的通知中心。`}
+        confirmLabel="發送廣播"
+        onConfirm={() => void doBroadcast()}
+        onCancel={() => setConfirmBroadcast(false)}
+      />
 
       <Toast message={toast} onDismiss={() => setToast(null)} />
     </div>
