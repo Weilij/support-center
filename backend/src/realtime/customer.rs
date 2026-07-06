@@ -17,7 +17,6 @@ use axum::extract::{Multipart, Query, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -26,6 +25,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use tokio::sync::mpsc;
 
+use crate::domain::auth::tokens;
 use crate::domain::conversations::channels::{OutboundGateway, OutboundItem, BATCH_CAP};
 use crate::state::AppState;
 
@@ -347,10 +347,86 @@ fn header<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
         .filter(|v| !v.is_empty())
 }
 
+struct ChannelAgent {
+    user_id: String,
+    display_name: String,
+}
+
+async fn authenticate_channel_agent(
+    state: &AppState,
+    token: &str,
+) -> Result<ChannelAgent, Response> {
+    if state.config.jwt_secret.is_empty() {
+        return Err(fail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Server configuration error",
+        ));
+    }
+    let claims = tokens::verify(token, &state.config.jwt_secret)
+        .map_err(|_| fail(StatusCode::UNAUTHORIZED, "Invalid or expired session"))?;
+    if claims.token_type != "access" {
+        return Err(fail(StatusCode::UNAUTHORIZED, "Invalid session type"));
+    }
+    if claims.role != "agent" && claims.role != "admin" {
+        return Err(fail(StatusCode::FORBIDDEN, "Agent authentication required"));
+    }
+    let display_name: Option<String> = match sqlx::query_scalar(
+        "SELECT display_name FROM agents WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(&claims.sub)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(v) => v,
+        Err(_) => {
+            return Err(fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to verify agent",
+            ))
+        }
+    };
+    let Some(display_name) = display_name else {
+        return Err(fail(StatusCode::UNAUTHORIZED, "Agent session not found"));
+    };
+    Ok(ChannelAgent {
+        user_id: claims.sub,
+        display_name,
+    })
+}
+
+async fn require_conversation_exists(
+    state: &AppState,
+    conversation_id: &str,
+) -> Result<(), Response> {
+    let exists: Option<i64> = sqlx::query_scalar(
+        "SELECT 1::bigint FROM conversations WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(conversation_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| {
+        fail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to fetch conversation",
+        )
+    })?;
+    if exists.is_none() {
+        return Err(fail(StatusCode::NOT_FOUND, "Conversation not found"));
+    }
+    Ok(())
+}
+
 /// Conversation-identifier header for the message API (CRD 3892).
 const CONVERSATION_HEADER: &str = "x-conversation-id";
 /// Session/credential header for the message API (CRD 3907, 3930).
 const SESSION_HEADER: &str = "x-session-token";
+
+fn allowed_upload_mime(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "application/pdf" | "text/plain"
+    )
+}
 
 // -------------------------------------- channel websocket (CRD 3854-3871)
 
@@ -368,12 +444,13 @@ pub struct ChannelWsQuery {
     pub validated_username: Option<String>,
     #[serde(rename = "sessionId")]
     pub session_id: Option<String>,
+    #[serde(rename = "sessionToken")]
+    pub session_token: Option<String>,
 }
 
 /// GET /api/customer-channel/ws — open the per-conversation channel
-/// (CRD 3854-3871). Fast path: `preValidated=true` plus a validated user id
-/// trusts the supplied identity; fallback: the session token is resolved
-/// against the session store.
+/// (CRD 3854-3871). A signed session token is accepted in the handshake query;
+/// legacy server-side session ids are resolved against the session store.
 pub async fn channel_ws(
     State(state): State<Arc<AppState>>,
     Query(q): Query<ChannelWsQuery>,
@@ -392,19 +469,15 @@ pub async fn channel_ws(
     let Some(conversation_id) = q.conversation_id.filter(|c| !c.is_empty()) else {
         return plain(StatusCode::BAD_REQUEST, "Conversation ID is required");
     };
+    if let Err(resp) = require_conversation_exists(&state, &conversation_id).await {
+        return resp;
+    }
 
-    let fast_path = q.pre_validated.as_deref() == Some("true")
-        && q.validated_user_id
-            .as_deref()
-            .is_some_and(|u| !u.is_empty());
-    let user_id = if fast_path {
-        // Identity accepted as-is; role defaults to agent, label to a generic
-        // one (CRD 3859, 3862) — only the user id is observable in events.
-        let _ = (
-            q.validated_role.as_deref().unwrap_or("agent"),
-            q.validated_username.as_deref().unwrap_or("User"),
-        );
-        q.validated_user_id.clone().unwrap_or_default()
+    let user_id = if let Some(token) = q.session_token.as_deref().filter(|s| !s.is_empty()) {
+        match authenticate_channel_agent(&state, token).await {
+            Ok(user) => user.user_id,
+            Err(resp) => return resp,
+        }
     } else {
         // Fallback path: session-store lookup (CRD 3863, 3869-3870).
         let Some(session_id) = q.session_id.filter(|s| !s.is_empty()) else {
@@ -453,8 +526,15 @@ pub async fn channel_ws(
 /// connected viewers (CRD 3873-3879).
 pub async fn notify_message(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     body: Option<Json<Value>>,
 ) -> Response {
+    let Some(credential) = header(&headers, SESSION_HEADER).map(str::to_string) else {
+        return fail(StatusCode::UNAUTHORIZED, "Session token header is required");
+    };
+    if let Err(resp) = authenticate_channel_agent(&state, &credential).await {
+        return resp;
+    }
     let body = body.map(|Json(v)| v).unwrap_or(Value::Null);
     let Some(conversation_id) = body["conversationId"]
         .as_str()
@@ -466,6 +546,9 @@ pub async fn notify_message(
             "conversationId is missing",
         );
     };
+    if let Err(resp) = require_conversation_exists(&state, &conversation_id).await {
+        return resp;
+    }
     let message = body.get("message").cloned().unwrap_or(json!({}));
     let now = crate::db::now_iso();
     // Event shape per CRD 3968: lowercase type marker, top-level data object,
@@ -487,14 +570,13 @@ pub async fn notify_message(
         "timestamp": now,
     });
     broadcast_customer_event(&state, &conversation_id, &event).await;
-    let (total, users) = state.realtime.customers.snapshot(&conversation_id);
+    let (total, _) = state.realtime.customers.snapshot(&conversation_id);
     (
         StatusCode::OK,
         Json(json!({
             "success": true,
             "debug": {
                 "totalConnections": total,
-                "connectedUsers": users,
                 "conversationId": conversation_id,
             },
         })),
@@ -506,8 +588,15 @@ pub async fn notify_message(
 /// completion fan-out (CRD 3881-3887).
 pub async fn notify_message_updated(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     body: Option<Json<Value>>,
 ) -> Response {
+    let Some(credential) = header(&headers, SESSION_HEADER).map(str::to_string) else {
+        return fail(StatusCode::UNAUTHORIZED, "Session token header is required");
+    };
+    if let Err(resp) = authenticate_channel_agent(&state, &credential).await {
+        return resp;
+    }
     let body = body.map(|Json(v)| v).unwrap_or(Value::Null);
     let conversation_id = body["conversationId"]
         .as_str()
@@ -523,6 +612,9 @@ pub async fn notify_message_updated(
             "conversationId and messageId are missing",
         );
     };
+    if let Err(resp) = require_conversation_exists(&state, &conversation_id).await {
+        return resp;
+    }
     let mut data = json!({ "conversationId": conversation_id, "messageId": message_id });
     if let Some(extra) = body.get("data").and_then(Value::as_object) {
         for (k, v) in extra {
@@ -634,6 +726,15 @@ pub async fn list_messages(
             "Conversation ID header is required",
         );
     };
+    let Some(credential) = header(&headers, SESSION_HEADER).map(str::to_string) else {
+        return fail(StatusCode::UNAUTHORIZED, "Session token header is required");
+    };
+    if let Err(resp) = authenticate_channel_agent(&state, &credential).await {
+        return resp;
+    }
+    if let Err(resp) = require_conversation_exists(&state, &conversation_id).await {
+        return resp;
+    }
     let limit = q
         .limit
         .as_deref()
@@ -736,34 +837,6 @@ pub async fn list_messages(
 
 // -------------------------------------- message creation (CRD 3903-3924)
 
-/// Resolve the caller identity from the credential header (CRD 3907): a
-/// three-part signed token yields the user id and display label from its
-/// decoded middle segment; anything else is treated as the user id itself.
-fn identity_from_credential(token: &str) -> (String, Option<String>) {
-    let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() == 3 {
-        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(parts[1].as_bytes())
-            .ok()
-            .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-        if let Some(claims) = decoded {
-            let sub = claims["sub"]
-                .as_str()
-                .or_else(|| claims["userId"].as_str())
-                .map(str::to_string);
-            let name = claims["name"]
-                .as_str()
-                .or_else(|| claims["username"].as_str())
-                .or_else(|| claims["displayName"].as_str())
-                .map(str::to_string);
-            if let Some(sub) = sub {
-                return (sub, name);
-            }
-        }
-    }
-    (token.to_string(), None)
-}
-
 #[derive(Deserialize, Default)]
 pub struct CreateBody {
     pub content: Option<String>,
@@ -796,6 +869,13 @@ pub async fn create_message(
     let Some(credential) = header(&headers, SESSION_HEADER).map(str::to_string) else {
         return fail(StatusCode::UNAUTHORIZED, "Session token header is required");
     };
+    let agent = match authenticate_channel_agent(&state, &credential).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = require_conversation_exists(&state, &conversation_id).await {
+        return resp;
+    }
     let body = body.map(|Json(b)| b).unwrap_or_default();
 
     let content = body.content.as_deref().unwrap_or("").trim().to_string();
@@ -814,28 +894,9 @@ pub async fn create_message(
         "file".to_string()
     };
 
-    let (user_id, token_name) = identity_from_credential(&credential);
-    // The agent reference column is only populated for a real agent record;
-    // the display label is captured as a snapshot (CRD 3911).
-    let agent: Option<(String, String)> = match sqlx::query_as(
-        "SELECT id, display_name FROM agents WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(&user_id)
-    .fetch_optional(&state.db)
-    .await
-    {
-        Ok(v) => v,
-        Err(_) => {
-            return fail(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to create message",
-            )
-        }
-    };
-    let agent_id = agent.as_ref().map(|(id, _)| id.clone());
-    let sender_name = token_name
-        .or_else(|| agent.as_ref().map(|(_, n)| n.clone()))
-        .unwrap_or_else(|| user_id.clone());
+    let user_id = agent.user_id;
+    let agent_id = Some(user_id.clone());
+    let sender_name = agent.display_name;
 
     let metadata = json!({
         "assets": body.assets,
@@ -1056,15 +1117,22 @@ pub async fn upload(
     let Some(session_token) = header(&headers, SESSION_HEADER).map(str::to_string) else {
         return fail(StatusCode::UNAUTHORIZED, "Session token header is required");
     };
+    if let Err(resp) = require_conversation_exists(&state, &conversation_id).await {
+        return resp;
+    }
 
     // The session token must resolve to a live, unexpired session record
     // (CRD 3932, 3938).
-    let live: Result<Option<String>, _> =
-        sqlx::query_scalar("SELECT id FROM auth_sessions WHERE id = $1 AND expires_at > $2")
-            .bind(&session_token)
-            .bind(crate::db::now_iso())
-            .fetch_optional(&state.db)
-            .await;
+    let live: Result<Option<String>, _> = sqlx::query_scalar(
+        "SELECT a.id
+             FROM auth_sessions s
+             JOIN agents a ON a.id = s.agent_id AND a.deleted_at IS NULL
+             WHERE s.id = $1 AND s.expires_at > $2",
+    )
+    .bind(&session_token)
+    .bind(crate::db::now_iso())
+    .fetch_optional(&state.db)
+    .await;
     match live {
         Ok(Some(_)) => {}
         Ok(None) => return fail(StatusCode::UNAUTHORIZED, "Session not found or expired"),
@@ -1091,6 +1159,9 @@ pub async fn upload(
     let Some((filename, mime, bytes)) = file.filter(|(_, _, b)| !b.is_empty()) else {
         return fail(StatusCode::BAD_REQUEST, "No file provided");
     };
+    if !allowed_upload_mime(&mime) {
+        return fail(StatusCode::BAD_REQUEST, "Unsupported file type");
+    }
 
     // Conversation-namespaced unique key preserving the extension (CRD 3933).
     let extension = std::path::Path::new(&filename)

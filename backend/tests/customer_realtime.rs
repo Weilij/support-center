@@ -33,7 +33,11 @@ async fn seed(app: &TestApp) -> Seeded {
     Seeded { agent_id, conv }
 }
 
-fn fast_ws(conv: &str, user: &str) -> String {
+fn signed_ws(conv: &str, token: &str) -> String {
+    format!("/api/customer-channel/ws?conversationId={conv}&sessionToken={token}")
+}
+
+fn fast_ws_untrusted(conv: &str, user: &str) -> String {
     format!(
         "/api/customer-channel/ws?conversationId={conv}&preValidated=true&validatedUserId={user}"
     )
@@ -75,12 +79,25 @@ async fn channel_ws_fast_path_presence_and_multi_tab_lifecycle() {
     let s = seed(&app).await;
     let addr = serve(&app).await;
 
-    let mut alice = ws_connect(addr, &fast_ws(&s.conv, "alice")).await.unwrap();
+    // alice and bob are *distinct* agents: presence dedup is per-user, so the
+    // "last tab closing emits USER_DISCONNECTED" contract below only holds when
+    // alice is a different user than bob (otherwise alice keeps the user online).
+    let bob_agent_id = app
+        .seed_agent("agent2@cust.io", "Secret123!", "agent")
+        .await;
+    let alice_token = mint(&s.agent_id, "agent", 3600);
+    let bob_token = mint(&bob_agent_id, "agent", 3600);
+
+    let mut alice = ws_connect(addr, &signed_ws(&s.conv, &alice_token))
+        .await
+        .unwrap();
     // Each accepted connection joins the live audience and triggers a
     // presence "connected" event to the *other* connections (CRD 3864, 3966).
-    let mut bob1 = ws_connect(addr, &fast_ws(&s.conv, "bob")).await.unwrap();
+    let mut bob1 = ws_connect(addr, &signed_ws(&s.conv, &bob_token))
+        .await
+        .unwrap();
     let ev = wait_for_event(&mut alice, "USER_CONNECTED").await;
-    assert_eq!(ev["userId"], "bob");
+    assert_eq!(ev["userId"], bob_agent_id);
     assert!(ev["timestamp"].is_string());
 
     // The joining socket gets no presence event for itself (audience is the
@@ -88,9 +105,11 @@ async fn channel_ws_fast_path_presence_and_multi_tab_lifecycle() {
     expect_silence(&mut bob1).await;
 
     // Multiple simultaneous connections per user are supported (CRD 3864).
-    let bob2 = ws_connect(addr, &fast_ws(&s.conv, "bob")).await.unwrap();
+    let bob2 = ws_connect(addr, &signed_ws(&s.conv, &bob_token))
+        .await
+        .unwrap();
     let ev = wait_for_event(&mut alice, "USER_CONNECTED").await;
-    assert_eq!(ev["userId"], "bob");
+    assert_eq!(ev["userId"], bob_agent_id);
     // bob's first tab also sees the second tab's presence event.
     wait_for_event(&mut bob1, "USER_CONNECTED").await;
 
@@ -102,7 +121,7 @@ async fn channel_ws_fast_path_presence_and_multi_tab_lifecycle() {
             "/api/customer-channel/notify-message",
             None,
             Some(json!({ "conversationId": s.conv, "message": { "content": "ping" } })),
-            &[],
+            &[("x-session-token", alice_token.as_str())],
         )
         .await;
     assert_eq!(status, StatusCode::OK);
@@ -114,7 +133,7 @@ async fn channel_ws_fast_path_presence_and_multi_tab_lifecycle() {
     // The user's last connection ending emits USER_DISCONNECTED (CRD 3959).
     drop(bob1);
     let ev = wait_for_event(&mut alice, "USER_DISCONNECTED").await;
-    assert_eq!(ev["userId"], "bob");
+    assert_eq!(ev["userId"], bob_agent_id);
 
     // Inbound client frames are accepted but have no observable effect
     // (CRD 3871, 3972).
@@ -130,7 +149,12 @@ async fn channel_ws_error_contract_and_session_fallback() {
 
     // Upgrade header absent -> plain HTTP 400 (CRD 3868, 3944).
     let (status, body, _) = app
-        .request("GET", &fast_ws(&s.conv, "alice"), None, None)
+        .request(
+            "GET",
+            &signed_ws(&s.conv, &mint(&s.agent_id, "agent", 3600)),
+            None,
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body.is_null(), "plain-text body expected");
@@ -189,7 +213,8 @@ async fn channel_ws_error_contract_and_session_fallback() {
         3600,
     )
     .await;
-    let mut watcher = ws_connect(addr, &fast_ws(&s.conv, "watcher"))
+    let watcher_token = mint(&s.agent_id, "agent", 3600);
+    let mut watcher = ws_connect(addr, &signed_ws(&s.conv, &watcher_token))
         .await
         .unwrap();
     let _fallback = ws_connect(
@@ -215,6 +240,10 @@ async fn channel_ws_error_contract_and_session_fallback() {
     )
     .await;
     assert_eq!(status, 400);
+
+    // preValidated no longer trusts client-declared identity.
+    let (status, _) = connect_rejected(addr, &fast_ws_untrusted(&s.conv, "attacker")).await;
+    assert_eq!(status, 400);
 }
 
 // --------------------------------------------- notify endpoints (CRD 3873-3887)
@@ -225,12 +254,18 @@ async fn notify_message_broadcasts_and_reports_diagnostics() {
     let s = seed(&app).await;
     let addr = serve(&app).await;
 
-    let mut alice = ws_connect(addr, &fast_ws(&s.conv, "alice")).await.unwrap();
-    let mut bob = ws_connect(addr, &fast_ws(&s.conv, "bob")).await.unwrap();
+    let alice_token = mint(&s.agent_id, "agent", 3600);
+    let bob_token = mint(&s.agent_id, "agent", 3600);
+    let mut alice = ws_connect(addr, &signed_ws(&s.conv, &alice_token))
+        .await
+        .unwrap();
+    let mut bob = ws_connect(addr, &signed_ws(&s.conv, &bob_token))
+        .await
+        .unwrap();
     wait_for_event(&mut alice, "USER_CONNECTED").await;
 
     let (status, body, _) = app
-        .request(
+        .request_with_headers(
             "POST",
             "/api/customer-channel/notify-message",
             None,
@@ -244,6 +279,7 @@ async fn notify_message_broadcasts_and_reports_diagnostics() {
                     "senderId": "alice",
                 },
             })),
+            &[("x-session-token", alice_token.as_str())],
         )
         .await;
     assert_eq!(status, StatusCode::OK);
@@ -251,7 +287,7 @@ async fn notify_message_broadcasts_and_reports_diagnostics() {
     // Diagnostic block: total connections, distinct users, conversation id
     // (CRD 3877).
     assert_eq!(body["debug"]["totalConnections"], json!(2));
-    assert_eq!(body["debug"]["connectedUsers"], json!(["alice", "bob"]));
+    assert!(body["debug"]["connectedUsers"].is_null());
     assert_eq!(body["debug"]["conversationId"], json!(s.conv));
 
     // Every open connection receives the event (CRD 3876); shape per CRD 3968:
@@ -269,11 +305,12 @@ async fn notify_message_broadcasts_and_reports_diagnostics() {
     // Processing error (missing conversation id) -> 500 with success:false
     // (CRD 3878).
     let (status, body, _) = app
-        .request(
+        .request_with_headers(
             "POST",
             "/api/customer-channel/notify-message",
             None,
             Some(json!({})),
+            &[("x-session-token", alice_token.as_str())],
         )
         .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
@@ -287,12 +324,13 @@ async fn notify_message_reaches_customer_channel_on_peer_instance() {
     let app_b = spawn_peer_app(&app_a);
     let addr_b = serve(&app_b).await;
 
-    let mut peer_viewer = ws_connect(addr_b, &fast_ws(&s.conv, "peer-viewer"))
+    let token = mint(&s.agent_id, "agent", 3600);
+    let mut peer_viewer = ws_connect(addr_b, &signed_ws(&s.conv, &token))
         .await
         .unwrap();
 
     let (status, body, _) = app_a
-        .request(
+        .request_with_headers(
             "POST",
             "/api/customer-channel/notify-message",
             None,
@@ -306,6 +344,7 @@ async fn notify_message_reaches_customer_channel_on_peer_instance() {
                     "senderId": "agent-a",
                 },
             })),
+            &[("x-session-token", token.as_str())],
         )
         .await;
     assert_eq!(status, StatusCode::OK);
@@ -377,10 +416,11 @@ async fn notify_message_updated_broadcasts_attachment_data() {
     let s = seed(&app).await;
     let addr = serve(&app).await;
 
-    let mut ws = ws_connect(addr, &fast_ws(&s.conv, "alice")).await.unwrap();
+    let token = mint(&s.agent_id, "agent", 3600);
+    let mut ws = ws_connect(addr, &signed_ws(&s.conv, &token)).await.unwrap();
 
     let (status, body, _) = app
-        .request(
+        .request_with_headers(
             "POST",
             "/api/customer-channel/notify-message-updated",
             None,
@@ -389,6 +429,7 @@ async fn notify_message_updated_broadcasts_attachment_data() {
                 "messageId": "m-9",
                 "data": { "attachments": [{ "id": "a-1", "url": "/uploads/a1.png" }] },
             })),
+            &[("x-session-token", token.as_str())],
         )
         .await;
     assert_eq!(status, StatusCode::OK);
@@ -401,11 +442,12 @@ async fn notify_message_updated_broadcasts_attachment_data() {
 
     // Processing error -> 500 with success:false (CRD 3886).
     let (status, body, _) = app
-        .request(
+        .request_with_headers(
             "POST",
             "/api/customer-channel/notify-message-updated",
             None,
             Some(json!({})),
+            &[("x-session-token", token.as_str())],
         )
         .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
@@ -471,7 +513,24 @@ async fn list_messages_pagination_cursor_and_attachments() {
         .unwrap();
     }
 
-    let headers: &[(&str, &str)] = &[("x-conversation-id", s.conv.as_str())];
+    let token = mint(&s.agent_id, "agent", 3600);
+
+    let (status, body, _) = app
+        .request_with_headers(
+            "GET",
+            "/api/customer-channel/messages",
+            None,
+            None,
+            &[("x-conversation-id", s.conv.as_str())],
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["success"], json!(false));
+
+    let headers: &[(&str, &str)] = &[
+        ("x-conversation-id", s.conv.as_str()),
+        ("x-session-token", token.as_str()),
+    ];
     // Newest first; full page implies hasMore (CRD 3897, 3901).
     let (status, body, _) = app
         .request_with_headers(
@@ -560,6 +619,24 @@ async fn create_message_validation_contract() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["success"], json!(false));
 
+    // Unverified credential values are rejected before they can inject an
+    // outbound agent message.
+    let (status, body, _) = app
+        .request_with_headers(
+            "POST",
+            "/api/customer-channel/messages",
+            None,
+            Some(json!({ "content": "x" })),
+            &[
+                ("x-conversation-id", s.conv.as_str()),
+                ("x-session-token", "someone"),
+            ],
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["success"], json!(false));
+
+    let token = mint(&s.agent_id, "agent", 3600);
     // Neither content nor attachments -> 400 (CRD 3922).
     let (status, body, _) = app
         .request_with_headers(
@@ -569,7 +646,7 @@ async fn create_message_validation_contract() {
             Some(json!({ "content": "   " })),
             &[
                 ("x-conversation-id", s.conv.as_str()),
-                ("x-session-token", "someone"),
+                ("x-session-token", token.as_str()),
             ],
         )
         .await;
@@ -583,7 +660,10 @@ async fn create_message_persists_links_broadcasts_and_round_trips_correlation() 
     let s = seed(&app).await;
     let addr = serve(&app).await;
 
-    let mut viewer = ws_connect(addr, &fast_ws(&s.conv, "viewer")).await.unwrap();
+    let viewer_token = mint(&s.agent_id, "agent", 3600);
+    let mut viewer = ws_connect(addr, &signed_ws(&s.conv, &viewer_token))
+        .await
+        .unwrap();
 
     // Unlinked attachment to be claimed by the new message (CRD 3912).
     sqlx::query(
@@ -675,7 +755,7 @@ async fn create_message_persists_links_broadcasts_and_round_trips_correlation() 
     }
     assert!(fresh, "latest-message cache did not refresh");
 
-    // Raw (non-JWT) credential value is treated as the user id (CRD 3907).
+    // Raw (non-JWT) credential values are not accepted.
     let (status, body, _) = app
         .request_with_headers(
             "POST",
@@ -688,9 +768,8 @@ async fn create_message_persists_links_broadcasts_and_round_trips_correlation() 
             ],
         )
         .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["message"]["senderId"], "opaque-user");
-    assert_eq!(body["message"]["messageType"], "text");
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["success"], json!(false));
 }
 
 // ----------------------------------------------------- file upload (CRD 3926-3941)
@@ -885,11 +964,12 @@ async fn customer_ws_registers_into_the_channel_and_receives_replies() {
 
     // notify-message also reaches §2.3 subscribers (same registry).
     let (status, _, _) = app
-        .request(
+        .request_with_headers(
             "POST",
             "/api/customer-channel/notify-message",
             None,
             Some(json!({ "conversationId": s.conv, "message": { "content": "via notify" } })),
+            &[("x-session-token", session.as_str())],
         )
         .await;
     assert_eq!(status, StatusCode::OK);

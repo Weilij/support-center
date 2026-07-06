@@ -600,8 +600,10 @@ pub async fn analytics_trends(
 /// (CRD 3366-3371).
 pub async fn analytics_record_error(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     body: Option<Json<Value>>,
 ) -> Result {
+    require_admin(&state, &headers).await?;
     let body = body.map(|Json(v)| v).unwrap_or(Value::Null);
     let timestamp = body.get("timestamp").and_then(Value::as_str);
     let error_code = body
@@ -638,8 +640,10 @@ pub async fn analytics_record_error(
 /// (CRD 3373-3377).
 pub async fn analytics_record_quality(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     body: Option<Json<Value>>,
 ) -> Result {
+    require_admin(&state, &headers).await?;
     let body = body.map(|Json(v)| v).unwrap_or(Value::Null);
     let timestamp = body.get("timestamp").and_then(Value::as_str);
     let user_id = body.get("userId").and_then(Value::as_str);
@@ -866,11 +870,13 @@ pub struct TestConnectionQuery {
     pub conversation_id: Option<String>,
 }
 
-/// GET /api/websocket/test-connection — public diagnostics.
+/// GET /api/websocket/test-connection — administrator diagnostics.
 pub async fn test_connection(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(q): Query<TestConnectionQuery>,
 ) -> Result {
+    require_admin(&state, &headers).await?;
     let Some(user_id) = q.user_id.filter(|s| !s.is_empty()) else {
         return Err(AppError::BadRequest("userId is required".into()));
     };

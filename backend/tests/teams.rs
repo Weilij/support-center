@@ -798,6 +798,32 @@ async fn batch_add_members_validation_errors() {
 }
 
 #[tokio::test]
+async fn batch_add_members_lead_cannot_grant_supervisor() {
+    // A team lead may batch-add members, but must not grant a rank above
+    // their own (parity with update_membership_role's clamp).
+    let app = spawn_app().await;
+    let team = app.seed_team("Crew").await;
+    let lead = app
+        .seed_agent("batch-lead@test.com", "password1", "agent")
+        .await;
+    app.add_membership(&lead, team, "lead", true).await;
+    let lead_token = app.login("batch-lead@test.com", "password1").await.0;
+    let newcomer = app
+        .seed_agent("batch-new@test.com", "password1", "agent")
+        .await;
+
+    let (status, _, _) = app
+        .request(
+            "POST",
+            &format!("/api/teams/{team}/members/batch"),
+            Some(&lead_token),
+            Some(json!({"agentIds": [newcomer], "roleInTeam": "supervisor"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn update_team_member_updates_global_account() {
     let app = spawn_app().await;
     let admin = admin_token(&app).await;
@@ -1759,6 +1785,21 @@ async fn update_membership_role_and_primary() {
     let agent = app.seed_agent("mr@test.com", "password1", "agent").await;
     app.add_membership(&agent, a, "member", true).await;
     app.add_membership(&agent, b, "member", false).await;
+    let lead = app
+        .seed_agent("self-promote@test.com", "password1", "agent")
+        .await;
+    app.add_membership(&lead, b, "lead", true).await;
+    let lead_token = app.login("self-promote@test.com", "password1").await.0;
+
+    let (status, _, _) = app
+        .request(
+            "PUT",
+            &format!("/api/teams/agent-teams/{lead}/role/{b}"),
+            Some(&lead_token),
+            Some(json!({"roleInTeam": "supervisor"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 
     let (status, body, _) = app
         .request(

@@ -743,7 +743,7 @@ async fn analytics_records_validation_and_persistence() {
     let app = spawn_app().await;
     let s = seed(&app).await;
 
-    // Missing required fields -> bad request (CRD 3371, 3377).
+    // Analytics write endpoints require administrator auth.
     let (status, _, _) = app
         .request(
             "POST",
@@ -752,7 +752,7 @@ async fn analytics_records_validation_and_persistence() {
             Some(json!({})),
         )
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, _, _) = app
         .request(
             "POST",
@@ -761,14 +761,34 @@ async fn analytics_records_validation_and_persistence() {
             Some(json!({})),
         )
         .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Missing required fields -> bad request once authenticated (CRD 3371, 3377).
+    let (status, _, _) = app
+        .request(
+            "POST",
+            "/api/websocket/analytics/errors",
+            Some(&s.admin_token),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _, _) = app
+        .request(
+            "POST",
+            "/api/websocket/analytics/quality",
+            Some(&s.admin_token),
+            Some(json!({})),
+        )
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    // Both record endpoints are unauthenticated trusted-system calls.
+    // Both record endpoints persist administrator-authenticated samples.
     let (status, body, _) = app
         .request(
             "POST",
             "/api/websocket/analytics/errors",
-            None,
+            Some(&s.admin_token),
             Some(json!({
                 "timestamp": chrono::Utc::now().to_rfc3339(),
                 "errorCode": 4401,
@@ -783,7 +803,7 @@ async fn analytics_records_validation_and_persistence() {
         .request(
             "POST",
             "/api/websocket/analytics/quality",
-            None,
+            Some(&s.admin_token),
             Some(json!({
                 "timestamp": chrono::Utc::now().to_rfc3339(),
                 "userId": s.agent_id,
@@ -919,6 +939,15 @@ async fn test_connection_requires_user_id() {
     let (status, _, _) = app
         .request("GET", "/api/websocket/test-connection", None, None)
         .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = app
+        .request(
+            "GET",
+            "/api/websocket/test-connection",
+            Some(&s.admin_token),
+            None,
+        )
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, body, _) = app
         .request(
@@ -927,7 +956,7 @@ async fn test_connection_requires_user_id() {
                 "/api/websocket/test-connection?userId={}&conversationId={}",
                 s.agent_id, s.team_conv
             ),
-            None,
+            Some(&s.admin_token),
             None,
         )
         .await;
