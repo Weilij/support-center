@@ -399,7 +399,7 @@ async fn require_conversation_exists(
     conversation_id: &str,
 ) -> Result<(), Response> {
     let exists: Option<i64> =
-        sqlx::query_scalar("SELECT 1 FROM conversations WHERE id = $1 AND deleted_at IS NULL")
+        sqlx::query_scalar("SELECT 1::bigint FROM conversations WHERE id = $1 AND deleted_at IS NULL")
             .bind(conversation_id)
             .fetch_optional(&state.db)
             .await

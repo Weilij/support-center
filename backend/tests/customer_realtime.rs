@@ -79,8 +79,12 @@ async fn channel_ws_fast_path_presence_and_multi_tab_lifecycle() {
     let s = seed(&app).await;
     let addr = serve(&app).await;
 
+    // alice and bob are *distinct* agents: presence dedup is per-user, so the
+    // "last tab closing emits USER_DISCONNECTED" contract below only holds when
+    // alice is a different user than bob (otherwise alice keeps the user online).
+    let bob_agent_id = app.seed_agent("agent2@cust.io", "Secret123!", "agent").await;
     let alice_token = mint(&s.agent_id, "agent", 3600);
-    let bob_token = mint(&s.agent_id, "agent", 3600);
+    let bob_token = mint(&bob_agent_id, "agent", 3600);
 
     let mut alice = ws_connect(addr, &signed_ws(&s.conv, &alice_token))
         .await
@@ -91,7 +95,7 @@ async fn channel_ws_fast_path_presence_and_multi_tab_lifecycle() {
         .await
         .unwrap();
     let ev = wait_for_event(&mut alice, "USER_CONNECTED").await;
-    assert_eq!(ev["userId"], s.agent_id);
+    assert_eq!(ev["userId"], bob_agent_id);
     assert!(ev["timestamp"].is_string());
 
     // The joining socket gets no presence event for itself (audience is the
@@ -103,7 +107,7 @@ async fn channel_ws_fast_path_presence_and_multi_tab_lifecycle() {
         .await
         .unwrap();
     let ev = wait_for_event(&mut alice, "USER_CONNECTED").await;
-    assert_eq!(ev["userId"], s.agent_id);
+    assert_eq!(ev["userId"], bob_agent_id);
     // bob's first tab also sees the second tab's presence event.
     wait_for_event(&mut bob1, "USER_CONNECTED").await;
 
@@ -127,7 +131,7 @@ async fn channel_ws_fast_path_presence_and_multi_tab_lifecycle() {
     // The user's last connection ending emits USER_DISCONNECTED (CRD 3959).
     drop(bob1);
     let ev = wait_for_event(&mut alice, "USER_DISCONNECTED").await;
-    assert_eq!(ev["userId"], s.agent_id);
+    assert_eq!(ev["userId"], bob_agent_id);
 
     // Inbound client frames are accepted but have no observable effect
     // (CRD 3871, 3972).
