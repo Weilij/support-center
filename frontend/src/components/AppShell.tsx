@@ -406,8 +406,13 @@ export default function AppShell({
             </button>
           </Link>
 
-          {/* User avatar + display name (name hidden on mobile ≤640px) */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {/* User avatar + display name → link to profile (name hidden on mobile ≤640px) */}
+          <Link
+            to="/profile"
+            aria-label="個人資料"
+            title="個人資料"
+            style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none', cursor: 'pointer' }}
+          >
             {displayName ? (
               <SidebarAvatar name={displayName} size="sm" />
             ) : (
@@ -418,7 +423,7 @@ export default function AppShell({
                 {displayName}
               </span>
             )}
-          </div>
+          </Link>
 
           {/* Logout button */}
           <button
