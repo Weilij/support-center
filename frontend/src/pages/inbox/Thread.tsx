@@ -36,6 +36,13 @@ export function Thread({
 }) {
   const [messages, setMessages] = useState<InboxMessage[]>([])
   const [draft, setDraft] = useState('')
+  // Per-conversation draft cache (in-memory): switching away parks the current
+  // draft under its conversation id and restores the target's, so an unfinished
+  // reply survives a detour to another thread. Attachments are not preserved.
+  const draftRef = useRef(draft)
+  draftRef.current = draft
+  const drafts = useRef<Map<string, string>>(new Map())
+  const prevConvId = useRef(convId)
   const [error, setError] = useState<string | null>(null)
   const [assignOpen, setAssignOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
@@ -125,6 +132,15 @@ export function Thread({
     const dropped = event.dataTransfer.files
     if (dropped && dropped.length) await addFiles(dropped)
   }
+
+  // Park/restore drafts on conversation switch (runs before the message-load
+  // effect below; both key off convId).
+  useEffect(() => {
+    const prev = prevConvId.current
+    if (prev && prev !== convId) drafts.current.set(prev, draftRef.current)
+    setDraft(convId ? (drafts.current.get(convId) ?? '') : '')
+    prevConvId.current = convId
+  }, [convId])
 
   useEffect(() => {
     setAttachPending((prev) => {
