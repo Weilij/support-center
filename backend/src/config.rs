@@ -171,7 +171,7 @@ impl Config {
                 .ok()
                 .map(|s| s.trim_end_matches('/').to_string())
                 .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "https://graph.facebook.com/v20.0".into()),
+                .unwrap_or_else(|| "https://graph.facebook.com/v21.0".into()),
             facebook_verify_token: std::env::var("FACEBOOK_VERIFY_TOKEN")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -285,7 +285,7 @@ pub fn test_config() -> Config {
         line_push_url: "https://api.line.me/v2/bot/message/push".into(),
         line_bot_info_url: "https://api.line.me/v2/bot/info".into(),
         line_content_api_base_url: "https://api-data.line.me".into(),
-        meta_graph_url: "https://graph.facebook.com/v20.0".into(),
+        meta_graph_url: "https://graph.facebook.com/v21.0".into(),
         file_signing_secret: None,
         shopee_partner_id: None,
         shopee_partner_key: None,

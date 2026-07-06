@@ -285,8 +285,14 @@ async fn line_push(
 }
 
 /// FB has no batch endpoint — send one message per item, return the last id.
-async fn fb_send(token: &str, recipient: &str, items: &[OutboundItem]) -> OutboundResult<String> {
-    let url = format!("https://graph.facebook.com/v21.0/me/messages?access_token={token}");
+async fn fb_send(
+    graph_url: &str,
+    token: &str,
+    recipient: &str,
+    items: &[OutboundItem],
+) -> OutboundResult<String> {
+    let base = graph_url.trim_end_matches('/');
+    let url = format!("{base}/me/messages?access_token={token}");
     let mut last_id = String::new();
     for it in items {
         let content = match &it.media {
@@ -457,10 +463,9 @@ async fn line_profile(token: &str, user_id: &str) -> Profile {
     }
 }
 
-async fn meta_profile(token: &str, user_id: &str) -> Profile {
-    let url = format!(
-        "https://graph.facebook.com/v21.0/{user_id}?fields=name,username,profile_pic&access_token={token}"
-    );
+async fn meta_profile(graph_url: &str, token: &str, user_id: &str) -> Profile {
+    let base = graph_url.trim_end_matches('/');
+    let url = format!("{base}/{user_id}?fields=name,username,profile_pic&access_token={token}");
     let Some(client) = http_client() else {
         return Profile::default();
     };
@@ -557,11 +562,11 @@ impl OutboundGateway {
                 None => Err(OutboundError::MissingCredentials("LINE")),
             },
             "facebook" => match &self.facebook {
-                Some(tok) => fb_send(tok, recipient, items).await,
+                Some(tok) => fb_send(&self.meta_graph_url, tok, recipient, items).await,
                 None => Err(OutboundError::UnsupportedPlatform("facebook".into())),
             },
             "instagram" => match &self.instagram {
-                Some(tok) => fb_send(tok, recipient, items).await,
+                Some(tok) => fb_send(&self.meta_graph_url, tok, recipient, items).await,
                 None => Err(OutboundError::UnsupportedPlatform("instagram".into())),
             },
             "shopee" => match (&self.shopee, &self.shopee_db) {
@@ -614,11 +619,11 @@ impl OutboundGateway {
                 None => Profile::default(),
             },
             "facebook" => match &self.facebook {
-                Some(t) => meta_profile(t, user_id).await,
+                Some(t) => meta_profile(&self.meta_graph_url, t, user_id).await,
                 None => Profile::default(),
             },
             "instagram" => match &self.instagram {
-                Some(t) => meta_profile(t, user_id).await,
+                Some(t) => meta_profile(&self.meta_graph_url, t, user_id).await,
                 None => Profile::default(),
             },
             _ => Profile::default(),

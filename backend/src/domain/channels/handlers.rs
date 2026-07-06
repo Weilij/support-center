@@ -624,6 +624,24 @@ pub async fn verify_channel(
                     })
                 })
         }
+        "instagram" => {
+            let token = cred("accessToken");
+            let ig_id = conf("igId");
+            if token.is_empty() {
+                return Ok(verification_failure("Missing access token", None));
+            }
+            if ig_id.is_empty() {
+                return Ok(verification_failure("Missing Instagram account ID", None));
+            }
+            verify_meta_node(&state, &ig_id, &token, &["id", "username"])
+                .await
+                .map(|details| {
+                    json!({
+                        "igId": details.get("id").and_then(Value::as_str).unwrap_or(&ig_id),
+                        "username": details.get("username").and_then(Value::as_str),
+                    })
+                })
+        }
         "whatsapp" => {
             let token = cred("accessToken");
             let business_id = conf("businessAccountId");

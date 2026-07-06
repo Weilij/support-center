@@ -68,6 +68,7 @@ async fn mock_platform_verify_server() -> String {
         Ok(Json(json!({
             "id": id,
             "name": format!("Page {id}"),
+            "username": format!("ig_{id}"),
             "display_phone_number": "+15551234567",
             "verified_name": "Support WhatsApp",
         })))
@@ -730,6 +731,44 @@ async fn verify_success_marks_verified_and_clears_errors() {
     assert_eq!(body["data"]["isVerified"], true);
     assert_eq!(body["data"]["errorCount"], 0);
     assert_eq!(body["data"]["lastError"], Value::Null);
+}
+
+#[tokio::test]
+async fn verify_instagram_marks_verified_with_username() {
+    let app = spawn_channels_app().await;
+    let team = app.seed_team("Team").await;
+    let token = admin_in_team(&app, "a@x.io", team).await;
+    let (status, body, _) = app
+        .request(
+            "POST",
+            "/api/channels",
+            Some(&token),
+            Some(json!({
+                "platform": "instagram",
+                "instagramConfig": { "igId": "IG42", "accessToken": "tok" }
+            })),
+        )
+        .await;
+    assert_eq!(status, 201, "{body}");
+    let id = body["data"]["id"].as_i64().unwrap();
+
+    let (status, body, _) = app
+        .request(
+            "POST",
+            &format!("/api/channels/{id}/verify"),
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["verified"], true);
+    assert_eq!(body["details"]["igId"], "IG42");
+    assert_eq!(body["details"]["username"], "ig_IG42");
+
+    let (_, body, _) = app
+        .request("GET", &format!("/api/channels/{id}"), Some(&token), None)
+        .await;
+    assert_eq!(body["data"]["isVerified"], true);
 }
 
 #[tokio::test]
