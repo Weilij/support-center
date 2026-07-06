@@ -13,7 +13,9 @@ interface LoginData {
   // token / refreshToken are set as HttpOnly cookies by the backend;
   // we ignore them here and let the browser handle them automatically.
   sessionId: string
-  agent: { id: string; email: string; displayName: string; role: string; position?: string }
+  // `teams` (with names) is included so session.teamOptions() is populated at
+  // login, before the page-init /me runs (F4).
+  agent: { id: string; email: string; displayName: string; role: string; position?: string; teams?: unknown }
   mustChangePassword?: boolean
   tempToken?: string
 }

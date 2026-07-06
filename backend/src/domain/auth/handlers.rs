@@ -212,6 +212,19 @@ pub async fn login(
     )
     .await;
 
+    // Enrich the login agent with its teams (+ names), mirroring /me, so the
+    // frontend session has team context immediately — without waiting for the
+    // page-init /me call (F4: quick-assign otherwise reported "no team").
+    let team_ids: Vec<i64> = teams.iter().map(|t| t.team_id).collect();
+    let team_names = store::team_names(&state.db, &team_ids).await?;
+    let mut agent_json = agent_view(&agent);
+    if let Value::Object(ref mut map) = agent_json {
+        map.insert(
+            "teams".into(),
+            json!(membership_teams_json(&teams, &team_names)),
+        );
+    }
+
     let csrf_token = uuid::Uuid::new_v4().simple().to_string();
     let secure = secure_cookies(&state, &headers);
     let mut response = envelope::ok(json!({
@@ -219,7 +232,7 @@ pub async fn login(
         "refreshToken": refresh_token,
         "sessionId": session_id,
         "expiresIn": tokens::ACCESS_TTL_SECS,
-        "agent": agent_view(&agent),
+        "agent": agent_json,
     }));
     for cookie_str in cookies::auth_cookies(&access_token, &refresh_token, &csrf_token, secure) {
         if let Ok(hv) = HeaderValue::from_str(&cookie_str) {
