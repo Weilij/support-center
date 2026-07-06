@@ -84,6 +84,23 @@ pub async fn team_name(pool: &PgPool, team_id: i64) -> sqlx::Result<Option<Strin
         .await
 }
 
+/// Batch-resolve team names for a set of ids (used to enrich the `/me` teams
+/// list so the frontend session shows real names, not `Team {id}` fallbacks).
+pub async fn team_names(
+    pool: &PgPool,
+    ids: &[i64],
+) -> sqlx::Result<std::collections::HashMap<i64, String>> {
+    if ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let rows: Vec<(i64, String)> =
+        sqlx::query_as("SELECT id, name FROM teams WHERE id = ANY($1) AND deleted_at IS NULL")
+            .bind(ids)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows.into_iter().collect())
+}
+
 // --- auth sessions (CRD §1.2 Part A, lines 301-328) ---
 
 pub const SESSION_TTL_HOURS: i64 = 24;

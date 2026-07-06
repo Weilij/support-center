@@ -570,14 +570,19 @@ pub async fn profile(
     })))
 }
 
-/// Serialize the caller's team memberships (in-team role included) for the `/me`
-/// response. Kept pure (no DB) so it is unit-testable; `me` reads `AuthUser.teams`.
-fn membership_teams_json(teams: &[crate::state::TeamMembership]) -> Vec<Value> {
+/// Serialize the caller's team memberships (in-team role + display name) for the
+/// `/me` response. Kept pure (no DB) so it is unit-testable; `me` reads
+/// `AuthUser.teams` and resolves names via a lookup built from the DB.
+fn membership_teams_json(
+    teams: &[crate::state::TeamMembership],
+    names: &std::collections::HashMap<i64, String>,
+) -> Vec<Value> {
     teams
         .iter()
         .map(|t| {
             json!({
                 "teamId": t.team_id,
+                "name": names.get(&t.team_id),
                 "roleInTeam": t.role,
                 "isPrimary": t.is_primary,
             })
@@ -594,7 +599,12 @@ pub async fn me(
         .ok_or_else(|| AppError::Unauthorized("Account not found".into()))?;
     let mut view = agent_view(&agent);
     if let Value::Object(ref mut map) = view {
-        map.insert("teams".into(), json!(membership_teams_json(&user.teams)));
+        let ids: Vec<i64> = user.teams.iter().map(|t| t.team_id).collect();
+        let names = store::team_names(&state.db, &ids).await?;
+        map.insert(
+            "teams".into(),
+            json!(membership_teams_json(&user.teams, &names)),
+        );
     }
     Ok(envelope::ok(view))
 }
@@ -1147,9 +1157,10 @@ mod me_teams_tests {
     use super::membership_teams_json;
     use crate::state::TeamMembership;
     use serde_json::json;
+    use std::collections::HashMap;
 
     #[test]
-    fn serializes_memberships_with_in_team_role() {
+    fn serializes_memberships_with_in_team_role_and_name() {
         let teams = vec![
             TeamMembership {
                 team_id: 7,
@@ -1162,17 +1173,19 @@ mod me_teams_tests {
                 is_primary: false,
             },
         ];
+        let names: HashMap<i64, String> = [(7, "客服一組".to_string())].into_iter().collect();
         assert_eq!(
-            membership_teams_json(&teams),
+            membership_teams_json(&teams, &names),
             vec![
-                json!({ "teamId": 7, "roleInTeam": "supervisor", "isPrimary": true }),
-                json!({ "teamId": 9, "roleInTeam": "member", "isPrimary": false }),
+                // team 7 resolves to a name; team 9 has none → null
+                json!({ "teamId": 7, "name": "客服一組", "roleInTeam": "supervisor", "isPrimary": true }),
+                json!({ "teamId": 9, "name": null, "roleInTeam": "member", "isPrimary": false }),
             ],
         );
     }
 
     #[test]
     fn empty_memberships_serialize_to_empty_vec() {
-        assert!(membership_teams_json(&[]).is_empty());
+        assert!(membership_teams_json(&[], &std::collections::HashMap::new()).is_empty());
     }
 }
