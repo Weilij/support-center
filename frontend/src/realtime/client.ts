@@ -31,6 +31,35 @@ export function onEvent(event: string, fn: Handler): () => void {
   return () => handlers.get(event)?.delete(fn)
 }
 
+// ── Connection state (Phase 2.2 offline awareness) ──────────────────────────
+// 'connecting'   — first handshake in flight, no banner (HTTP still works)
+// 'connected'    — live
+// 'reconnecting' — dropped after having been live; UI warns + gates sending
+// 'disconnected' — intentionally closed (logout)
+export type ConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected'
+type ConnectionListener = (state: ConnectionState) => void
+
+let connectionState: ConnectionState = 'disconnected'
+const connectionListeners = new Set<ConnectionListener>()
+
+export function getConnectionState(): ConnectionState {
+  return connectionState
+}
+
+/// Subscribe to connection-state changes. Fires immediately with the current
+/// state so subscribers render correctly on mount. Returns an unsubscribe fn.
+export function onConnectionChange(fn: ConnectionListener): () => void {
+  connectionListeners.add(fn)
+  fn(connectionState)
+  return () => connectionListeners.delete(fn)
+}
+
+function setConnectionState(next: ConnectionState) {
+  if (connectionState === next) return
+  connectionState = next
+  connectionListeners.forEach((fn) => fn(next))
+}
+
 function route(event: string, payload: Record<string, unknown>) {
   handlers.get(event)?.forEach((fn) => fn(payload))
 }
@@ -109,6 +138,7 @@ export function connectRealtime(): void {
   // — no ?token= query param needed.
   if (!session.identity() || socket) return
   closedByUs = false
+  setConnectionState(openedOnce ? 'reconnecting' : 'connecting')
   const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
   const url = `${scheme}://${window.location.host}/api/websocket/connect`
   const ws = new WebSocket(url)
@@ -118,6 +148,7 @@ export function connectRealtime(): void {
     const reconnected = openedOnce
     openedOnce = true
     backoff = 1000 // reset after a successful handshake
+    setConnectionState('connected')
     // Flush every desired subscription now that the socket is OPEN — covers the
     // initial-load race and re-establishes subscriptions after a reconnect.
     desiredConversations.forEach((id) => sendFrame({ type: 'subscribe', conversationId: id }))
@@ -148,6 +179,8 @@ export function connectRealtime(): void {
   ws.onclose = () => {
     socket = null
     if (closedByUs) return
+    // Lost an established (or in-flight) connection — warn the UI and retry.
+    setConnectionState('reconnecting')
     // Capped-backoff reconnection (CRD §8.3).
     const delay = backoff
     backoff = Math.min(backoff * 2, MAX_BACKOFF_MS)
@@ -163,6 +196,7 @@ export function disconnectRealtime(): void {
   seenMessageIds.clear()
   socket?.close()
   socket = null
+  setConnectionState('disconnected')
 }
 
 export function sendFrame(frame: Record<string, unknown>): boolean {

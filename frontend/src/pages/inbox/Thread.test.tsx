@@ -20,6 +20,8 @@ const rt = vi.hoisted(() => ({
   readMessageEvent: vi.fn((p: Record<string, unknown>) => p),
   subscribeConversation: vi.fn(),
   unsubscribeConversation: vi.fn(),
+  getConnectionState: vi.fn(() => 'connected'),
+  onConnectionChange: vi.fn(() => vi.fn()),
 }))
 vi.mock('../../realtime/client', () => rt)
 

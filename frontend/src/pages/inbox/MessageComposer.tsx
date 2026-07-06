@@ -27,6 +27,7 @@ export function MessageComposer({
   onDragLeave,
   onDrop,
   onSubmit,
+  offline = false,
 }: {
   draft: string
   setDraft: Dispatch<SetStateAction<string>>
@@ -40,6 +41,7 @@ export function MessageComposer({
   onDragLeave: () => void
   onDrop: (event: DragEvent) => Promise<void>
   onSubmit: (event: FormEvent) => Promise<void>
+  offline?: boolean
 }) {
   const { list: templates } = useTemplates()
   const [slashIndex, setSlashIndex] = useState(0)
@@ -78,6 +80,7 @@ export function MessageComposer({
         return
       }
     }
+    if (offline) return
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault()
       void onSubmit(event as unknown as FormEvent)
@@ -181,7 +184,9 @@ export function MessageComposer({
             <button type="button" className="cs-composer-ico" aria-label="快捷回覆" onClick={() => setMgrOpen(true)}>
               <Icon name="zap" w={20} />
             </button>
-            <span style={{ flex: 1 }} />
+            {offline
+              ? <span style={{ flex: 1, fontSize: 12, color: 'var(--muted)' }}>連線中斷，暫時無法傳送</span>
+              : <span style={{ flex: 1 }} />}
             <button
               type="button"
               onClick={onAssign}
@@ -193,7 +198,7 @@ export function MessageComposer({
             <button
               type="submit"
               className="cs-btn cs-btn--primary"
-              disabled={!draft.trim() && attachments.length === 0}
+              disabled={offline || (!draft.trim() && attachments.length === 0)}
               style={{ display: 'flex', alignItems: 'center', gap: 6 }}
             >
               <Icon name="send" w={18} />

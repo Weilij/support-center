@@ -16,6 +16,7 @@ import { useHotkeys } from '../hooks/useHotkeys'
 import { notificationsStore } from '../stores/notifications'
 import { useStore } from '../stores/store'
 import { loadTeams, teamsStore } from '../stores/teams'
+import { ConnectionBanner } from './ConnectionBanner'
 import { Icon } from './Icon'
 import { ThemeToggle } from './ThemeToggle'
 
@@ -434,6 +435,9 @@ export default function AppShell({
             登出
           </button>
         </header>
+
+        {/* Realtime connection status (reconnecting / recovered) */}
+        <ConnectionBanner />
 
         {/* Content area */}
         <main className="cs-content" style={{ overflowY: 'auto' }}>

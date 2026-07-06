@@ -5,6 +5,7 @@ import { session } from '../../auth/session'
 import { AssignDialog } from '../../components/ConversationAssign'
 import { Toast } from '../../components/ui'
 import { onEvent, readMessageEvent, subscribeConversation, unsubscribeConversation } from '../../realtime/client'
+import { useConnectionState } from '../../hooks/useConnectionState'
 import { loadPendingDelayed, scheduleDelayed, type PendingDelayed } from '../../stores/delayedMessages'
 import {
   loadConversationFiles,
@@ -94,6 +95,8 @@ export function Thread({
       await refreshPending()
     }
   }
+
+  const offline = useConnectionState() === 'reconnecting'
 
   const [dragOver, setDragOver] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -315,6 +318,7 @@ export function Thread({
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         onSubmit={send}
+        offline={offline}
       />
 
       {convId && assignOpen && (
