@@ -13,7 +13,7 @@ interface LoginData {
   // token / refreshToken are set as HttpOnly cookies by the backend;
   // we ignore them here and let the browser handle them automatically.
   sessionId: string
-  agent: { id: string; email: string; displayName: string; role: string }
+  agent: { id: string; email: string; displayName: string; role: string; position?: string }
   mustChangePassword?: boolean
   tempToken?: string
 }
@@ -46,7 +46,10 @@ export default function Login() {
       return
     }
     session.storeLogin(resp.data.sessionId, resp.data.agent)
-    navigate('/dashboard', { replace: true })
+    // Land each position on their primary workspace: front-line agents live in
+    // the inbox, supervisors/admins start on the dashboard overview.
+    const home = session.position() === 'agent' ? '/conversations' : '/dashboard'
+    navigate(home, { replace: true })
   }
 
   const outerStyle: React.CSSProperties = {
