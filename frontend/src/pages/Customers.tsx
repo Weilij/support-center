@@ -143,7 +143,7 @@ function CustomerDrawer({ id, onClose }: { id: number | null; onClose: () => voi
             <Row label="Email">{c.email || '—'}</Row>
             <Row label="電話">{c.phone || '—'}</Row>
             <Row label="建立時間">
-              {c.created_at ? new Date(c.created_at).toLocaleString() : '—'}
+              {c.created_at ? new Date(c.created_at).toLocaleString('zh-TW') : '—'}
             </Row>
           </section>
 

@@ -123,15 +123,15 @@ export default function Install() {
           return <li key={label} style={{ fontWeight: active ? 'bold' : 'normal' }}>{i + 1}. {label}</li>
         })}
       </ol>
-      {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
+      {error && <p role="alert" style={{ color: 'var(--color-danger)' }}>{error}</p>}
 
       {step === 'auth' && (
         <form onSubmit={verifyToken} style={{ display: 'grid', gap: 8 }}>
           <p>輸入雲端帳號的 API Token 與帳號識別碼。</p>
           <input value={apiToken} onChange={(e) => setApiToken(e.target.value)}
-                 placeholder="API Token" required />
+                 placeholder="API 權杖" required />
           <input value={accountId} onChange={(e) => setAccountId(e.target.value)}
-                 placeholder="Account ID" required />
+                 placeholder="帳號識別碼" required />
           <button type="submit">驗證</button>
           <button type="button" onClick={startOAuth} disabled={oauthBusy}>
             {oauthBusy ? '連線中…' : '使用 Cloudflare OAuth'}

@@ -175,7 +175,7 @@ export default function Login() {
                 style={inputStyle}
               />
             </label>
-            {error && <p role="alert" style={{ color: 'crimson', margin: '0 0 var(--sp-4)', fontSize: 13 }}>{error}</p>}
+            {error && <p role="alert" style={{ color: 'var(--color-danger)', margin: '0 0 var(--sp-4)', fontSize: 13 }}>{error}</p>}
             <button type="submit" disabled={busy} className="cs-btn cs-btn--primary" style={{ width: '100%', justifyContent: 'center' }}>
               {t('login.submit')}
             </button>

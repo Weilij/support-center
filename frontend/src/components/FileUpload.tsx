@@ -64,7 +64,7 @@ export function FileUpload({ onUpload, accept, label = '拖放或點選上傳檔
         onChange={(e) => void handle(e.target.files?.[0])}
       />
       {error && (
-        <p role="alert" style={{ color: 'crimson', fontSize: 12, margin: '6px 0 0' }}>
+        <p role="alert" style={{ color: 'var(--color-danger)', fontSize: 12, margin: '6px 0 0' }}>
           {error}
         </p>
       )}

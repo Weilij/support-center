@@ -103,7 +103,7 @@ export default function Notifications() {
         </>
       )}
 
-      {state.error && <p role="alert" style={{ color: 'crimson' }}>{state.error}</p>}
+      {state.error && <p role="alert" style={{ color: 'var(--color-danger)' }}>{state.error}</p>}
 
       <Card>
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>

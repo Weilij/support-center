@@ -32,7 +32,7 @@ export function Field({ label, error, children }: FieldProps) {
       {label}
       {children}
       {error && (
-        <p role="alert" style={{ color: 'crimson', fontSize: 12, margin: '4px 0 0' }}>
+        <p role="alert" style={{ color: 'var(--color-danger)', fontSize: 12, margin: '4px 0 0' }}>
           {error}
         </p>
       )}

@@ -94,7 +94,7 @@ export default function SystemMaintenance() {
           </div>
         )}
 
-        {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
+        {error && <p role="alert" style={{ color: 'var(--color-danger)' }}>{error}</p>}
         {!busy && <MetricsView data={data} />}
       </Card>
 

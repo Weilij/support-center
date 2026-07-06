@@ -21,7 +21,7 @@ const RANGES = [
 
 function num(v: unknown): string {
   if (v == null) return '—'
-  if (typeof v === 'number') return v.toLocaleString()
+  if (typeof v === 'number') return v.toLocaleString('zh-TW')
   return String(v)
 }
 

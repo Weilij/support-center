@@ -76,18 +76,18 @@ export default function AlertConfig() {
       </div>
 
       <Card title="Slack" style={{ marginBottom: 'var(--sp-3)' }}>
-        <Input label="Webhook URL" value={slackUrl} onChange={(e) => setSlackUrl(e.target.value)} placeholder="https://hooks.slack.com/..." />
+        <Input label="Webhook 網址" value={slackUrl} onChange={(e) => setSlackUrl(e.target.value)} placeholder="https://hooks.slack.com/..." />
         <button onClick={() => void saveSlack()}>儲存 Slack</button>
       </Card>
 
       <Card title="Webhook" style={{ marginBottom: 'var(--sp-3)' }}>
-        <Input label="Webhook URL" value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} placeholder="https://..." />
+        <Input label="Webhook 網址" value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} placeholder="https://..." />
         <button onClick={() => void saveWebhook()}>儲存 Webhook</button>
       </Card>
 
       <Card title="Email (SMTP)" style={{ marginBottom: 'var(--sp-3)' }}>
         <Input label="SMTP 主機" value={email.host} onChange={(e) => setEmail({ ...email, host: e.target.value })} />
-        <Input label="Port" type="number" value={email.port} onChange={(e) => setEmail({ ...email, port: Number(e.target.value) })} />
+        <Input label="連接埠" type="number" value={email.port} onChange={(e) => setEmail({ ...email, port: Number(e.target.value) })} />
         <Input label="寄件者" value={email.sender} onChange={(e) => setEmail({ ...email, sender: e.target.value })} />
         <Input label="密碼" type="password" value={email.password} onChange={(e) => setEmail({ ...email, password: e.target.value })} />
         <Input label="收件者（逗號分隔）" value={email.recipients} onChange={(e) => setEmail({ ...email, recipients: e.target.value })} />

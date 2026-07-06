@@ -56,7 +56,7 @@ export default function Settings() {
     <div style={{ maxWidth: 480, margin: '0 auto', padding: '0 16px' }}>
       <PageHeader title="系統設定" />
       {message && <p style={{ color: 'seagreen' }}>{message}</p>}
-      {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
+      {error && <p role="alert" style={{ color: 'var(--color-danger)' }}>{error}</p>}
       <Card title="一般設定">
         <form onSubmit={save}>
           {field('systemName', '系統名稱')}

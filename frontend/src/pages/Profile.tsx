@@ -67,7 +67,7 @@ export default function ProfilePage() {
         subtitle={profile.email ? `${profile.email}${profile.role ? ` · ${profile.role}` : ''}${profile.teamName ? ` · ${profile.teamName}` : ''}` : undefined}
       />
       {message && <p style={{ color: 'seagreen' }}>{message}</p>}
-      {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
+      {error && <p role="alert" style={{ color: 'var(--color-danger)' }}>{error}</p>}
 
       <Card title="顯示名稱" style={{ marginBottom: 'var(--sp-4)' }}>
         <form onSubmit={saveName}>

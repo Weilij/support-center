@@ -138,7 +138,7 @@ export default function Sessions() {
       </StatGrid>
 
       {error ? (
-        <div style={{ padding: '24px 16px', textAlign: 'center', color: 'crimson' }}>
+        <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--color-danger)' }}>
           <p style={{ margin: '0 0 var(--sp-3)' }}>載入失敗，請重試</p>
           <button onClick={() => void load(page)}>重試</button>
         </div>

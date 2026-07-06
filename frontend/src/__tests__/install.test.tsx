@@ -42,8 +42,8 @@ describe('Install page', () => {
 
     render(<Install />)
 
-    fireEvent.change(screen.getByPlaceholderText('API Token'), { target: { value: 'tok_live' } })
-    fireEvent.change(screen.getByPlaceholderText('Account ID'), { target: { value: 'acc_123' } })
+    fireEvent.change(screen.getByPlaceholderText('API 權杖'), { target: { value: 'tok_live' } })
+    fireEvent.change(screen.getByPlaceholderText('帳號識別碼'), { target: { value: 'acc_123' } })
     fireEvent.click(screen.getByText('驗證'))
 
     await screen.findByText('開始佈建')

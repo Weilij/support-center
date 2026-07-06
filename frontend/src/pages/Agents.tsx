@@ -169,7 +169,7 @@ export default function Agents() {
       ),
     },
     { key: 'displayName', header: '名稱', render: (a) => a.displayName || a.email || a.id },
-    { key: 'email', header: 'Email', render: (a) => a.email || '—' },
+    { key: 'email', header: '電子郵件', render: (a) => a.email || '—' },
     { key: 'role', header: '角色', render: (a) => <StatusPill status={a.role ?? ''} /> },
     {
       key: 'position',
@@ -201,7 +201,7 @@ export default function Agents() {
     {
       key: 'lastActiveAt',
       header: '最後活動',
-      render: (a) => (a.lastActiveAt ? new Date(a.lastActiveAt).toLocaleString() : '—'),
+      render: (a) => (a.lastActiveAt ? new Date(a.lastActiveAt).toLocaleString('zh-TW') : '—'),
     },
     {
       key: 'del',
@@ -301,7 +301,7 @@ export default function Agents() {
             ]}
           />
           {createError && (
-            <p role="alert" style={{ color: 'crimson', fontSize: 13, margin: '0 0 12px' }}>
+            <p role="alert" style={{ color: 'var(--color-danger)', fontSize: 13, margin: '0 0 12px' }}>
               {createError}
             </p>
           )}

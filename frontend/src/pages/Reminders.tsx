@@ -86,7 +86,7 @@ export default function Reminders() {
       key: 'remindAt',
       header: '時間',
       width: 160,
-      render: (r) => (r.remindAt ? new Date(r.remindAt).toLocaleString() : '—'),
+      render: (r) => (r.remindAt ? new Date(r.remindAt).toLocaleString('zh-TW') : '—'),
     },
     { key: 'title', header: '提醒', render: (r) => r.title || '—' },
     {
@@ -128,7 +128,7 @@ export default function Reminders() {
 
       <Card title="即將到來">
         {error ? (
-          <div style={{ padding: '24px 16px', textAlign: 'center', color: 'crimson' }}>
+          <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--color-danger)' }}>
             <p style={{ margin: '0 0 var(--sp-3)' }}>載入失敗，請重試</p>
             <button onClick={() => void load()}>重試</button>
           </div>

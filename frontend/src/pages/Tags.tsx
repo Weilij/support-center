@@ -33,7 +33,7 @@ export default function Tags() {
     <div style={{ maxWidth: 600, margin: '0 auto', padding: '0 16px' }}>
       <PageHeader title="標籤管理" actions={addAction} />
 
-      {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
+      {error && <p role="alert" style={{ color: 'var(--color-danger)' }}>{error}</p>}
 
       <Card>
         <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>

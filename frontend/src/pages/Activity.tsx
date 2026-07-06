@@ -67,7 +67,7 @@ export default function ActivityLog() {
     .slice(0, 6)
 
   const columns: Column<Activity>[] = [
-    { key: 'createdAt', header: '時間', width: 160, render: (a) => (a.createdAt ? new Date(a.createdAt).toLocaleString() : '—') },
+    { key: 'createdAt', header: '時間', width: 160, render: (a) => (a.createdAt ? new Date(a.createdAt).toLocaleString('zh-TW') : '—') },
     { key: 'agentName', header: '操作者', render: (a) => a.agentName || '—' },
     { key: 'action', header: '動作', render: (a) => a.action || '—' },
     {
@@ -87,7 +87,7 @@ export default function ActivityLog() {
   return (
     <div style={{ maxWidth: 920, margin: '0 auto', padding: '0 16px' }}>
       <PageHeader title="活動日誌" />
-      {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
+      {error && <p role="alert" style={{ color: 'var(--color-danger)' }}>{error}</p>}
 
       <StatGrid style={{ marginBottom: 'var(--sp-4)' }}>
         <StatCard label="總活動數" value={overview.totalActivities ?? 0} />

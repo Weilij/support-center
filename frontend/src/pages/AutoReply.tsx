@@ -105,7 +105,7 @@ function RulesTab() {
   return (
     <>
       <Card title="新增規則" style={{ marginBottom: 'var(--sp-5)' }}>
-        {error && <p role="alert" style={{ color: 'crimson' }}>{error}</p>}
+        {error && <p role="alert" style={{ color: 'var(--color-danger)' }}>{error}</p>}
         <form onSubmit={create} style={{ display: 'grid', gap: 'var(--sp-3)' }}>
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="規則名稱" required />
           <select value={trigger} onChange={(e) => setTrigger(e.target.value)}>
@@ -273,7 +273,7 @@ function LogsTab() {
       key: 'createdAt',
       header: '時間',
       width: 150,
-      render: (l) => (l.createdAt ? new Date(l.createdAt).toLocaleString() : '—'),
+      render: (l) => (l.createdAt ? new Date(l.createdAt).toLocaleString('zh-TW') : '—'),
     },
     { key: 'ruleName', header: '規則', render: (l) => l.ruleName || '—' },
     { key: 'triggerContent', header: '觸發內容', render: (l) => l.triggerContent || '—' },

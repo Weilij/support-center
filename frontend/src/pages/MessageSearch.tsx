@@ -62,7 +62,7 @@ export default function MessageSearch() {
       key: 'createdAt',
       header: '時間',
       width: 150,
-      render: (m) => (m.createdAt ? new Date(m.createdAt).toLocaleString() : '—'),
+      render: (m) => (m.createdAt ? new Date(m.createdAt).toLocaleString('zh-TW') : '—'),
     },
     { key: 'senderType', header: '發送者', render: (m) => <StatusPill status={m.senderType ?? ''} label={m.senderName || m.senderType} /> },
     {
