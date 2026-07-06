@@ -144,13 +144,12 @@ export function Thread({
     prevConvId.current = convId
   }, [convId])
 
-  useEffect(() => {
-    setAttachPending((prev) => {
-      prev.forEach((attachment) => { if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl) })
-      return []
-    })
-    if (!convId) { setMessages([]); return }
-    void get<{
+  // Fetch conversation metadata (platform, team, customer) and push it up. Used
+  // on conversation switch AND after an assign/transfer so the customer panel's
+  // team label stays in sync without a page reload.
+  const refreshMeta = useCallback(async () => {
+    if (!convId) return
+    const resp = await get<{
       platform?: string
       platformUserId?: string
       teamId?: number | null
@@ -158,19 +157,27 @@ export function Thread({
       customerId?: number | null
       customerName?: string
       customerAvatarUrl?: string
-    }>(`/api/conversations/${convId}`).then((resp) => {
-      if (resp.success && resp.data) {
-        onMetaLoaded({
-          platform: resp.data.platform,
-          platformUserId: resp.data.platformUserId,
-          teamId: resp.data.teamId ?? null,
-          teamName: resp.data.assignedTeam?.name ?? null,
-          customerId: resp.data.customerId ?? null,
-          customerName: resp.data.customerName,
-          avatarUrl: resp.data.customerAvatarUrl ?? null,
-        })
-      }
+    }>(`/api/conversations/${convId}`)
+    if (resp.success && resp.data) {
+      onMetaLoaded({
+        platform: resp.data.platform,
+        platformUserId: resp.data.platformUserId,
+        teamId: resp.data.teamId ?? null,
+        teamName: resp.data.assignedTeam?.name ?? null,
+        customerId: resp.data.customerId ?? null,
+        customerName: resp.data.customerName,
+        avatarUrl: resp.data.customerAvatarUrl ?? null,
+      })
+    }
+  }, [convId, onMetaLoaded])
+
+  useEffect(() => {
+    setAttachPending((prev) => {
+      prev.forEach((attachment) => { if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl) })
+      return []
     })
+    if (!convId) { setMessages([]); return }
+    void refreshMeta()
     const loadMessages = async () => {
       setError(null)
       const resp = await get<{ items?: InboxMessage[]; messages?: InboxMessage[] }>(
@@ -212,7 +219,7 @@ export function Thread({
       offReconnect()
       unsubscribeConversation(convId)
     }
-  }, [convId, reloadKey]) // onMetaLoaded intentionally omitted — stable callback ref
+  }, [convId, reloadKey, refreshMeta])
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: 'smooth' })
@@ -293,6 +300,7 @@ export function Thread({
         onToggleFiles={() => setShowFiles((value) => !value)}
         onToggleSchedule={() => setShowSchedule((value) => !value)}
         onAssignResult={setToast}
+        onAssignChanged={() => void refreshMeta()}
         onToggleCustomerPanel={onToggleCustPanel}
         showCustomerPanelToggle={showCustToggle}
       />

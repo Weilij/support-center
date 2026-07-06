@@ -18,10 +18,14 @@ export function AssignMenu({
   conversationId,
   currentTeamId,
   onResult,
+  onChanged,
 }: {
   conversationId: string
   currentTeamId?: number | null
   onResult?: (message: string) => void
+  /// Called after a successful assign/transfer/unassign so callers can refresh
+  /// derived UI (e.g. the customer panel's team label) without a page reload.
+  onChanged?: () => void
 }) {
   const { items: teams } = useStore(teamsStore)
   const [open, setOpen] = useState(false)
@@ -67,7 +71,7 @@ export function AssignMenu({
       : await transferConversation(conversationId, teamId, currentTeamId, trimmed)
     setBusy(false)
     onResult?.(ok ? `已指派給「${teamName}」` : '指派失敗，請重試')
-    if (ok) close()
+    if (ok) { close(); onChanged?.() }
   }
 
   const unassign = async () => {
@@ -76,7 +80,7 @@ export function AssignMenu({
     const ok = await unassignConversation(conversationId, reason.trim() || undefined)
     setBusy(false)
     onResult?.(ok ? '已取消指派' : '操作失敗，請重試')
-    if (ok) close()
+    if (ok) { close(); onChanged?.() }
   }
 
   return (

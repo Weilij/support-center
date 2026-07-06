@@ -15,6 +15,7 @@ export function ThreadHeader({
   onToggleFiles,
   onToggleSchedule,
   onAssignResult,
+  onAssignChanged,
   onToggleCustomerPanel,
   showCustomerPanelToggle,
 }: {
@@ -27,6 +28,7 @@ export function ThreadHeader({
   onToggleFiles: () => void
   onToggleSchedule: () => void
   onAssignResult?: (message: string) => void
+  onAssignChanged?: () => void
   onToggleCustomerPanel?: () => void
   showCustomerPanelToggle?: boolean
 }) {
@@ -83,6 +85,7 @@ export function ThreadHeader({
           conversationId={convId}
           currentTeamId={currentTeamId}
           onResult={onAssignResult}
+          onChanged={onAssignChanged}
         />
         {showCustomerPanelToggle && (
           <button
