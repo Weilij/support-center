@@ -69,8 +69,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ;
         let conversation_id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
-            "INSERT INTO conversations (id, customer_id, team_id, status, priority, last_message_at, created_at)
-             VALUES ($1, $2, $3, 'active', $4, $5, $6)",
+            "INSERT INTO conversations (id, customer_id, team_id, status, priority, last_message_at, created_at, updated_at)
+             VALUES ($1, $2, $3, 'active', $4, $5, $6, $6)",
         )
         .bind(&conversation_id)
         .bind(customer_id)
