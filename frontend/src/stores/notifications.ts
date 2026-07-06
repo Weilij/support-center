@@ -13,6 +13,9 @@ export interface Notification {
   priority?: string
   isRead?: boolean
   createdAt?: string
+  /// Conversation this notification points at (from the backend `data` blob),
+  /// used to deep-link the notification item to its thread.
+  conversationId?: string
   [key: string]: unknown
 }
 
@@ -38,6 +41,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/// Pull the conversation id from a notification, whether it arrives at the top
+/// level or nested inside the `data` blob (the backend nests it there).
+function conversationIdOf(value: Record<string, unknown>): string | undefined {
+  const top = stringField(value.conversationId)
+  if (top) return top
+  return isRecord(value.data) ? stringField(value.data.conversationId) : undefined
+}
+
 function normalizeNotification(value: unknown): Notification | null {
   if (!isRecord(value) || typeof value.id !== 'string') return null
   return {
@@ -49,6 +60,7 @@ function normalizeNotification(value: unknown): Notification | null {
     priority: stringField(value.priority),
     isRead: typeof value.isRead === 'boolean' ? value.isRead : undefined,
     createdAt: stringField(value.createdAt),
+    conversationId: conversationIdOf(value),
   }
 }
 
@@ -108,6 +120,7 @@ onEvent('notification', (payload) => {
       priority: stringField(payload.priority),
       isRead: false,
       createdAt: stringField(payload.createdAt),
+      conversationId: conversationIdOf(payload),
     }, ...s.items],
   }))
 })

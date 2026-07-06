@@ -2,6 +2,7 @@
 // (Phase 3.2).
 
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import { notificationsStore, loadNotifications, markRead, markAllRead } from '../stores/notifications'
 import { useStore } from '../stores/store'
@@ -22,6 +23,7 @@ interface NotifStats {
 }
 
 export default function Notifications() {
+  const navigate = useNavigate()
   const state = useStore(notificationsStore)
   const canAccessSystem = can(session.position(), 'system')
   const [stats, setStats] = useState<NotifStats>({})
@@ -110,6 +112,7 @@ export default function Notifications() {
               key={n.id}
               onClick={() => {
                 if (!n.isRead) void markRead(n.id)
+                if (n.conversationId) navigate(`/conversations/${n.conversationId}`)
               }}
               style={{
                 padding: '10px 0',
@@ -120,6 +123,7 @@ export default function Notifications() {
             >
               <span>{n.title}</span>
               {n.priority === 'high' || n.priority === 'urgent' ? ' ❗' : ''}
+              {n.conversationId && <span style={{ color: 'var(--blue-600)', fontSize: 12, marginLeft: 6, fontWeight: 'normal' }}>· 查看對話 →</span>}
               <div style={{ color: 'var(--muted)', fontSize: 13, fontWeight: 'normal' }}>{n.content}</div>
             </li>
           ))}
