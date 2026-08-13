@@ -2,12 +2,11 @@
 
 Resume here each session. Spec: `Rust_CRD.md`. Plan: `docs/plans/2026-06-11-mcss-implementation.md`.
 
-**Note:** the session log below was kept current through 2026-06-26. Work since
-then (teams/inbox UX, platform-credential management, team-manager roles, the
-conversations full-access policy change, perf/indexing) is tracked instead as
-dated spec + plan pairs under `docs/superpowers/specs/` and
-`docs/superpowers/plans/` (one pair per feature) — check there and `git log`
-for the current state rather than assuming this log is exhaustive.
+**Note:** the session log below is current through 2026-07-07 (last commit
+`b350999`), but it is a summary, not an exhaustive record. Per-feature detail
+from 2026-06-27 onward lives in dated spec + plan pairs under
+`docs/superpowers/specs/` and `docs/superpowers/plans/` (one pair per feature);
+check there and `git log` alongside this log.
 
 ## Status
 
@@ -280,3 +279,33 @@ conversation routing as "指派至團隊 / 轉接團隊 / 取消指派" only.
 - 2026-06-26: Slack alert dispatch hardened: configured `alert.slack` now
   receives Slack Incoming Webhook `text` payloads for chat-channel alerts, with
   delivery success/failure still recorded in `channelAttempts`.
+- 2026-06-27 – 2026-07-05: frontend/ops round tracked as spec + plan pairs under
+  `docs/superpowers/`: platform-credentials UI, team-manager role, assign/
+  transfer UX, teams add-member and team-manager access, plus the conversations
+  full-access policy change recorded above under "Current Routing Decision".
+- 2026-07-06: UX/a11y round — shared loading/error states + keyboard a11y
+  (cf2a06f), dark-mode-safe colors + zh-TW i18n sweep (9c20c1b), inbox drafts,
+  unread badges, sound/desktop alerts, reconnect banner, notification
+  deep-links, inline team-assign in the thread header.
+- 2026-07-06: Frontend live-test QA (`docs/qa/2026-07-frontend-live-test.md`,
+  8b0bdc2): 11 browser-driven flows PASS, 3 findings raised and all fixed the
+  same day — F1 seed `conversations.updated_at` (c5dea43), F2 team names in the
+  `/me` teams list (b97ad9c), F3 customer-panel team label refresh after
+  assign/transfer (c2cc6cc) — plus a follow-on F4, teams in the login response
+  so a fresh session has team context (bc9932d).
+- 2026-07-06/07: Meta FB/IG LINE-parity GAP closure (spec
+  `docs/superpowers/specs/2026-07-06-meta-fb-ig-parity-gap-closure-design.md`;
+  no separate plan file — implemented directly in four commits). G1 native
+  outbound media for Messenger/Instagram, G3 actionable 24h-window error, G4
+  token-expiry detection into `channel_integrations.last_error` (f8cd472);
+  G2 FB/IG inbound media through the authenticated media proxy (be2c82c);
+  G6 Instagram credential verify, G7 single `META_GRAPH_URL` Graph version
+  (01a9391); G5 `HUMAN_AGENT` tag reserved behind `META_HUMAN_AGENT_TAG`,
+  default off (b350999). **G8 (shared "Meta core" abstraction) was scoped as
+  optional and is not implemented** — the current code is already close to DRY.
+  Spec §8 listed four review questions, resolved as follows: full G1–G7 scope;
+  G2 as a **view-time proxy** of the Meta CDN URL (not the spec's recommended
+  mirror-at-ingest) — mirroring to survive Meta URL expiry is a follow-up;
+  G5 off by default; G3 backend-only, so the 24h-window error text currently
+  reaches the frontend only in the realtime delivery payload's `error` field
+  with no dedicated UI surface. Those two are the open follow-ups.

@@ -18,8 +18,9 @@ refresh rotation + reuse detection, conversations/messaging with async
 delivery, teams/agents/customers/tags, channel integrations with encrypted
 credentials, LINE/Facebook/Instagram webhook ingestion, real outbound gateway
 dispatch for LINE, Facebook, and Instagram when platform tokens are configured,
-LINE media fetch/proxy, auto-reply engine, delayed messages, file management
-with signed URLs, WebSocket realtime (rooms, broadcasts, presence,
+LINE/Facebook/Instagram inbound media fetch through an authenticated media
+proxy, auto-reply engine, delayed messages, file management with signed URLs,
+WebSocket realtime (rooms, broadcasts, presence,
 collaboration), background job queue with retries + dead-letter,
 notifications/reminders/alerting, monitoring + circuit breaker,
 analytics/dashboards, reports + scheduling, system administration.
@@ -52,7 +53,10 @@ Key environment variables (see `backend/src/config.rs`): `DATABASE_URL`
 `JWT_SECRET`, `ENCRYPTION_KEY` (32-byte hex, enables credential encryption at
 rest), `LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `LINE_BOT_ID`,
 `FACEBOOK_APP_SECRET` or `FB_APP_SECRET`, `FACEBOOK_VERIFY_TOKEN`,
-`FACEBOOK_PAGE_ACCESS_TOKEN`, `INSTAGRAM_ACCESS_TOKEN`, `LIFF_ID`,
+`FACEBOOK_PAGE_ACCESS_TOKEN`, `INSTAGRAM_ACCESS_TOKEN`,
+`META_GRAPH_URL` (one Graph API base/version shared by Facebook and Instagram),
+`META_HUMAN_AGENT_TAG` (opt-in `HUMAN_AGENT` message tag / 7-day window,
+default off — see below), `LIFF_ID`,
 `LINE_LOGIN_CHANNEL_ID` (verifies LIFF ID tokens),
 `FRONTEND_URL`, `BACKEND_URL`, `PUBLIC_STORAGE_URL`, `FILE_SIGNING_SECRET`,
 `SHOPEE_PARTNER_ID`, `SHOPEE_PARTNER_KEY`, `SHOPEE_HOST`.
@@ -99,19 +103,32 @@ kept at clearly marked boundaries:
 - Platform tokens are optional in dev/test. With tokens configured, outbound
   dispatch uses the real LINE Push API and Meta Send API for Facebook and
   Instagram. Without tokens, LINE keeps the documented no-network stub success
-  and other platforms report unsupported delivery.
-- LINE inbound media download is implemented through the channel token and an
-  authenticated media proxy. Other platform media handling currently falls back
-  to stored/proxied URLs or text link delivery where applicable.
+  and other platforms report unsupported delivery. Meta rejections are
+  classified rather than swallowed: a closed 24-hour customer-service window
+  and an expired/invalid token produce distinct agent-facing messages, and
+  token failures are recorded in `channel_integrations.last_error`.
+- Inbound media for LINE, Facebook, and Instagram is fetched and served through
+  the authenticated media proxy (LINE through the channel token, Meta through
+  the attachment CDN URL at view time — mirroring Meta media at ingest to
+  survive CDN URL expiry is a documented follow-up). Outbound media is native
+  wherever the platform supports it — LINE image/video/audio,
+  Messenger image/video/audio/file,
+  Instagram image, Shopee image — and falls back to a captioned link for the
+  remaining kinds.
+- The Meta `HUMAN_AGENT` message tag (7-day reply window) is implemented but
+  **off by default**; it is only applied when `META_HUMAN_AGENT_TAG` is enabled,
+  since it requires Meta approval for the app.
 - Shopee currently has the Open Platform foundation plus first messaging
   support: signed requests, OAuth token exchange, encrypted per-shop token
   storage, refresh-before-expiry, callback wiring, signature-gated Webchat push
-  ingestion, and SellerChat text outbound using shop-scoped tokens. Richer
-  Shopee media/chat surfaces remain future integration work.
-- Realtime customer-channel events now fan out across backend instances through
-  Postgres-backed relay/ack tables. Broader room/presence scale-out remains a
-  future hardening area if the deployment needs every realtime surface to span
-  multiple instances.
+  ingestion, and SellerChat text + image outbound using shop-scoped tokens.
+  Inbound Webchat media/card payloads are preserved for rendering; video, audio,
+  and file outbound stay on the link fallback because the public Shopee Chat API
+  material only confirms text and image outbound.
+- Realtime fan-out across backend instances is Postgres-backed (relay/ack
+  tables) and now covers customer-channel events, routed broadcaster events,
+  injected room broadcasts, and first-online / last-offline presence
+  transitions.
 
 Everything else — including every documented status code, envelope shape,
 authorization rule, and side effect — is implemented per the CRD, with the

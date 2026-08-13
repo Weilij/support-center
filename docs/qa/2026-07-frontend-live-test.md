@@ -3,6 +3,19 @@
 近三輪前端大改（glass/RBAC 重構、健檢優化、UX 優化，~20+ commits）的人肉 QA 自動化版。
 **瀏覽器實走**（Chrome DevTools MCP），非跑單元測試。發現的問題只記錄不修。
 
+> **狀態更新（2026-07-06，本報告產出後同日）**：本報告的 **F1／F2／F3 皆已修復**，
+> 另補修一項本報告未涵蓋的 **F4**（登入回應未含 teams，剛登入的 session 缺團隊
+> 脈絡）。以下內文保留當時的原始觀察，未回溯改寫；各發現段落已標註修復 commit。
+>
+> | 發現 | 狀態 | 修復 commit |
+> |------|------|-------------|
+> | F1 seed `conversations.updated_at` | ✅ 已修 | `c5dea43`（採建議修法①：seed 補欄，未動 schema） |
+> | F2 `/me` teams[] 缺團隊名 | ✅ 已修 | `b97ad9c` |
+> | F3 客戶面板團隊標示未即時刷新 | ✅ 已修 | `c2cc6cc` |
+> | F4 登入回應未含 teams（本報告未涵蓋） | ✅ 已修 | `bc9932d` |
+>
+> 截圖 `screens/15-fixes-f2-f3-verified.png` 為 F2/F3 修復後的驗證畫面。
+
 ## 環境
 
 | 項目 | 值 |
@@ -103,7 +116,7 @@
 
 ## 發現（Findings）
 
-### 🔴 F1 — `examples/seed.rs` 種子腳本壞掉（真 bug）
+### 🔴 F1 — `examples/seed.rs` 種子腳本壞掉（真 bug）— ✅ 已修（`c5dea43`）
 **嚴重度：中（僅影響開發/示範環境，不影響生產；但阻斷新環境 bring-up）**
 
 **現象**：`cargo run --example seed` 失敗：
@@ -117,7 +130,7 @@ null value in column "updated_at" of relation "conversations" violates not-null 
 **本次解阻手法（僅 runtime，未改碼）**：`ALTER TABLE conversations ALTER COLUMN updated_at SET DEFAULT now();` 後 seed 通過。
 **建議修法（擇一）**：① seed 的 INSERT 補上 `updated_at`（對稱 created_at）；② 或在 migration 0021 為該欄加 `DEFAULT now()`（同時也讓其他省略該欄的插入更健壯）。
 
-### 🟡 F2 — 快捷指派 Toast 顯示「Team 1」而非團隊名（顯示不一致）
+### 🟡 F2 — 快捷指派 Toast 顯示「Team 1」而非團隊名（顯示不一致）— ✅ 已修（`b97ad9c`，另見 F4 `bc9932d`）
 **嚴重度：低（純顯示，功能正常）**
 
 **現象**：composer「指給我的團隊」快捷鈕的 Toast 顯示「已指派給「**Team 1**」」，但 header 指派下拉正確顯示「客服一組」。
@@ -125,7 +138,7 @@ null value in column "updated_at" of relation "conversations" violates not-null 
 **重現**：任一 agent 登入 → 開對話 → 點 composer「指給我的團隊」→ Toast 顯示「Team {id}」。
 **建議修法**：`/me` 的 teams[] 補 `name`（backend join team_name），或前端 session 從 teamsStore 解析名稱。
 
-### 🟡 F3 — 指派/轉移後客戶面板團隊標示未即時刷新（已知延後項）
+### 🟡 F3 — 指派/轉移後客戶面板團隊標示未即時刷新（已知延後項）— ✅ 已修（`c2cc6cc`）
 **嚴重度：低（重載即正確，後端已持久化）**
 
 **現象**：thread header 轉移團隊成功（Toast + 後端 team_id 已更新），但右側客戶面板「指派團隊 → 團隊」仍顯示舊團隊，直到重載頁面才更新。
@@ -150,14 +163,14 @@ null value in column "updated_at" of relation "conversations" violates not-null 
 
 **近三輪前端大改的核心 UX 功能，實走 11 個關鍵流程全部 PASS**，包含最容易在重構中壞掉的即時進線（webhook→置頂+badge）、樂觀送訊、inline 指派持久化、離線 banner、錯誤重試、深色模式（含審查點名的 MetricsView）、鍵盤可及性與 Modal focus trap。整體品質良好、可上線。
 
-### 可以直接修（低風險、機械性）
-1. **F1 — seed.rs 補 `updated_at`**（或 migration 0021 加 `DEFAULT now()`）。**建議優先**：這是唯一會阻斷新環境 bring-up 的真 bug，且修法明確。
-2. **F2 — `/me` teams[] 補團隊名**（或前端 session 從 teamsStore 補名）。純顯示修正。
-3. **F3 — 指派後刷新 `meta.teamId/teamName`**（`onResult` 回寫）。純顯示修正。
+### 可以直接修（低風險、機械性）— 全數已完成
+1. ~~**F1 — seed.rs 補 `updated_at`**（或 migration 0021 加 `DEFAULT now()`）。~~ ✅ `c5dea43`，採 seed 補欄（未動 schema）。
+2. ~~**F2 — `/me` teams[] 補團隊名**（或前端 session 從 teamsStore 補名）。~~ ✅ `b97ad9c`（後端 join 團隊名）；`bc9932d` 一併讓登入回應帶 teams。
+3. ~~**F3 — 指派後刷新 `meta.teamId/teamName`**（`onResult` 回寫）。~~ ✅ `c2cc6cc`。
 
-### 需要討論
-- 無阻斷性爭議項。三個發現修法都明確；唯一需拿捏的是 **F1 修法**選 seed 補欄（最小）還是 migration 加 default（更健壯但改動 schema 語意）——建議先用 seed 補欄（不動 schema）。
-- **F2/F3 是否納入本輪**：皆為低優先顯示問題，可排入下一次前端整理，不必阻擋當前發布。
+### 需要討論 — 已定案
+- 無阻斷性爭議項。~~唯一需拿捏的是 **F1 修法**~~ → 已採 seed 補欄（不動 schema）。
+- ~~**F2/F3 是否納入本輪**~~ → 決定納入，兩項於報告產出同日修完並以截圖 15 驗證。
 
 ### 測試環境殘留（本次為驗證而造，非程式碼變更）
 - runtime `ALTER conversations.updated_at SET DEFAULT now()`（F1 解阻）
