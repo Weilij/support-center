@@ -742,6 +742,15 @@ async fn list_messages_paginates_newest_first_with_attachments() {
         .seed_message(&conv, "agent", "second", Some("2026-01-02T00:00:00.000Z"))
         .await;
     sqlx::query(
+        "UPDATE messages SET read_at = $1, reject_code = 'meta_window_closed',
+         metadata = '{\"deliveryError\":\"超出 24 小時客服回覆窗\"}' WHERE id = $2",
+    )
+    .bind("2026-01-02T00:01:00.000Z")
+    .bind(&m2)
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+    sqlx::query(
         "INSERT INTO attachments (id, message_id, conversation_id, file_name, content_type, file_size, file_url, storage_key, created_at)
          VALUES ('att-1', $1, $2, 'doc.pdf', 'application/pdf', 42, '/uploads/doc.pdf', 'missing-key', $3)",
     )
@@ -769,6 +778,12 @@ async fn list_messages_paginates_newest_first_with_attachments() {
     assert_eq!(item["id"], json!(m2));
     assert_eq!(item["senderType"], json!("agent"));
     assert!(item["createdAt"].is_i64());
+    assert_eq!(item["readAt"], json!("2026-01-02T00:01:00.000Z"));
+    assert_eq!(item["rejectCode"], json!("meta_window_closed"));
+    assert_eq!(
+        item["metadata"]["deliveryError"],
+        json!("超出 24 小時客服回覆窗")
+    );
     assert_eq!(item["attachments"][0]["filename"], json!("doc.pdf"));
     assert_eq!(item["attachments"][0]["url"], json!("/uploads/doc.pdf"));
     // No stored object on disk -> no force-download URL (CRD 763).

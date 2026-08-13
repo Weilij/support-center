@@ -217,6 +217,12 @@ pub enum OutboundError {
         status: reqwest::StatusCode,
         body: String,
     },
+    /// Meta rejected a send with an unclassified error. The raw response is
+    /// logged at the API boundary and intentionally never leaves the backend.
+    MetaRejected {
+        platform: &'static str,
+        status: reqwest::StatusCode,
+    },
     DeleteRequestFailed {
         platform: &'static str,
         source: reqwest::Error,
@@ -254,6 +260,9 @@ impl fmt::Display for OutboundError {
                 status,
                 body,
             } => write!(f, "{platform} send failed ({status}): {body}"),
+            Self::MetaRejected { platform, status } => {
+                write!(f, "{platform} rejected the send ({status})")
+            }
             Self::DeleteRequestFailed { platform, source } => {
                 write!(f, "{platform} delete request failed: {source}")
             }
@@ -287,6 +296,19 @@ impl std::error::Error for OutboundError {
             _ => None,
         }
     }
+}
+
+/// Safe, agent-facing delivery failure details. Raw platform responses are kept
+/// in logs only: they may contain platform-specific data that is not part of
+/// our client contract.
+fn classified_delivery_error(error: &OutboundError) -> (Option<&'static str>, String) {
+    let code = match error {
+        OutboundError::MetaWindowClosed(_) => Some("meta_window_closed"),
+        OutboundError::MetaTokenExpired(_) => Some("meta_token_expired"),
+        OutboundError::MetaRejected { .. } => Some("meta_rejected"),
+        _ => None,
+    };
+    (code, error.to_string())
 }
 
 pub type OutboundResult<T> = std::result::Result<T, OutboundError>;
@@ -402,13 +424,13 @@ async fn fb_send(
             } else {
                 "Facebook"
             };
+            tracing::warn!(platform = plat_name, %status, platform_response = %txt, "Meta Send API rejected outbound message");
             return Err(match classify_meta_error(&txt) {
                 MetaReject::WindowClosed => OutboundError::MetaWindowClosed(plat_name),
                 MetaReject::TokenExpired => OutboundError::MetaTokenExpired(plat_name),
-                MetaReject::Other => OutboundError::PlatformRejected {
-                    platform: "Facebook",
+                MetaReject::Other => OutboundError::MetaRejected {
+                    platform: plat_name,
                     status,
-                    body: txt,
                 },
             });
         }
@@ -775,6 +797,7 @@ pub async fn deliver_pending(input: PendingDelivery) {
     let mut failed = 0usize;
     let mut platform_message_id: Option<String> = None;
     let mut last_error: Option<String> = None;
+    let mut reject_code: Option<String> = None;
     let mut token_expired = false;
 
     for batch in items.chunks(BATCH_CAP) {
@@ -788,7 +811,9 @@ pub async fn deliver_pending(input: PendingDelivery) {
                 if matches!(e, OutboundError::MetaTokenExpired(_)) {
                     token_expired = true;
                 }
-                last_error = Some(e.to_string());
+                let (code, message) = classified_delivery_error(&e);
+                reject_code = code.map(str::to_string);
+                last_error = Some(message);
             }
         }
     }
@@ -816,8 +841,11 @@ pub async fn deliver_pending(input: PendingDelivery) {
     let result = sqlx::query(
         "UPDATE messages
             SET delivery_status = $1, is_sent = $2, platform_message_id = $3,
-                sent_at = CASE WHEN $4::bigint = 1 THEN $5 ELSE sent_at END, updated_at = $6
-          WHERE id = $7",
+                sent_at = CASE WHEN $4::bigint = 1 THEN $5 ELSE sent_at END,
+                metadata = CASE WHEN $7::text IS NULL THEN metadata ELSE
+                    jsonb_set(COALESCE(metadata::jsonb, '{}'::jsonb), '{deliveryError}', to_jsonb($7::text), true)::text END,
+                reject_code = $8, updated_at = $6
+          WHERE id = $9",
     )
     .bind(status)
     .bind(is_sent as i64)
@@ -825,6 +853,8 @@ pub async fn deliver_pending(input: PendingDelivery) {
     .bind(is_sent as i64)
     .bind(&now)
     .bind(&now)
+    .bind(&last_error)
+    .bind(&reject_code)
     .bind(&message_id)
     .execute(&db)
     .await;
@@ -846,6 +876,7 @@ pub async fn deliver_pending(input: PendingDelivery) {
             "isSent": is_sent,
             "platformMessageId": platform_message_id,
             "error": last_error,
+            "errorCode": reject_code,
             "timestamp": now,
         }),
     );
@@ -1120,6 +1151,23 @@ mod gateway_tests {
         assert!(OutboundError::MetaTokenExpired("Instagram")
             .to_string()
             .contains("權杖"));
+
+        assert_eq!(
+            classified_delivery_error(&OutboundError::MetaWindowClosed("Facebook")),
+            (Some("meta_window_closed"), "Facebook：超出 24 小時客服回覆窗，需等客戶再次來訊後才能回覆（或使用已核准的訊息標籤）".into())
+        );
+        assert_eq!(
+            classified_delivery_error(&OutboundError::MissingCredentials("LINE")).0,
+            None
+        );
+        assert_eq!(
+            classified_delivery_error(&OutboundError::MetaRejected {
+                platform: "Facebook",
+                status: reqwest::StatusCode::BAD_REQUEST,
+            })
+            .0,
+            Some("meta_rejected")
+        );
     }
 
     #[test]
@@ -1438,7 +1486,11 @@ mod gateway_tests {
             if body["message"]["attachment"]["type"] == "image" {
                 (StatusCode::OK, Json(json!({"message_id":"m-ok"}))).into_response()
             } else {
-                (StatusCode::BAD_REQUEST, Json(json!({"error":{"code":100}}))).into_response()
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":{"code":100,"message":"platform-only-detail"}})),
+                )
+                    .into_response()
             }
         }
 
@@ -1488,5 +1540,13 @@ mod gateway_tests {
             .await
             .unwrap_err();
         assert!(matches!(token_err, OutboundError::MetaTokenExpired(_)));
+        // Unclassified Meta bodies are logged, but never persisted/broadcast
+        // through the delivery error's display text.
+        let other_err = g
+            .send_batch("facebook", "other", &[OutboundItem::text("hi")])
+            .await
+            .unwrap_err();
+        assert!(matches!(other_err, OutboundError::MetaRejected { .. }));
+        assert!(!other_err.to_string().contains("platform-only-detail"));
     }
 }

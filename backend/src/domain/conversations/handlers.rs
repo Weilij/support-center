@@ -448,11 +448,13 @@ struct MessageRow {
     is_sent: i64,
     sent_at: Option<String>,
     delivery_status: String,
+    reject_code: Option<String>,
     metadata: Option<String>,
     sender_name: Option<String>,
     created_at: String,
     customer_name: Option<String>,
     agent_name: Option<String>,
+    read_at: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -523,8 +525,10 @@ fn message_view(
         "platformMessageId": m.platform_message_id,
         "isSent": m.is_sent != 0,
         "deliveryStatus": m.delivery_status,
+        "rejectCode": m.reject_code,
         "metadata": m.metadata.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
         "sentAt": m.sent_at,
+        "readAt": m.read_at,
         "isRecalled": m.is_recalled != 0,
         "recallDeadline": m.recall_deadline,
         "recalledAt": m.recalled_at,
@@ -567,9 +571,9 @@ pub async fn list_messages(
     let rows: Vec<MessageRow> = sqlx::query_as(
         "SELECT m.id, m.conversation_id, m.sender_type, m.customer_id, m.agent_id, m.content,
                 m.content_type, m.platform_message_id, m.is_recalled, m.recall_deadline,
-                m.recalled_at, m.is_sent, m.sent_at, m.delivery_status, m.metadata,
+                m.recalled_at, m.is_sent, m.sent_at, m.delivery_status, m.reject_code, m.metadata,
                 m.sender_name, m.created_at,
-                cu.display_name AS customer_name, a.display_name AS agent_name
+                cu.display_name AS customer_name, a.display_name AS agent_name, m.read_at
          FROM messages m
          LEFT JOIN customers cu ON cu.id = m.customer_id
          LEFT JOIN agents a ON a.id = m.agent_id
