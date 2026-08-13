@@ -449,6 +449,7 @@ struct MessageRow {
     sent_at: Option<String>,
     delivery_status: String,
     reject_code: Option<String>,
+    reject_message: Option<String>,
     metadata: Option<String>,
     sender_name: Option<String>,
     created_at: String,
@@ -525,7 +526,11 @@ fn message_view(
         "platformMessageId": m.platform_message_id,
         "isSent": m.is_sent != 0,
         "deliveryStatus": m.delivery_status,
+        // Classified delivery failure (agent surface only — the customer-facing
+        // history in customer_conversations/realtime::customer deliberately
+        // omits both fields).
         "rejectCode": m.reject_code,
+        "rejectMessage": m.reject_message,
         "metadata": m.metadata.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
         "sentAt": m.sent_at,
         "readAt": m.read_at,
@@ -571,7 +576,8 @@ pub async fn list_messages(
     let rows: Vec<MessageRow> = sqlx::query_as(
         "SELECT m.id, m.conversation_id, m.sender_type, m.customer_id, m.agent_id, m.content,
                 m.content_type, m.platform_message_id, m.is_recalled, m.recall_deadline,
-                m.recalled_at, m.is_sent, m.sent_at, m.delivery_status, m.reject_code, m.metadata,
+                m.recalled_at, m.is_sent, m.sent_at, m.delivery_status,
+                m.reject_code, m.reject_message, m.metadata,
                 m.sender_name, m.created_at,
                 cu.display_name AS customer_name, a.display_name AS agent_name, m.read_at
          FROM messages m
