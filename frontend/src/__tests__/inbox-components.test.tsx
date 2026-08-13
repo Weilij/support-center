@@ -116,7 +116,7 @@ describe('Inbox thread header', () => {
 })
 
 describe('Inbox message list', () => {
-  it('renders error state, inbound avatar, agent read state, and attachment previews', () => {
+  it('renders error state, inbound avatar, real agent delivery state, and attachment previews', () => {
     const messages: InboxMessage[] = [
       {
         id: 'm-1',
@@ -129,6 +129,8 @@ describe('Inbox message list', () => {
         content: 'see file',
         senderType: 'agent',
         createdAt: new Date().toISOString(),
+        deliveryStatus: 'sent',
+        readAt: new Date().toISOString(),
         attachments: [
           {
             id: 'a-1',
@@ -157,5 +159,28 @@ describe('Inbox message list', () => {
     expect(screen.getByAltText('Customer')).toBeTruthy()
     expect(screen.getByAltText('proof.png')).toBeTruthy()
     expect(screen.getByText(/已讀/)).toBeTruthy()
+  })
+
+  it('renders a classified delivery failure instead of a read receipt', () => {
+    render(
+      <MessageList
+        convId="conv-1"
+        messages={[{
+          id: 'm-failed',
+          content: 'reply',
+          senderType: 'agent',
+          createdAt: new Date().toISOString(),
+          deliveryStatus: 'failed',
+          errorCode: 'meta_window_closed',
+          metadata: { deliveryError: '超出 24 小時客服回覆窗' },
+        }]}
+        error={null}
+        customerName="Customer"
+        bottomRef={createRef<HTMLDivElement>()}
+      />,
+    )
+
+    expect(screen.getByText(/傳送失敗：超出 24 小時客服回覆窗/)).toBeTruthy()
+    expect(screen.queryByText('已讀')).toBeNull()
   })
 })

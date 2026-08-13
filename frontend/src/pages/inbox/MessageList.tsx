@@ -5,6 +5,17 @@ import { ErrorRetry } from '../../components/ErrorRetry'
 import { MessageMedia, isMediaKind, kindFromMime } from '../../components/MessageMedia'
 import type { InboxMessage } from './types'
 
+function deliveryLabel(message: InboxMessage): string {
+  if (message.pending || message.deliveryStatus === 'pending') return '傳送中'
+  if (message.deliveryStatus === 'failed') {
+    return `傳送失敗：${message.metadata?.deliveryError ?? '無法送達'}`
+  }
+  if (message.deliveryStatus === 'partial') return '部分送達'
+  if (message.readAt) return '已讀'
+  if (message.deliveryStatus === 'sent' || message.deliveryStatus === 'delivered' || message.isSent) return '已送達'
+  return ''
+}
+
 function dayLabel(iso?: string): string {
   if (!iso) return ''
   const d = new Date(iso)
@@ -82,6 +93,7 @@ function MessageRow({
   customerAvatarUrl?: string
 }) {
   const isMe = message.senderType === 'agent'
+  const status = deliveryLabel(message)
   return (
     <div
       className={`cs-bubble-row${isMe ? ' cs-bubble-row--me' : ''}`}
@@ -103,7 +115,7 @@ function MessageRow({
                 hour12: false,
               })
             : ''}
-          {isMe && !message.pending && ' · 已讀'}
+          {isMe && status && ` · ${status}`}
         </div>
       </div>
     </div>

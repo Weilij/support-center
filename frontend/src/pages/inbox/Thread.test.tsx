@@ -49,12 +49,13 @@ vi.mock('./ScheduleDrawer', () => ({ ScheduleDrawer: () => null }))
 vi.mock('../../components/ConversationAssign', () => ({ AssignMenu: () => null }))
 vi.mock('../../components/ui', () => ({ Toast: () => null }))
 vi.mock('./MessageList', () => ({
-  MessageList: ({ messages, error }: { messages: Array<{ id: string; content?: string; pending?: boolean }>; error: string | null }) => (
+  MessageList: ({ messages, error }: { messages: Array<{ id: string; content?: string; pending?: boolean; deliveryStatus?: string; errorCode?: string; metadata?: { deliveryError?: string } }>; error: string | null }) => (
     <div>
       {error && <p role="alert">{error}</p>}
       {messages.map((m) => (
-        <div key={m.id} data-testid="msg" data-pending={m.pending ? '1' : '0'}>
+        <div key={m.id} data-testid="msg" data-pending={m.pending ? '1' : '0'} data-status={m.deliveryStatus} data-error-code={m.errorCode}>
           {m.content}
+          {m.metadata?.deliveryError}
         </div>
       ))}
     </div>
@@ -163,8 +164,8 @@ describe('Thread', () => {
 
     unmount()
     expect(rt.unsubscribeConversation).toHaveBeenCalledWith('c1')
-    // both onEvent handlers (new_message + realtime_reconnected) are detached
-    expect(off).toHaveBeenCalledTimes(2)
+    // all event handlers (new_message + realtime_reconnected + message_updated) are detached
+    expect(off).toHaveBeenCalledTimes(3)
   })
 
   it('uploads a file through the composer entry point', async () => {
@@ -174,5 +175,31 @@ describe('Thread', () => {
     await waitFor(() =>
       expect(filesMock.uploadConversationFile).toHaveBeenCalledWith('c1', expect.any(File)),
     )
+  })
+
+  it('applies message_updated delivery state to the matching message', async () => {
+    const handlers = new Map<string, (payload: Record<string, unknown>) => void>()
+    rt.onEvent.mockImplementation(((event: string, handler: (payload: Record<string, unknown>) => void) => {
+      handlers.set(event, handler)
+      return vi.fn()
+    }) as never)
+    renderThread()
+    await screen.findByText('second')
+
+    handlers.get('message_updated')?.({
+      messageId: 'm2',
+      conversationId: 'c1',
+      deliveryStatus: 'failed',
+      isSent: false,
+      errorCode: 'meta_window_closed',
+      error: '超出 24 小時客服回覆窗',
+    })
+
+    await waitFor(() => {
+      const message = screen.getAllByTestId('msg').find((node) => node.textContent?.includes('second'))
+      expect(message?.getAttribute('data-status')).toBe('failed')
+      expect(message?.getAttribute('data-error-code')).toBe('meta_window_closed')
+      expect(message?.textContent).toContain('超出 24 小時客服回覆窗')
+    })
   })
 })

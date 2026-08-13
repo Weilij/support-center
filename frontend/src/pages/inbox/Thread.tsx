@@ -214,9 +214,28 @@ export function Thread({
     const offReconnect = onEvent('realtime_reconnected', () => {
       void loadMessages()
     })
+    const offMessageUpdated = onEvent('message_updated', (payload) => {
+      const update = (payload.data ?? payload) as Record<string, unknown>
+      if (String(update.conversationId ?? payload.conversationId ?? '') !== convId) return
+      const messageId = String(update.messageId ?? '')
+      if (!messageId) return
+      setMessages((prev) => prev.map((message) => {
+        if (message.id !== messageId) return message
+        const error = typeof update.error === 'string' ? update.error : undefined
+        return {
+          ...message,
+          deliveryStatus: typeof update.deliveryStatus === 'string' ? update.deliveryStatus : message.deliveryStatus,
+          isSent: typeof update.isSent === 'boolean' ? update.isSent : message.isSent,
+          errorCode: typeof update.errorCode === 'string' ? update.errorCode : message.errorCode,
+          readAt: typeof update.readAt === 'string' ? update.readAt : message.readAt,
+          metadata: error ? { ...message.metadata, deliveryError: error } : message.metadata,
+        }
+      }))
+    })
     return () => {
       off()
       offReconnect()
+      offMessageUpdated()
       unsubscribeConversation(convId)
     }
   }, [convId, reloadKey, refreshMeta])

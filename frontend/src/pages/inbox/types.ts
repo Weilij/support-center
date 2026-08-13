@@ -22,6 +22,11 @@ export interface InboxMessage {
   senderName?: string
   createdAt?: string
   pending?: boolean
+  deliveryStatus?: string
+  isSent?: boolean
+  errorCode?: string
+  readAt?: string | null
+  metadata?: { deliveryError?: string; [key: string]: unknown }
   messageType?: string
   media?: Record<string, unknown>
   attachments?: Array<{ id: string; filename?: string; mimeType?: string; url?: string; downloadUrl?: string }>
