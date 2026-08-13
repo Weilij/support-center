@@ -171,8 +171,8 @@ describe('Inbox message list', () => {
           senderType: 'agent',
           createdAt: new Date().toISOString(),
           deliveryStatus: 'failed',
-          errorCode: 'meta_window_closed',
-          metadata: { deliveryError: '超出 24 小時客服回覆窗' },
+          rejectCode: 'meta_window_closed',
+          rejectMessage: '超出 24 小時客服回覆窗',
         }]}
         error={null}
         customerName="Customer"

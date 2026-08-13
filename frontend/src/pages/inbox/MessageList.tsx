@@ -8,7 +8,7 @@ import type { InboxMessage } from './types'
 function deliveryLabel(message: InboxMessage): string {
   if (message.pending || message.deliveryStatus === 'pending') return '傳送中'
   if (message.deliveryStatus === 'failed') {
-    return `傳送失敗：${message.metadata?.deliveryError ?? '無法送達'}`
+    return `傳送失敗：${message.rejectMessage ?? '無法送達'}`
   }
   if (message.deliveryStatus === 'partial') return '部分送達'
   if (message.readAt) return '已讀'

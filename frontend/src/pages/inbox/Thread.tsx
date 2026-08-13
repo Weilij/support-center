@@ -19,6 +19,19 @@ import { ScheduleDrawer } from './ScheduleDrawer'
 import { ThreadHeader } from './ThreadHeader'
 import type { ConvMeta, InboxMessage, PendingAttachment } from './types'
 
+/// Normalize a `message_updated` payload into message fields. The event names
+/// the failure text `error` (CRD 828) while the REST message view calls it
+/// `rejectMessage`; both land on `rejectMessage` so the UI reads one shape.
+function deliveryPatch(update: Record<string, unknown>): Partial<InboxMessage> {
+  const patch: Partial<InboxMessage> = {}
+  if (typeof update.deliveryStatus === 'string') patch.deliveryStatus = update.deliveryStatus
+  if (typeof update.isSent === 'boolean') patch.isSent = update.isSent
+  if (typeof update.rejectCode === 'string') patch.rejectCode = update.rejectCode
+  if (typeof update.error === 'string') patch.rejectMessage = update.error
+  if (typeof update.readAt === 'string') patch.readAt = update.readAt
+  return patch
+}
+
 export function Thread({
   convId,
   meta,
@@ -144,6 +157,10 @@ export function Thread({
     prevConvId.current = convId
   }, [convId])
 
+  // `message_updated` patches that arrived before their message existed in the
+  // list, keyed by real message id and drained by `send`.
+  const bufferedUpdates = useRef(new Map<string, Partial<InboxMessage>>())
+
   // Fetch conversation metadata (platform, team, customer) and push it up. Used
   // on conversation switch AND after an assign/transfer so the customer panel's
   // team label stays in sync without a page reload.
@@ -219,23 +236,23 @@ export function Thread({
       if (String(update.conversationId ?? payload.conversationId ?? '') !== convId) return
       const messageId = String(update.messageId ?? '')
       if (!messageId) return
-      setMessages((prev) => prev.map((message) => {
-        if (message.id !== messageId) return message
-        const error = typeof update.error === 'string' ? update.error : undefined
-        return {
-          ...message,
-          deliveryStatus: typeof update.deliveryStatus === 'string' ? update.deliveryStatus : message.deliveryStatus,
-          isSent: typeof update.isSent === 'boolean' ? update.isSent : message.isSent,
-          errorCode: typeof update.errorCode === 'string' ? update.errorCode : message.errorCode,
-          readAt: typeof update.readAt === 'string' ? update.readAt : message.readAt,
-          metadata: error ? { ...message.metadata, deliveryError: error } : message.metadata,
+      const patch = deliveryPatch(update)
+      setMessages((prev) => {
+        // Delivery can resolve before the POST response swaps the optimistic
+        // temp id for the real one (a credential-less send fails with no
+        // network round-trip at all). Park the patch so `send` can apply it.
+        if (!prev.some((message) => message.id === messageId)) {
+          bufferedUpdates.current.set(messageId, patch)
+          return prev
         }
-      }))
+        return prev.map((message) => (message.id === messageId ? { ...message, ...patch } : message))
+      })
     })
     return () => {
       off()
       offReconnect()
       offMessageUpdated()
+      bufferedUpdates.current.clear()
       unsubscribeConversation(convId)
     }
   }, [convId, reloadKey, refreshMeta])
@@ -272,7 +289,16 @@ export function Thread({
     )
     if (resp.success) {
       const confirmed = resp.data?.message ?? { id: resp.data?.id ?? tempId, content: text }
-      setMessages((prev) => prev.map((message) => (message.id === tempId ? { ...message, ...confirmed, pending: false } : message)))
+      // The send only queues delivery (CRD 773) — the outcome arrives later on
+      // `message_updated`, so 'pending' is the honest state until it does. Any
+      // update that beat this swap was buffered under the real id.
+      const buffered = bufferedUpdates.current.get(confirmed.id)
+      bufferedUpdates.current.delete(confirmed.id)
+      setMessages((prev) => prev.map((message) => (
+        message.id === tempId
+          ? { ...message, ...confirmed, pending: false, deliveryStatus: 'pending', ...buffered }
+          : message
+      )))
     } else {
       setMessages((prev) => prev.filter((message) => message.id !== tempId))
       setError(resp.message ?? null)
