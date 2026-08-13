@@ -49,12 +49,13 @@ vi.mock('./ScheduleDrawer', () => ({ ScheduleDrawer: () => null }))
 vi.mock('../../components/ConversationAssign', () => ({ AssignMenu: () => null }))
 vi.mock('../../components/ui', () => ({ Toast: () => null }))
 vi.mock('./MessageList', () => ({
-  MessageList: ({ messages, error }: { messages: Array<{ id: string; content?: string; pending?: boolean }>; error: string | null }) => (
+  MessageList: ({ messages, error }: { messages: Array<{ id: string; content?: string; pending?: boolean; deliveryStatus?: string; rejectCode?: string; rejectMessage?: string }>; error: string | null }) => (
     <div>
       {error && <p role="alert">{error}</p>}
       {messages.map((m) => (
-        <div key={m.id} data-testid="msg" data-pending={m.pending ? '1' : '0'}>
+        <div key={m.id} data-testid="msg" data-pending={m.pending ? '1' : '0'} data-status={m.deliveryStatus} data-reject-code={m.rejectCode}>
           {m.content}
+          {m.rejectMessage}
         </div>
       ))}
     </div>
@@ -163,8 +164,8 @@ describe('Thread', () => {
 
     unmount()
     expect(rt.unsubscribeConversation).toHaveBeenCalledWith('c1')
-    // both onEvent handlers (new_message + realtime_reconnected) are detached
-    expect(off).toHaveBeenCalledTimes(2)
+    // all event handlers (new_message + realtime_reconnected + message_updated) are detached
+    expect(off).toHaveBeenCalledTimes(3)
   })
 
   it('uploads a file through the composer entry point', async () => {
@@ -174,5 +175,66 @@ describe('Thread', () => {
     await waitFor(() =>
       expect(filesMock.uploadConversationFile).toHaveBeenCalledWith('c1', expect.any(File)),
     )
+  })
+
+  it('applies message_updated delivery state to the matching message', async () => {
+    const handlers = new Map<string, (payload: Record<string, unknown>) => void>()
+    rt.onEvent.mockImplementation(((event: string, handler: (payload: Record<string, unknown>) => void) => {
+      handlers.set(event, handler)
+      return vi.fn()
+    }) as never)
+    renderThread()
+    await screen.findByText('second')
+
+    handlers.get('message_updated')?.({
+      messageId: 'm2',
+      conversationId: 'c1',
+      deliveryStatus: 'failed',
+      isSent: false,
+      rejectCode: 'meta_window_closed',
+      error: '超出 24 小時客服回覆窗',
+    })
+
+    await waitFor(() => {
+      const message = screen.getAllByTestId('msg').find((node) => node.textContent?.includes('second'))
+      expect(message?.getAttribute('data-status')).toBe('failed')
+      expect(message?.getAttribute('data-reject-code')).toBe('meta_window_closed')
+      expect(message?.textContent).toContain('超出 24 小時客服回覆窗')
+    })
+  })
+
+  it('keeps a delivery update that arrives before the send response', async () => {
+    // A credential-less send fails with no network round-trip, so the outcome
+    // can beat the POST that swaps the optimistic temp id for the real one.
+    const handlers = new Map<string, (payload: Record<string, unknown>) => void>()
+    rt.onEvent.mockImplementation(((event: string, handler: (payload: Record<string, unknown>) => void) => {
+      handlers.set(event, handler)
+      return vi.fn()
+    }) as never)
+    let resolvePost: (value: unknown) => void = () => {}
+    apiMock.post.mockImplementation(() => new Promise((resolve) => { resolvePost = resolve }))
+
+    renderThread()
+    await screen.findByText('first')
+    fireEvent.change(screen.getByLabelText('訊息'), { target: { value: 'hello' } })
+    fireEvent.click(screen.getByRole('button', { name: '送出' }))
+    await screen.findByText('hello')
+
+    handlers.get('message_updated')?.({
+      messageId: 'real1',
+      conversationId: 'c1',
+      deliveryStatus: 'failed',
+      isSent: false,
+      rejectCode: 'missing_credentials',
+      error: 'Facebook：頻道存取權杖已失效或過期，請至頻道管理重新設定憑證',
+    })
+    resolvePost({ success: true, data: { id: 'real1' } })
+
+    await waitFor(() => {
+      const message = screen.getAllByTestId('msg').find((node) => node.textContent?.includes('hello'))
+      expect(message?.getAttribute('data-pending')).toBe('0')
+      expect(message?.getAttribute('data-status')).toBe('failed')
+      expect(message?.getAttribute('data-reject-code')).toBe('missing_credentials')
+    })
   })
 })

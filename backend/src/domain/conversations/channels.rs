@@ -212,10 +212,14 @@ pub enum OutboundError {
         platform: &'static str,
         source: reqwest::Error,
     },
+    /// The platform rejected the send with an unclassified error. The raw
+    /// response body is logged at the API boundary and deliberately left out of
+    /// this value: delivery errors are persisted and shown to agents, and the
+    /// customer-facing history serializes the same message row, so a raw
+    /// platform payload must never travel any further than the log.
     PlatformRejected {
         platform: &'static str,
         status: reqwest::StatusCode,
-        body: String,
     },
     DeleteRequestFailed {
         platform: &'static str,
@@ -246,14 +250,17 @@ impl fmt::Display for OutboundError {
                 f,
                 "{platform}：頻道存取權杖已失效或過期，請至頻道管理重新設定憑證"
             ),
-            Self::RequestFailed { platform, source } => {
-                write!(f, "{platform} request failed: {source}")
+            // Deliberately drops the transport error: the Meta send URL carries
+            // the page access token as a query parameter (see `fb_send`), and
+            // reqwest's Display renders the failing URL. This text is persisted
+            // and served to customers, so the source stays in logs and in
+            // `Error::source()` only.
+            Self::RequestFailed { platform, .. } => {
+                write!(f, "{platform}：連線平台失敗，請稍後再試")
             }
-            Self::PlatformRejected {
-                platform,
-                status,
-                body,
-            } => write!(f, "{platform} send failed ({status}): {body}"),
+            Self::PlatformRejected { platform, status } => {
+                write!(f, "{platform}：平台拒絕了這則訊息（{status}），請稍後再試或查看頻道設定")
+            }
             Self::DeleteRequestFailed { platform, source } => {
                 write!(f, "{platform} delete request failed: {source}")
             }
@@ -287,6 +294,29 @@ impl std::error::Error for OutboundError {
             _ => None,
         }
     }
+}
+
+/// A stable machine code plus the agent-facing text for a delivery failure.
+///
+/// Every `Display` reachable from here is safe to persist and to show: raw
+/// platform responses and transport errors (which can embed credentialed URLs)
+/// are kept in logs only. Codes are a client contract — extend, don't rename.
+fn classified_delivery_error(error: &OutboundError) -> (&'static str, String) {
+    let code = match error {
+        OutboundError::MetaWindowClosed(_) => "meta_window_closed",
+        OutboundError::MetaTokenExpired(_) => "meta_token_expired",
+        OutboundError::PlatformRejected { .. } => "platform_rejected",
+        OutboundError::RequestFailed { .. } | OutboundError::ClientUnavailable(_) => "network",
+        OutboundError::MissingCredentials(_)
+        | OutboundError::MissingTokenStore
+        | OutboundError::TokenStore(_) => "missing_credentials",
+        OutboundError::InvalidRecipient(_) => "invalid_recipient",
+        OutboundError::UnsupportedPlatform(_) => "unsupported_platform",
+        OutboundError::DeleteRequestFailed { .. } | OutboundError::DeleteRejected { .. } => {
+            "delete_failed"
+        }
+    };
+    (code, error.to_string())
 }
 
 pub type OutboundResult<T> = std::result::Result<T, OutboundError>;
@@ -356,10 +386,10 @@ async fn line_push(
     if !resp.status().is_success() {
         let status = resp.status();
         let txt = resp.text().await.unwrap_or_default();
+        tracing::warn!(platform = "LINE", %status, platform_response = %txt, "LINE Push API rejected outbound message");
         return Err(OutboundError::PlatformRejected {
             platform: "LINE",
             status,
-            body: txt,
         });
     }
     let v: serde_json::Value = resp.json().await.unwrap_or_else(|_| json!({}));
@@ -402,13 +432,13 @@ async fn fb_send(
             } else {
                 "Facebook"
             };
+            tracing::warn!(platform = plat_name, %status, platform_response = %txt, "Meta Send API rejected outbound message");
             return Err(match classify_meta_error(&txt) {
                 MetaReject::WindowClosed => OutboundError::MetaWindowClosed(plat_name),
                 MetaReject::TokenExpired => OutboundError::MetaTokenExpired(plat_name),
                 MetaReject::Other => OutboundError::PlatformRejected {
-                    platform: "Facebook",
+                    platform: plat_name,
                     status,
-                    body: txt,
                 },
             });
         }
@@ -485,10 +515,10 @@ async fn shopee_send(
         if !resp.status().is_success() {
             let status = resp.status();
             let txt = resp.text().await.unwrap_or_default();
+            tracing::warn!(platform = "Shopee", %status, platform_response = %txt, "Shopee SellerChat rejected outbound message");
             return Err(OutboundError::PlatformRejected {
                 platform: "Shopee",
                 status,
-                body: txt,
             });
         }
         let v: serde_json::Value = resp.json().await.unwrap_or_else(|_| json!({}));
@@ -775,6 +805,7 @@ pub async fn deliver_pending(input: PendingDelivery) {
     let mut failed = 0usize;
     let mut platform_message_id: Option<String> = None;
     let mut last_error: Option<String> = None;
+    let mut reject_code: Option<String> = None;
     let mut token_expired = false;
 
     for batch in items.chunks(BATCH_CAP) {
@@ -788,7 +819,17 @@ pub async fn deliver_pending(input: PendingDelivery) {
                 if matches!(e, OutboundError::MetaTokenExpired(_)) {
                     token_expired = true;
                 }
-                last_error = Some(e.to_string());
+                // The full error (including any transport source and its URL)
+                // belongs in the log; only the classified pair is persisted.
+                tracing::warn!(
+                    platform = %platform,
+                    message = %message_id,
+                    error = ?e,
+                    "outbound delivery attempt failed"
+                );
+                let (code, message) = classified_delivery_error(&e);
+                reject_code = Some(code.to_string());
+                last_error = Some(message);
             }
         }
     }
@@ -816,8 +857,9 @@ pub async fn deliver_pending(input: PendingDelivery) {
     let result = sqlx::query(
         "UPDATE messages
             SET delivery_status = $1, is_sent = $2, platform_message_id = $3,
-                sent_at = CASE WHEN $4::bigint = 1 THEN $5 ELSE sent_at END, updated_at = $6
-          WHERE id = $7",
+                sent_at = CASE WHEN $4::bigint = 1 THEN $5 ELSE sent_at END,
+                reject_message = $7, reject_code = $8, updated_at = $6
+          WHERE id = $9",
     )
     .bind(status)
     .bind(is_sent as i64)
@@ -825,6 +867,8 @@ pub async fn deliver_pending(input: PendingDelivery) {
     .bind(is_sent as i64)
     .bind(&now)
     .bind(&now)
+    .bind(&last_error)
+    .bind(&reject_code)
     .bind(&message_id)
     .execute(&db)
     .await;
@@ -845,7 +889,10 @@ pub async fn deliver_pending(input: PendingDelivery) {
             "deliveryStatus": status,
             "isSent": is_sent,
             "platformMessageId": platform_message_id,
+            // `error` is the CRD-specified key for this event (CRD 828); the
+            // REST message view names the same text `rejectMessage`.
             "error": last_error,
+            "rejectCode": reject_code,
             "timestamp": now,
         }),
     );
@@ -1120,6 +1167,65 @@ mod gateway_tests {
         assert!(OutboundError::MetaTokenExpired("Instagram")
             .to_string()
             .contains("權杖"));
+
+        assert_eq!(
+            classified_delivery_error(&OutboundError::MetaWindowClosed("Facebook")),
+            ("meta_window_closed", "Facebook：超出 24 小時客服回覆窗，需等客戶再次來訊後才能回覆（或使用已核准的訊息標籤）".into())
+        );
+        assert_eq!(
+            classified_delivery_error(&OutboundError::MissingCredentials("LINE")).0,
+            "missing_credentials"
+        );
+        assert_eq!(
+            classified_delivery_error(&OutboundError::PlatformRejected {
+                platform: "Facebook",
+                status: reqwest::StatusCode::BAD_REQUEST,
+            })
+            .0,
+            "platform_rejected"
+        );
+    }
+
+    /// Every persisted/broadcast delivery error is agent-facing text. Transport
+    /// errors must not render the failing URL: the Meta send URL carries the
+    /// page access token as a query parameter, and the same text is served to
+    /// customers through the conversation history.
+    #[test]
+    fn delivery_errors_never_render_transport_details() {
+        let rejected = OutboundError::PlatformRejected {
+            platform: "LINE",
+            status: reqwest::StatusCode::UNAUTHORIZED,
+        };
+        let text = rejected.to_string();
+        assert!(text.contains("LINE"), "{text}");
+        assert!(text.contains("401"), "{text}");
+
+        // `RequestFailed` renders no `source`, so no URL (and no token) can
+        // reach the message text. Build one through the real reqwest path.
+        let transport = reqwest::Client::builder()
+            .build()
+            .unwrap()
+            .get("http://127.0.0.1:1/me/messages?access_token=secret-token")
+            .send();
+        let source = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(transport)
+            .unwrap_err();
+        assert!(
+            source.to_string().contains("secret-token"),
+            "precondition: reqwest renders the URL, so OutboundError must not"
+        );
+        let wrapped = OutboundError::RequestFailed {
+            platform: "Facebook",
+            source,
+        };
+        assert!(!wrapped.to_string().contains("secret-token"));
+        assert!(!classified_delivery_error(&wrapped)
+            .1
+            .contains("secret-token"));
+        assert_eq!(classified_delivery_error(&wrapped).0, "network");
     }
 
     #[test]
@@ -1172,10 +1278,9 @@ mod gateway_tests {
             OutboundError::PlatformRejected {
                 platform: "LINE",
                 status: reqwest::StatusCode::UNAUTHORIZED,
-                body: "bad token".into(),
             }
             .to_string(),
-            "LINE send failed (401 Unauthorized): bad token"
+            "LINE：平台拒絕了這則訊息（401 Unauthorized），請稍後再試或查看頻道設定"
         );
         assert_eq!(
             OutboundError::DeleteRejected {
@@ -1438,7 +1543,11 @@ mod gateway_tests {
             if body["message"]["attachment"]["type"] == "image" {
                 (StatusCode::OK, Json(json!({"message_id":"m-ok"}))).into_response()
             } else {
-                (StatusCode::BAD_REQUEST, Json(json!({"error":{"code":100}}))).into_response()
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":{"code":100,"message":"platform-only-detail"}})),
+                )
+                    .into_response()
             }
         }
 
@@ -1488,5 +1597,13 @@ mod gateway_tests {
             .await
             .unwrap_err();
         assert!(matches!(token_err, OutboundError::MetaTokenExpired(_)));
+        // Unclassified Meta bodies are logged, but never persisted/broadcast
+        // through the delivery error's display text.
+        let other_err = g
+            .send_batch("facebook", "other", &[OutboundItem::text("hi")])
+            .await
+            .unwrap_err();
+        assert!(matches!(other_err, OutboundError::PlatformRejected { .. }));
+        assert!(!other_err.to_string().contains("platform-only-detail"));
     }
 }

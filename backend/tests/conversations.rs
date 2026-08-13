@@ -742,6 +742,15 @@ async fn list_messages_paginates_newest_first_with_attachments() {
         .seed_message(&conv, "agent", "second", Some("2026-01-02T00:00:00.000Z"))
         .await;
     sqlx::query(
+        "UPDATE messages SET read_at = $1, reject_code = 'meta_window_closed',
+         reject_message = '超出 24 小時客服回覆窗' WHERE id = $2",
+    )
+    .bind("2026-01-02T00:01:00.000Z")
+    .bind(&m2)
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+    sqlx::query(
         "INSERT INTO attachments (id, message_id, conversation_id, file_name, content_type, file_size, file_url, storage_key, created_at)
          VALUES ('att-1', $1, $2, 'doc.pdf', 'application/pdf', 42, '/uploads/doc.pdf', 'missing-key', $3)",
     )
@@ -769,6 +778,9 @@ async fn list_messages_paginates_newest_first_with_attachments() {
     assert_eq!(item["id"], json!(m2));
     assert_eq!(item["senderType"], json!("agent"));
     assert!(item["createdAt"].is_i64());
+    assert_eq!(item["readAt"], json!("2026-01-02T00:01:00.000Z"));
+    assert_eq!(item["rejectCode"], json!("meta_window_closed"));
+    assert_eq!(item["rejectMessage"], json!("超出 24 小時客服回覆窗"));
     assert_eq!(item["attachments"][0]["filename"], json!("doc.pdf"));
     assert_eq!(item["attachments"][0]["url"], json!("/uploads/doc.pdf"));
     // No stored object on disk -> no force-download URL (CRD 763).
@@ -1619,4 +1631,87 @@ async fn media_proxy_allows_any_team_404_when_unavailable() {
         .await;
     assert_ne!(status, StatusCode::FORBIDDEN);
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// The delivery writeback itself (previously only its readback was covered):
+/// a failed send must persist the classified pair and leave the client-supplied
+/// `metadata` untouched, whatever shape that metadata has.
+#[tokio::test]
+async fn failed_delivery_persists_a_classified_reject_without_touching_metadata() {
+    use mcss_backend::domain::conversations::channels;
+
+    let app = spawn_app().await;
+    let cust = app.seed_customer("facebook", "PSID1", "Alice", None).await;
+    let conv = app.seed_conversation(cust, None, "active").await;
+    let msg = app.seed_message(&conv, "agent", "reply", None).await;
+    // A non-object metadata value is legal input (the send body takes arbitrary
+    // JSON), and used to make the delivery writeback fail outright.
+    sqlx::query("UPDATE messages SET metadata = '[1,2]' WHERE id = $1")
+        .bind(&msg)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+
+    // No Facebook token configured -> the gateway rejects before any network.
+    channels::deliver_pending(channels::PendingDelivery {
+        db: app.state.db.clone(),
+        hub: app.state.realtime.clone(),
+        conversation_id: conv.clone(),
+        message_id: msg.clone(),
+        platform: "facebook".into(),
+        recipient: "PSID1".into(),
+        items: vec![channels::OutboundItem::text("reply")],
+        gateway: channels::OutboundGateway::from_config(&app.state.config),
+    })
+    .await;
+
+    let row: (String, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT delivery_status, reject_code, reject_message, metadata FROM messages WHERE id = $1",
+    )
+    .bind(&msg)
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
+    assert_eq!(row.0, "failed");
+    assert_eq!(row.1.as_deref(), Some("unsupported_platform"));
+    assert!(row.2.is_some());
+    assert_eq!(
+        row.3.as_deref(),
+        Some("[1,2]"),
+        "metadata must be untouched"
+    );
+}
+
+/// The customer-facing history serializes the same message row as the agent
+/// inbox; the classified failure is an internal ops detail and must not appear
+/// there (nor inside metadata, which that view does return verbatim).
+#[tokio::test]
+async fn customer_history_hides_the_delivery_reject() {
+    let app = spawn_app().await;
+    let token = admin_token(&app).await;
+    let cust = app.seed_customer("line", "U1", "Alice", None).await;
+    let conv = app.seed_conversation(cust, None, "active").await;
+    let msg = app.seed_message(&conv, "agent", "reply", None).await;
+    sqlx::query(
+        "UPDATE messages SET delivery_status = 'failed', reject_code = 'platform_rejected',
+         reject_message = 'internal detail' WHERE id = $1",
+    )
+    .bind(&msg)
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+
+    let (status, body, _) = app
+        .request(
+            "GET",
+            &format!("/api/customer-conversations/{conv}/messages"),
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let serialized = body.to_string();
+    assert!(!serialized.contains("internal detail"), "{serialized}");
+    assert!(!serialized.contains("rejectCode"), "{serialized}");
+    assert!(!serialized.contains("rejectMessage"), "{serialized}");
 }
