@@ -937,6 +937,70 @@ async fn facebook_read_stamps_read_at_via_watermark() {
     );
 }
 
+/// A read receipt has to reach a thread that is already open, not just the
+/// database: the inbox flips the bubble to 已讀 off a `message_updated` carrying
+/// `readAt`, and the instance running the webhook is not necessarily the one
+/// holding the agent's socket — so the routed fan-out row is the contract.
+#[tokio::test]
+async fn facebook_read_broadcasts_message_updated_with_read_at() {
+    let app = spawn_app().await;
+    let cust = app
+        .seed_customer("facebook", "F-read-bc", "Facebook User", None)
+        .await;
+    let conv = app.seed_conversation(cust, None, "active").await;
+    let sent_at = "2023-11-14T22:13:20.000Z";
+    let msg_id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO messages (id, conversation_id, sender_type, content, content_type,
+                               is_sent, sent_at, delivery_status, created_at)
+         VALUES ($1, $2, 'agent', 'hi', 'text', 1, $3, 'delivered', $3)",
+    )
+    .bind(&msg_id)
+    .bind(&conv)
+    .bind(sent_at)
+    .execute(&app.state.db)
+    .await
+    .unwrap();
+
+    let read_item = json!({
+        "sender": {"id": "F-read-bc"},
+        "recipient": {"id": "page-1"},
+        "timestamp": 1700000000000i64,
+        "read": {"watermark": 1700000000000i64}
+    });
+    let (status, resp) = post_fb_item(&app, read_item.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT event, targets FROM realtime_broadcast_fanout_events WHERE event LIKE $1",
+    )
+    .bind(format!("%{msg_id}%"))
+    .fetch_all(&app.state.db)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1, "exactly one receipt event: {rows:?}");
+    let (event, targets) = &rows[0];
+    let event: Value = serde_json::from_str(event).unwrap();
+    assert_eq!(event["type"], "message_updated");
+    assert_eq!(event["data"]["messageId"], json!(msg_id));
+    assert_eq!(event["data"]["conversationId"], json!(conv));
+    assert!(event["data"]["readAt"].is_string(), "{event}");
+    assert!(targets.contains(conv.as_str()), "{targets}");
+
+    // Replayed receipt: `read_at IS NULL` matches nothing, so the UPDATE returns
+    // no rows and nothing is published a second time.
+    let (status, resp) = post_fb_item(&app, read_item).await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+    let repeats: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM realtime_broadcast_fanout_events WHERE event LIKE $1",
+    )
+    .bind(format!("%{msg_id}%"))
+    .fetch_one(&app.state.db)
+    .await
+    .unwrap();
+    assert_eq!(repeats, 1, "a replayed receipt must not re-broadcast");
+}
+
 #[tokio::test]
 async fn facebook_user_object_is_accepted_but_not_processed() {
     let app = spawn_app().await;

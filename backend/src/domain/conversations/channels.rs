@@ -269,7 +269,26 @@ impl fmt::Display for OutboundError {
                 status,
                 body,
             } => write!(f, "{platform} delete failed ({status}): {body}"),
-            Self::TokenStore(error) => write!(f, "{error}"),
+            // Never renders the nested `StoreError`: `Client` embeds the raw
+            // Shopee response body and, for `MissingAccessToken`, the entire
+            // token response JSON (which can still carry the refresh token);
+            // `Database` is a transparent sqlx error. This text is persisted in
+            // `reject_message` and broadcast to agents, so the nested error
+            // stays in the log and in `Error::source()` only.
+            Self::TokenStore(error) => {
+                use crate::domain::shopee::store::StoreError;
+                match error {
+                    StoreError::NotConnected => {
+                        f.write_str("Shopee：此賣場尚未完成授權，請至頻道管理重新連結賣場")
+                    }
+                    StoreError::Crypto(_) => {
+                        f.write_str("Shopee：憑證保護設定有誤，請聯絡系統管理員")
+                    }
+                    StoreError::Client(_) | StoreError::Database(_) => {
+                        f.write_str("Shopee：無法取得賣場存取權杖，請稍後再試或重新連結賣場")
+                    }
+                }
+            }
             Self::MissingCredentials(platform) => {
                 write!(f, "{platform} delivery requires configured credentials")
             }
@@ -880,22 +899,33 @@ pub async fn deliver_pending(input: PendingDelivery) {
     // clients can transition the message out of the pending state (CRD 827-828,
     // 3450); best-effort only — a broadcast failure never alters the persisted
     // outcome.
-    hub.to_conversation(
-        &conversation_id,
+    let payload = serde_json::json!({
+        "messageId": message_id,
+        "conversationId": conversation_id,
+        "deliveryStatus": status,
+        "isSent": is_sent,
+        "platformMessageId": platform_message_id,
+        // `error` is the CRD-specified key for this event (CRD 828); the
+        // REST message view names the same text `rejectMessage`.
+        "error": last_error,
+        "rejectCode": reject_code,
+        "timestamp": now,
+    });
+    hub.to_conversation(&conversation_id, "message_updated", payload.clone());
+    // Peer instances: this task runs on whichever instance served the send, not
+    // necessarily the one holding the agent's WebSocket. Without the mirror the
+    // bubble stays 傳送中 there until a reload. The send handler mirrors its
+    // pending events the same way (`conversations::handlers::send_message`), and
+    // the receiver skips rows it published itself.
+    crate::realtime::broadcaster::publish_remote_event_with(
+        &db,
+        hub.instance_id(),
         "message_updated",
-        serde_json::json!({
-            "messageId": message_id,
-            "conversationId": conversation_id,
-            "deliveryStatus": status,
-            "isSent": is_sent,
-            "platformMessageId": platform_message_id,
-            // `error` is the CRD-specified key for this event (CRD 828); the
-            // REST message view names the same text `rejectMessage`.
-            "error": last_error,
-            "rejectCode": reject_code,
-            "timestamp": now,
-        }),
-    );
+        payload,
+        vec![serde_json::json!({ "type": "conversation", "ids": [&conversation_id] })],
+        "high",
+    )
+    .await;
 }
 
 /// Record a token-expiry error on a platform's active integration(s) so the
@@ -1226,6 +1256,44 @@ mod gateway_tests {
             .1
             .contains("secret-token"));
         assert_eq!(classified_delivery_error(&wrapped).0, "network");
+    }
+
+    /// Same guarantee for the Shopee token store: `StoreError` is transparent
+    /// over `ClientError`, whose `Http` carries the raw response body and whose
+    /// `MissingAccessToken` carries the entire token response — including the
+    /// refresh token when Shopee answers an expired grant with a partial body.
+    /// None of that may reach `reject_message`.
+    #[test]
+    fn token_store_errors_never_render_platform_payloads() {
+        use crate::domain::shopee::client::ClientError;
+        use crate::domain::shopee::store::StoreError;
+
+        let leaky = OutboundError::TokenStore(StoreError::Client(ClientError::MissingAccessToken(
+            serde_json::json!({
+                "refresh_token": "super-secret-refresh",
+                "error": "error_auth",
+            }),
+        )));
+        let (code, text) = classified_delivery_error(&leaky);
+        assert_eq!(code, "missing_credentials");
+        assert!(!text.contains("super-secret-refresh"), "{text}");
+        assert!(!text.contains("error_auth"), "{text}");
+        assert!(text.contains("Shopee"), "{text}");
+
+        let http = OutboundError::TokenStore(StoreError::Client(ClientError::Http {
+            status: reqwest::StatusCode::BAD_REQUEST,
+            body: r#"{"msg":"internal shop diagnostics"}"#.into(),
+        }));
+        assert!(!classified_delivery_error(&http).1.contains("diagnostics"));
+
+        // `NotConnected` stays distinguishable: it is the one token-store
+        // failure an agent can actually act on.
+        assert!(OutboundError::TokenStore(StoreError::NotConnected)
+            .to_string()
+            .contains("尚未完成授權"));
+
+        // The nested error is still reachable for logs and diagnostics.
+        assert!(std::error::Error::source(&leaky).is_some());
     }
 
     #[test]

@@ -262,6 +262,26 @@ async fn publish_remote_broadcast(
     targets: &[Value],
     options: &Value,
 ) {
+    publish_remote_broadcast_with(
+        &state.db,
+        state.realtime.instance_id(),
+        event,
+        targets,
+        options,
+    )
+    .await;
+}
+
+/// The fan-out row insert itself. Split out from [`publish_remote_broadcast`]
+/// because background delivery tasks hold the pool and the hub but not the
+/// whole `AppState`, and those are the only two things this needs.
+async fn publish_remote_broadcast_with(
+    db: &sqlx::PgPool,
+    instance_id: &str,
+    event: &Value,
+    targets: &[Value],
+    options: &Value,
+) {
     let event_id = uuid::Uuid::new_v4().to_string();
     if let Err(err) = sqlx::query(
         "INSERT INTO realtime_broadcast_fanout_events
@@ -269,12 +289,12 @@ async fn publish_remote_broadcast(
          VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(event_id)
-    .bind(state.realtime.instance_id())
+    .bind(instance_id)
     .bind(event.to_string())
     .bind(Value::Array(targets.to_vec()).to_string())
     .bind(options.to_string())
     .bind(crate::db::now_iso())
-    .execute(&state.db)
+    .execute(db)
     .await
     {
         tracing::warn!(error = %err, "routed broadcaster fanout publish failed");
@@ -333,6 +353,29 @@ pub async fn publish_remote_event(
 ) {
     let event = remote_event_envelope(event_type, payload);
     publish_remote_broadcast(state, &event, &targets, &json!({ "priority": priority })).await;
+}
+
+/// [`publish_remote_event`] for callers that hold the pool and the hub but not
+/// the whole `AppState` — background delivery tasks such as
+/// `conversations::channels::deliver_pending`, whose owning instance is not
+/// necessarily the one serving the recipient's WebSocket.
+pub async fn publish_remote_event_with(
+    db: &sqlx::PgPool,
+    instance_id: &str,
+    event_type: &str,
+    payload: Value,
+    targets: Vec<Value>,
+    priority: &str,
+) {
+    let event = remote_event_envelope(event_type, payload);
+    publish_remote_broadcast_with(
+        db,
+        instance_id,
+        &event,
+        &targets,
+        &json!({ "priority": priority }),
+    )
+    .await;
 }
 
 #[derive(sqlx::FromRow)]
