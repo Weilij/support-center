@@ -766,20 +766,75 @@ fn spawn_followups(state: Arc<AppState>, ctx: FollowupContext) {
 
 // ------------------------------------------------------------ delivery / read receipts
 
-/// Delivery receipt: mark messages delivered by their platform message ids.
-pub async fn mark_delivered(db: &PgPool, mids: &[&str]) {
-    for mid in mids {
-        if let Err(e) = sqlx::query(
-            "UPDATE messages SET delivery_status = 'delivered', updated_at = $1 WHERE platform_message_id = $2",
+/// Fan out `message_updated` for receipt-driven field changes so an open thread
+/// updates without a reload. The webhook only writes the database, and no other
+/// `message_updated` producer carries `readAt`, so without this the bubble sits
+/// at its last delivery state until the transcript is refetched.
+///
+/// `rows` is `(message_id, conversation_id)` as returned by the receipt UPDATEs,
+/// and `field`/`value` is the single message field the receipt changed. Both the
+/// local hub and peer instances are notified, matching every other domain event
+/// producer — the instance running the webhook is not necessarily the one
+/// holding the agent's socket.
+///
+/// One event per row, and this runs inline on the webhook response path, so the
+/// cost is `rows.len()` sequential fan-out inserts. `read_at IS NULL` keeps that
+/// at the handful of messages sent since the customer last read; only a first
+/// receipt on a long-neglected thread makes it large. If it ever shows up in
+/// webhook latency, batch the inserts here rather than capping the loop —
+/// dropping receipts would silently strand bubbles at 已送達.
+async fn broadcast_receipt_updates(
+    state: &Arc<AppState>,
+    rows: &[(String, String)],
+    field: &str,
+    value: &str,
+) {
+    for (message_id, conversation_id) in rows {
+        let mut payload = json!({
+            "messageId": message_id,
+            "conversationId": conversation_id,
+            "timestamp": now_iso(),
+        });
+        payload[field] = json!(value);
+        state
+            .realtime
+            .to_conversation(conversation_id, "message_updated", payload.clone());
+        crate::realtime::broadcaster::publish_remote_event(
+            state,
+            "message_updated",
+            payload,
+            vec![json!({ "type": "conversation", "ids": [conversation_id] })],
+            "high",
         )
-        .bind(now_iso())
-        .bind(mid)
-        .execute(db)
-        .await
-        {
-            tracing::warn!(error = %e, "facebook delivery receipt update failed");
-        }
+        .await;
     }
+}
+
+/// Delivery receipt: mark messages delivered by their platform message ids.
+pub async fn mark_delivered(state: &Arc<AppState>, mids: &[&str]) {
+    if mids.is_empty() {
+        return;
+    }
+    // `= ANY($2)` replaces the per-mid round trip; `delivery_status` is guarded
+    // so a repeated receipt returns no rows and re-broadcasts nothing.
+    let owned: Vec<String> = mids.iter().map(|mid| (*mid).to_string()).collect();
+    let rows: Vec<(String, String)> = match sqlx::query_as(
+        "UPDATE messages SET delivery_status = 'delivered', updated_at = $1
+          WHERE platform_message_id = ANY($2) AND delivery_status IS DISTINCT FROM 'delivered'
+          RETURNING id, conversation_id",
+    )
+    .bind(now_iso())
+    .bind(&owned)
+    .fetch_all(&state.db)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "facebook delivery receipt update failed");
+            return;
+        }
+    };
+    broadcast_receipt_updates(state, &rows, "deliveryStatus", "delivered").await;
 }
 
 /// Convert an epoch-millis read watermark to the canonical ISO-8601 form used
@@ -795,28 +850,42 @@ pub fn watermark_to_iso(watermark_ms: i64) -> Option<String> {
 
 /// Read receipt: stamp `read_at` on the customer's agent messages sent at or
 /// before the watermark (ms epoch). FB read events carry no message ids.
-pub async fn mark_read(db: &PgPool, platform: &str, platform_user_id: &str, watermark_ms: i64) {
+pub async fn mark_read(
+    state: &Arc<AppState>,
+    platform: &str,
+    platform_user_id: &str,
+    watermark_ms: i64,
+) {
     let Some(iso) = watermark_to_iso(watermark_ms) else {
         return;
     };
-    if let Err(e) = sqlx::query(
+    let read_at = now_iso();
+    // `read_at IS NULL` doubles as the idempotency guard: a repeated watermark
+    // returns no rows, so nothing is re-broadcast.
+    let rows: Vec<(String, String)> = match sqlx::query_as(
         "UPDATE messages SET read_at = $1
          WHERE sender_type = 'agent' AND read_at IS NULL AND sent_at <= $2
            AND conversation_id IN (
              SELECT c.id FROM conversations c
              JOIN customers cu ON cu.id = c.customer_id
              WHERE cu.platform = $3 AND cu.platform_user_id = $4
-           )",
+           )
+         RETURNING id, conversation_id",
     )
-    .bind(now_iso())
+    .bind(&read_at)
     .bind(&iso)
     .bind(platform)
     .bind(platform_user_id)
-    .execute(db)
+    .fetch_all(&state.db)
     .await
     {
-        tracing::warn!(error = %e, "facebook read receipt update failed");
-    }
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "facebook read receipt update failed");
+            return;
+        }
+    };
+    broadcast_receipt_updates(state, &rows, "readAt", &read_at).await;
 }
 
 /// IG/FB message reaction: update the target message's `metadata.reactions`.
@@ -872,33 +941,45 @@ pub async fn apply_reaction(db: &PgPool, reaction: &serde_json::Value) {
 
 /// Read receipt keyed by a specific message id (IG "seen" may carry `read.mid`):
 /// mark agent messages up to that message's sent_at as read.
-pub async fn mark_read_by_mid(db: &PgPool, platform: &str, platform_user_id: &str, mid: &str) {
+pub async fn mark_read_by_mid(
+    state: &Arc<AppState>,
+    platform: &str,
+    platform_user_id: &str,
+    mid: &str,
+) {
     let at: Option<Option<String>> =
         sqlx::query_scalar("SELECT sent_at FROM messages WHERE platform_message_id = $1")
             .bind(mid)
-            .fetch_optional(db)
+            .fetch_optional(&state.db)
             .await
             .ok()
             .flatten();
     let Some(Some(sent_at)) = at else { return };
-    if let Err(e) = sqlx::query(
+    let read_at = now_iso();
+    let rows: Vec<(String, String)> = match sqlx::query_as(
         "UPDATE messages SET read_at = $1
          WHERE sender_type = 'agent' AND read_at IS NULL AND sent_at <= $2
            AND conversation_id IN (
              SELECT c.id FROM conversations c
              JOIN customers cu ON cu.id = c.customer_id
              WHERE cu.platform = $3 AND cu.platform_user_id = $4
-           )",
+           )
+         RETURNING id, conversation_id",
     )
-    .bind(now_iso())
+    .bind(&read_at)
     .bind(&sent_at)
     .bind(platform)
     .bind(platform_user_id)
-    .execute(db)
+    .fetch_all(&state.db)
     .await
     {
-        tracing::warn!(error = %e, "read-by-mid update failed");
-    }
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "read-by-mid update failed");
+            return;
+        }
+    };
+    broadcast_receipt_updates(state, &rows, "readAt", &read_at).await;
 }
 
 // ------------------------------------------------------------ follow / unfollow (LINE)

@@ -497,14 +497,14 @@ async fn process_messaging_item(
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
-        ingest::mark_delivered(&state.db, &mids).await;
+        ingest::mark_delivered(state, &mids).await;
         return ItemResult::None;
     }
     if let Some(read) = item.get("read") {
         if let Some(wm) = read.get("watermark").and_then(Value::as_i64) {
-            ingest::mark_read(&state.db, platform, &sender, wm).await;
+            ingest::mark_read(state, platform, &sender, wm).await;
         } else if let Some(mid) = read.get("mid").and_then(Value::as_str) {
-            ingest::mark_read_by_mid(&state.db, platform, &sender, mid).await;
+            ingest::mark_read_by_mid(state, platform, &sender, mid).await;
         }
         return ItemResult::None;
     }
