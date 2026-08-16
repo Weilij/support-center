@@ -899,22 +899,33 @@ pub async fn deliver_pending(input: PendingDelivery) {
     // clients can transition the message out of the pending state (CRD 827-828,
     // 3450); best-effort only — a broadcast failure never alters the persisted
     // outcome.
-    hub.to_conversation(
-        &conversation_id,
+    let payload = serde_json::json!({
+        "messageId": message_id,
+        "conversationId": conversation_id,
+        "deliveryStatus": status,
+        "isSent": is_sent,
+        "platformMessageId": platform_message_id,
+        // `error` is the CRD-specified key for this event (CRD 828); the
+        // REST message view names the same text `rejectMessage`.
+        "error": last_error,
+        "rejectCode": reject_code,
+        "timestamp": now,
+    });
+    hub.to_conversation(&conversation_id, "message_updated", payload.clone());
+    // Peer instances: this task runs on whichever instance served the send, not
+    // necessarily the one holding the agent's WebSocket. Without the mirror the
+    // bubble stays 傳送中 there until a reload. The send handler mirrors its
+    // pending events the same way (`conversations::handlers::send_message`), and
+    // the receiver skips rows it published itself.
+    crate::realtime::broadcaster::publish_remote_event_with(
+        &db,
+        hub.instance_id(),
         "message_updated",
-        serde_json::json!({
-            "messageId": message_id,
-            "conversationId": conversation_id,
-            "deliveryStatus": status,
-            "isSent": is_sent,
-            "platformMessageId": platform_message_id,
-            // `error` is the CRD-specified key for this event (CRD 828); the
-            // REST message view names the same text `rejectMessage`.
-            "error": last_error,
-            "rejectCode": reject_code,
-            "timestamp": now,
-        }),
-    );
+        payload,
+        vec![serde_json::json!({ "type": "conversation", "ids": [&conversation_id] })],
+        "high",
+    )
+    .await;
 }
 
 /// Record a token-expiry error on a platform's active integration(s) so the
