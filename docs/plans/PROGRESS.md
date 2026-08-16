@@ -309,3 +309,26 @@ conversation routing as "指派至團隊 / 轉接團隊 / 取消指派" only.
   G5 off by default; G3 backend-only, so the 24h-window error text currently
   reaches the frontend only in the realtime delivery payload's `error` field
   with no dedicated UI surface. Those two are the open follow-ups.
+- 2026-08-16: Review follow-ups on PR #7 (`fix/meta-delivery-state`). Four
+  findings raised against the merged branch, all confirmed against the code and
+  fixed here. (1) `OutboundError::TokenStore` formatted its nested `StoreError`
+  transparently, so a Shopee token refresh answered with a partial body could
+  persist the refresh token into `reject_message` and broadcast it to agents —
+  now fixed agent-facing text, nested error kept in `source()` and the log
+  (678cb78). (2) The inbox drained its buffered `message_updated` patches only
+  in `send`, so a history load racing the delivery outcome left the bubble at
+  傳送中 until a reload; every insert path drains now, and the buffer is capped
+  (a33246d). (3) `deliver_pending` emitted its terminal `message_updated` only
+  to the local hub, so in a multi-instance deployment the outcome never reached
+  an agent whose socket was on another instance; the fan-out insert was split
+  so background tasks can mirror it without an `AppState` (b87e9a2). (4) FB/IG
+  read and delivery receipts only wrote the database — no `message_updated`
+  anywhere carried `readAt`, making the frontend's `readAt` branch dead code —
+  so receipts now broadcast via `RETURNING`, with the existing update
+  predicates serving as the redelivery guard (04a5d93).
+  Sizing note on (4): the broadcast runs inline on the webhook response path
+  and emits one event per affected row. `read_at IS NULL` keeps that at the
+  messages sent since the customer last read, and there is no bulk-send feature
+  to inflate it, so no batching was added. If it ever shows in webhook latency,
+  batch the fan-out inserts — capping the loop would silently strand bubbles at
+  已送達. Recorded here rather than as an issue; this repo does not use them.
