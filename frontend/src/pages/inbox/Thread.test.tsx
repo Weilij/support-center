@@ -237,4 +237,46 @@ describe('Thread', () => {
       expect(message?.getAttribute('data-reject-code')).toBe('missing_credentials')
     })
   })
+
+  it('merges a delivery update that beat a slow history load', async () => {
+    // Initial load and reconnect both refetch the transcript, and the outcome
+    // can land while that GET is still in flight. The response then carries the
+    // stale 'pending' row, so without draining the buffer the bubble would sit
+    // at 傳送中 until another reload.
+    const handlers = new Map<string, (payload: Record<string, unknown>) => void>()
+    rt.onEvent.mockImplementation(((event: string, handler: (payload: Record<string, unknown>) => void) => {
+      handlers.set(event, handler)
+      return vi.fn()
+    }) as never)
+    let resolveMessages: (value: unknown) => void = () => {}
+    apiMock.get.mockImplementation((url: string) => {
+      if (url === '/api/conversations/c1/messages') {
+        return new Promise((resolve) => { resolveMessages = resolve })
+      }
+      return Promise.resolve({ success: true, data: { customerName: 'Alice' } })
+    })
+
+    renderThread()
+    await waitFor(() => expect(handlers.has('message_updated')).toBe(true))
+
+    handlers.get('message_updated')?.({
+      messageId: 'm2',
+      conversationId: 'c1',
+      deliveryStatus: 'failed',
+      isSent: false,
+      rejectCode: 'meta_window_closed',
+    })
+    resolveMessages({
+      success: true,
+      data: {
+        items: [{ id: 'm2', content: 'second', senderType: 'agent', deliveryStatus: 'pending' }],
+      },
+    })
+
+    await waitFor(() => {
+      const message = screen.getAllByTestId('msg').find((node) => node.textContent?.includes('second'))
+      expect(message?.getAttribute('data-status')).toBe('failed')
+      expect(message?.getAttribute('data-reject-code')).toBe('meta_window_closed')
+    })
+  })
 })

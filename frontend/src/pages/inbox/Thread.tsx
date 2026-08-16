@@ -32,6 +32,27 @@ function deliveryPatch(update: Record<string, unknown>): Partial<InboxMessage> {
   return patch
 }
 
+/// Upper bound on parked `message_updated` patches (see the buffering site).
+const BUFFERED_UPDATE_CAP = 200
+
+/// Apply and consume the `message_updated` patches that arrived before their
+/// message existed in the list. EVERY path that puts messages into the list has
+/// to drain the buffer, not just `send`: the history load (initial and on
+/// reconnect) races the delivery outcome, and a stale history response would
+/// otherwise overwrite an already-resolved message back to 'pending'.
+function drainBuffered(
+  buffer: Map<string, Partial<InboxMessage>>,
+  list: InboxMessage[],
+): InboxMessage[] {
+  if (buffer.size === 0) return list
+  return list.map((message) => {
+    const patch = buffer.get(message.id)
+    if (!patch) return message
+    buffer.delete(message.id)
+    return { ...message, ...patch }
+  })
+}
+
 export function Thread({
   convId,
   meta,
@@ -158,7 +179,8 @@ export function Thread({
   }, [convId])
 
   // `message_updated` patches that arrived before their message existed in the
-  // list, keyed by real message id and drained by `send`.
+  // list, keyed by real message id and drained by every path that inserts
+  // messages (`send`, the history load, and the `new_message` insert).
   const bufferedUpdates = useRef(new Map<string, Partial<InboxMessage>>())
 
   // Fetch conversation metadata (platform, team, customer) and push it up. Used
@@ -205,7 +227,9 @@ export function Thread({
           InboxMessage & { metadata?: { media?: Record<string, unknown> } }
         >
         const mapped = items.map((message) => ({ ...message, media: message.media ?? message.metadata?.media }))
-        setMessages([...mapped].reverse())
+        // Drained outside the state updater: React StrictMode invokes updaters
+        // twice, and the second pass would find the buffer already emptied.
+        setMessages(drainBuffered(bufferedUpdates.current, [...mapped].reverse()))
       } else {
         setError(resp.message ?? null)
       }
@@ -215,6 +239,11 @@ export function Thread({
     const off = onEvent('new_message', (payload) => {
       const message = readMessageEvent(payload)
       if (message.conversationId !== convId || message.isOwn) return
+      // A teammate's message enters the list here, so its delivery outcome can
+      // also have landed first. Read and consume the patch outside the updater
+      // (StrictMode invokes updaters twice).
+      const buffered = bufferedUpdates.current.get(message.id)
+      if (buffered) bufferedUpdates.current.delete(message.id)
       setMessages((prev) =>
         prev.some((item) => item.id === message.id)
           ? prev
@@ -225,6 +254,7 @@ export function Thread({
               createdAt: message.timestamp,
               messageType: message.messageType,
               media: message.media,
+              ...buffered,
             }],
       )
     })
@@ -243,6 +273,15 @@ export function Thread({
         // network round-trip at all). Park the patch so `send` can apply it.
         if (!prev.some((message) => message.id === messageId)) {
           bufferedUpdates.current.set(messageId, patch)
+          // A read receipt can name a message that scrolled out of the loaded
+          // history and will never enter the list, so the buffer is capped
+          // rather than left to grow for the lifetime of the thread. Map
+          // iteration is insertion-ordered, so this drops the oldest entries.
+          while (bufferedUpdates.current.size > BUFFERED_UPDATE_CAP) {
+            const oldest = bufferedUpdates.current.keys().next().value
+            if (oldest === undefined) break
+            bufferedUpdates.current.delete(oldest)
+          }
           return prev
         }
         return prev.map((message) => (message.id === messageId ? { ...message, ...patch } : message))
