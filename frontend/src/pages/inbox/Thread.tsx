@@ -35,22 +35,46 @@ function deliveryPatch(update: Record<string, unknown>): Partial<InboxMessage> {
 /// Upper bound on parked `message_updated` patches (see the buffering site).
 const BUFFERED_UPDATE_CAP = 200
 
-/// Apply and consume the `message_updated` patches that arrived before their
-/// message existed in the list. EVERY path that puts messages into the list has
-/// to drain the buffer, not just `send`: the history load (initial and on
-/// reconnect) races the delivery outcome, and a stale history response would
-/// otherwise overwrite an already-resolved message back to 'pending'.
-function drainBuffered(
+/// Apply the `message_updated` patches parked for messages that were not in the
+/// list yet. EVERY path that puts messages into the list applies them, not just
+/// `send`: the history load (initial and on reconnect) races the delivery
+/// outcome, and a stale history response would otherwise overwrite an
+/// already-resolved message back to 'pending'.
+///
+/// Pure — it does not consume what it applies. Entries are dropped after the
+/// commit that used them (see the cleanup effect), because a state updater may
+/// run twice under StrictMode and the second pass would find the buffer already
+/// emptied and rebuild the list without the patch.
+function applyBuffered(
   buffer: Map<string, Partial<InboxMessage>>,
   list: InboxMessage[],
 ): InboxMessage[] {
   if (buffer.size === 0) return list
-  return list.map((message) => {
+  let changed = false
+  const next = list.map((message) => {
     const patch = buffer.get(message.id)
     if (!patch) return message
-    buffer.delete(message.id)
+    changed = true
     return { ...message, ...patch }
   })
+  return changed ? next : list
+}
+
+/// Park a patch, evicting the oldest entries past the cap. A read receipt can
+/// name a message that scrolled out of the loaded history and will never enter
+/// the list, so the buffer cannot be left to grow for the lifetime of the
+/// thread. Map iteration is insertion-ordered.
+function parkUpdate(
+  buffer: Map<string, Partial<InboxMessage>>,
+  messageId: string,
+  patch: Partial<InboxMessage>,
+) {
+  buffer.set(messageId, patch)
+  while (buffer.size > BUFFERED_UPDATE_CAP) {
+    const oldest = buffer.keys().next().value
+    if (oldest === undefined) break
+    buffer.delete(oldest)
+  }
 }
 
 export function Thread({
@@ -178,9 +202,12 @@ export function Thread({
     prevConvId.current = convId
   }, [convId])
 
-  // `message_updated` patches that arrived before their message existed in the
-  // list, keyed by real message id and drained by every path that inserts
-  // messages (`send`, the history load, and the `new_message` insert).
+  // `message_updated` patches keyed by real message id, applied by every path
+  // that inserts messages (`send`, the history load, and the `new_message`
+  // insert). Parking happens eagerly in the event handler rather than inside a
+  // state updater: a history load resolving in between computes its apply
+  // eagerly too, so a park deferred until React flushed the updater would be
+  // missed and the patch stranded — the exact race this buffer exists to close.
   const bufferedUpdates = useRef(new Map<string, Partial<InboxMessage>>())
 
   // Fetch conversation metadata (platform, team, customer) and push it up. Used
@@ -227,9 +254,7 @@ export function Thread({
           InboxMessage & { metadata?: { media?: Record<string, unknown> } }
         >
         const mapped = items.map((message) => ({ ...message, media: message.media ?? message.metadata?.media }))
-        // Drained outside the state updater: React StrictMode invokes updaters
-        // twice, and the second pass would find the buffer already emptied.
-        setMessages(drainBuffered(bufferedUpdates.current, [...mapped].reverse()))
+        setMessages(applyBuffered(bufferedUpdates.current, [...mapped].reverse()))
       } else {
         setError(resp.message ?? null)
       }
@@ -240,10 +265,9 @@ export function Thread({
       const message = readMessageEvent(payload)
       if (message.conversationId !== convId || message.isOwn) return
       // A teammate's message enters the list here, so its delivery outcome can
-      // also have landed first. Read and consume the patch outside the updater
-      // (StrictMode invokes updaters twice).
+      // also have landed first. Read outside the updater; the cleanup effect
+      // drops the entry once the commit that used it lands.
       const buffered = bufferedUpdates.current.get(message.id)
-      if (buffered) bufferedUpdates.current.delete(message.id)
       setMessages((prev) =>
         prev.some((item) => item.id === message.id)
           ? prev
@@ -266,26 +290,14 @@ export function Thread({
       if (String(update.conversationId ?? payload.conversationId ?? '') !== convId) return
       const messageId = String(update.messageId ?? '')
       if (!messageId) return
-      const patch = deliveryPatch(update)
-      setMessages((prev) => {
-        // Delivery can resolve before the POST response swaps the optimistic
-        // temp id for the real one (a credential-less send fails with no
-        // network round-trip at all). Park the patch so `send` can apply it.
-        if (!prev.some((message) => message.id === messageId)) {
-          bufferedUpdates.current.set(messageId, patch)
-          // A read receipt can name a message that scrolled out of the loaded
-          // history and will never enter the list, so the buffer is capped
-          // rather than left to grow for the lifetime of the thread. Map
-          // iteration is insertion-ordered, so this drops the oldest entries.
-          while (bufferedUpdates.current.size > BUFFERED_UPDATE_CAP) {
-            const oldest = bufferedUpdates.current.keys().next().value
-            if (oldest === undefined) break
-            bufferedUpdates.current.delete(oldest)
-          }
-          return prev
-        }
-        return prev.map((message) => (message.id === messageId ? { ...message, ...patch } : message))
-      })
+      // Park unconditionally and synchronously, then let the updater apply
+      // whatever is parked. Delivery can resolve before the POST response swaps
+      // the optimistic temp id for the real one (a credential-less send fails
+      // with no network round-trip at all), and a history load can resolve
+      // before React flushes this update — both are covered because the entry
+      // exists the moment the event is handled.
+      parkUpdate(bufferedUpdates.current, messageId, deliveryPatch(update))
+      setMessages((prev) => applyBuffered(bufferedUpdates.current, prev))
     })
     return () => {
       off()
@@ -295,6 +307,15 @@ export function Thread({
       unsubscribeConversation(convId)
     }
   }, [convId, reloadKey, refreshMeta])
+
+  // Drop parked patches once a commit carrying their message has landed. Every
+  // path that writes `messages` applies the buffer first, so a message present
+  // here has already taken its patch; doing the delete after the commit instead
+  // of inside the updater keeps the updaters pure for StrictMode.
+  useEffect(() => {
+    if (bufferedUpdates.current.size === 0) return
+    for (const message of messages) bufferedUpdates.current.delete(message.id)
+  }, [messages])
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: 'smooth' })
@@ -332,7 +353,6 @@ export function Thread({
       // `message_updated`, so 'pending' is the honest state until it does. Any
       // update that beat this swap was buffered under the real id.
       const buffered = bufferedUpdates.current.get(confirmed.id)
-      bufferedUpdates.current.delete(confirmed.id)
       setMessages((prev) => prev.map((message) => (
         message.id === tempId
           ? { ...message, ...confirmed, pending: false, deliveryStatus: 'pending', ...buffered }
